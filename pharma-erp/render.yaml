@@ -29,9 +29,9 @@
 # used for MIGRATION_DATABASE_URL only.
 
 databases:
-  - name: pharma-erp-db
-    databaseName: pharma_erp
-    user: pharma_erp_owner
+  - name: pharma-erp-main-db
+    databaseName: pharma_erp_main_db
+    user: pharma_erp_main_db_user
     plan: basic-256mb
     postgresMajorVersion: '16'
     ipAllowList: [] # only reachable from inside Render's network
@@ -41,7 +41,7 @@ services:
   # API — NestJS
   # ---------------------------------------------------------------------------
   - type: web
-    name: pharma-erp-api
+    name: Pharma-ERP
     runtime: node
     plan: starter
     region: oregon # keep the database and both services in one region
@@ -71,7 +71,7 @@ services:
       # RLS blocks for the application role by design).
       - key: MIGRATION_DATABASE_URL
         fromDatabase:
-          name: pharma-erp-db
+          name: pharma-erp-main-db
           property: connectionString
 
       # The RUNTIME connection, as `pharma_app`. Set this by hand after running
@@ -145,16 +145,25 @@ services:
       # hostname and assumes https.
       - key: NEXT_PUBLIC_API_URL
         fromService:
-          name: pharma-erp-api
+          name: Pharma-ERP
           type: web
           property: host
 
-      # Server-to-server address for the API, over Render private networking.
-      # apiFetch is its only reader and is server-only, so the API never needs
-      # to be reached publicly from here. Going out through the public hostname
-      # makes every page render a round trip through the edge, which rate-limits
-      # it and then answers 429 to this very service.
+      # API_URL — server-to-server address for the API, over Render private
+      # networking. NOT set here, and cannot be: the private hostname carries the
+      # same Render-assigned slug as the public one (this deployment’s API is
+      # pharma-erp-5hav.onrender.com, not pharma-erp.onrender.com, because the
+      # plain name was taken), and no `fromService` property exposes a private
+      # address. Any value written here would be a guess that is wrong for every
+      # deployment but the one it was written for.
       #
-      # Confirm the port against the API log line "API listening on port".
-      - key: API_URL
-        value: http://pharma-erp-api:10000
+      # Set it in the dashboard instead, on the WEB service, to the private address
+      # Render shows for the API service:
+      #   API_URL = http://<api-private-host>:<port>
+      # The port is the one the API logs at start-up ("API listening on port").
+      #
+      # Leaving it unset is safe and is the default: readApiUrl falls back to
+      # NEXT_PUBLIC_API_URL above, which reaches the API over its public hostname.
+      # That works, but every page render then leaves Render’s network and returns
+      # through the edge, which rate-limits it — the cause of a 429 answered to
+      # this very service under load.
