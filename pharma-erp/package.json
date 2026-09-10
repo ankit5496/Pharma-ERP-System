@@ -28,7 +28,9 @@
     "verify:rls": "dotenv -e .env -- node scripts/verify-rls.mjs",
     "create-tenant": "dotenv -e .env -- node scripts/create-tenant.mjs",
     "dev:db": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev-db.ps1",
-    "create-super-user": "dotenv -e .env -- node scripts/create-super-user.mjs"
+    "wake": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/wake-render.ps1",
+    "create-super-user": "dotenv -e .env -- node scripts/create-super-user.mjs",
+    "reset-super-user": "dotenv -e .env -- node scripts/reset-super-user-password.mjs"
   },
   "devDependencies": {
     "@node-rs/argon2": "^2.2.0",

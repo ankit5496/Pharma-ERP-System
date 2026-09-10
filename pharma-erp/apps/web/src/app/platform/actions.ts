@@ -11,7 +11,7 @@ import {
   type PlatformLoginResponse,
 } from '@pharma-erp/types';
 
-import { apiFetch } from '@/lib/api';
+import { apiFetch, isColdStart, COLD_START_MESSAGE } from '@/lib/api';
 import { platformFetch } from '@/lib/platform-session';
 
 // ---------------------------------------------------------------------------
@@ -19,7 +19,8 @@ import { platformFetch } from '@/lib/platform-session';
 // ---------------------------------------------------------------------------
 
 export interface PlatformLoginState {
-  status: 'idle' | 'error';
+  /** 'waking' is not a failure: the API is booting and the form retries itself. */
+  status: 'idle' | 'error' | 'waking';
   message?: string;
   email?: string;
 }
@@ -40,10 +41,21 @@ export async function platformLoginAction(
   const result = await apiFetch<PlatformLoginResponse>('/api/v1/platform/auth/login', {
     method: 'POST',
     json: { email, password },
-    timeoutMs: 20_000,
+    // Long enough to outlast a cold start, which was measured at 22-53s on the
+    // free instance type this deploys to. The previous 20s could not: it
+    // expired while the container was still booting, so the first sign-in after
+    // an idle period could never succeed, however correct the password.
+    timeoutMs: 75_000,
   });
 
-  if (!result.ok) return { status: 'error', message: result.error, email };
+  if (!result.ok) {
+    // A sleeping API is a wait, not a refusal. Saying so lets the form retry
+    // instead of showing the operator a rate-limit error for a service that has
+    // no rate limiter.
+    if (isColdStart(result)) return { status: 'waking', message: COLD_START_MESSAGE, email };
+
+    return { status: 'error', message: result.error, email };
+  }
 
   const store = await cookies();
 
