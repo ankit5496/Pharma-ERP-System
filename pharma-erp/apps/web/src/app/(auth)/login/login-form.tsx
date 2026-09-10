@@ -1,62 +1,42 @@
 'use client';
 
-import { useActionState, useEffect, useRef, useState } from 'react';
+import { useActionState, useEffect, useRef } from 'react';
+
+import { useApiWake } from '@/lib/use-api-wake';
 
 import { loginAction, type LoginState } from './actions';
 
 const INITIAL: LoginState = { status: 'idle' };
 
-/**
- * How many times to resubmit on our own before handing back to the user.
- *
- * The request itself already waits 75s, which covers a normal cold start, so
- * these retries exist for the case that fails *fast*: the edge answering 429 or
- * 502 because there is no instance to route to yet.
- */
-const MAX_RETRIES = 3;
-const RETRY_DELAY_MS = 5_000;
-
 export function LoginForm() {
   const [state, formAction, isSubmitting] = useActionState(loginAction, INITIAL);
 
-  // requestSubmit() rather than calling the action directly: it re-reads the
-  // live form, so the password field — which is never cleared on failure — is
-  // resent without this component ever holding the credential in state.
-  const formRef = useRef<HTMLFormElement>(null);
-  const [retries, setRetries] = useState(0);
-
   const isWaking = state.status === 'waking';
-  const retriesLeft = isWaking && retries < MAX_RETRIES;
+
+  // Wakes the API in the background while the person waits. Deliberately not an
+  // automatic resubmit: React 19 resets an uncontrolled form once its action
+  // completes, so the password field is already empty here — resubmitting would
+  // send nothing, and holding the password in state to prevent that would put a
+  // live credential somewhere it does not belong.
+  const { phase, seconds } = useApiWake(isWaking, state);
+
+  const ready = phase === 'ready';
+  const unreachable = phase === 'unreachable';
+  const stillWaiting = isWaking && !ready && !unreachable;
+
+  // Once the API is up, the only thing left to do is retype the password — so
+  // put the cursor there rather than making them find it.
+  const passwordRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (!retriesLeft) return;
-
-    const timer = setTimeout(() => {
-      setRetries((attempt) => attempt + 1);
-      formRef.current?.requestSubmit();
-    }, RETRY_DELAY_MS);
-
-    // Cleared if the user submits by hand first, so two requests never race.
-    return () => clearTimeout(timer);
-    // `state` by identity, not by field: every submit produces a fresh object,
-    // which is what makes a repeated 'waking' result schedule the next attempt.
-  }, [state, retriesLeft]);
-
-  // A manual submit is a fresh start, so the automatic attempts start over too.
-  const handleSubmit = () => setRetries(0);
+    if (ready) passwordRef.current?.focus();
+  }, [ready]);
 
   return (
-    <form
-      ref={formRef}
-      action={formAction}
-      onSubmit={handleSubmit}
-      className="space-y-5"
-      noValidate
-    >
-      {/* Amber, not red, and role="status" rather than "alert": this is progress
-          being reported, not a failure. A screen reader should hear it politely,
-          without interrupting. */}
-      {isWaking && (
+    <form action={formAction} className="space-y-5" noValidate>
+      {/* Amber and role="status": progress being reported, not a failure. A
+          screen reader should hear it politely rather than be interrupted. */}
+      {stillWaiting && (
         <div
           role="status"
           aria-live="polite"
@@ -68,14 +48,38 @@ export function LoginForm() {
               className="mt-1.5 h-2 w-2 shrink-0 animate-pulse rounded-full bg-amber-500"
             />
             <div>
-              <p className="font-medium">{state.message}</p>
+              <p className="font-medium">
+                The server is waking up. This can take up to a minute after a period of inactivity.
+              </p>
               <p className="mt-1 text-amber-800/80">
-                {retriesLeft
-                  ? `Retrying automatically — attempt ${retries + 1} of ${MAX_RETRIES}.`
-                  : 'Still starting. Wait a few seconds and press Sign in again.'}
+                Starting it now — {seconds}s. You can sign in as soon as this clears.
               </p>
             </div>
           </div>
+        </div>
+      )}
+
+      {isWaking && ready && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="rounded-md border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-900"
+        >
+          <p className="font-medium">The server is ready.</p>
+          <p className="mt-1 text-emerald-800/80">Enter your password again and sign in.</p>
+        </div>
+      )}
+
+      {isWaking && unreachable && (
+        <div
+          role="alert"
+          className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800"
+        >
+          <p className="font-medium">The server did not start.</p>
+          <p className="mt-1 text-red-700/80">
+            It has been {seconds} seconds, which is longer than a normal start. Try again shortly,
+            or contact your administrator if it persists.
+          </p>
         </div>
       )}
 
@@ -109,13 +113,12 @@ export function LoginForm() {
           Password
         </label>
         <input
+          ref={passwordRef}
           id="password"
           name="password"
           type="password"
           required
           // "current-password" lets a password manager offer the saved entry.
-          // Never cleared on error: retyping a long passphrase because the
-          // server said no is needless friction.
           autoComplete="current-password"
           className="field mt-1.5"
         />
@@ -123,12 +126,13 @@ export function LoginForm() {
 
       <button
         type="submit"
-        // Left enabled once the automatic attempts are spent, so the user is
-        // never stuck with a dead button and no way to try again.
-        disabled={isSubmitting || retriesLeft}
+        // Disabled only while there is genuinely nothing to send: mid-request,
+        // or while the API is still coming up. Once it is ready — or has failed
+        // to start — the button is theirs again.
+        disabled={isSubmitting || stillWaiting}
         className="w-full rounded-md bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400"
       >
-        {isSubmitting ? 'Signing in…' : retriesLeft ? 'Waiting for the server…' : 'Sign in'}
+        {isSubmitting ? 'Signing in…' : stillWaiting ? 'Waiting for the server…' : 'Sign in'}
       </button>
     </form>
   );
