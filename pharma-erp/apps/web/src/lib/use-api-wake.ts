@@ -2,29 +2,72 @@
 
 import { useEffect, useState } from 'react';
 
-import { wakeApiAction } from '@/app/wake-actions';
+import { env } from './env';
 
 /**
- * Gap between wake attempts.
+ * How long to hold a single wake request open.
  *
- * Only reached when an attempt fails *fast* — the edge answering 429 or 502
- * before the container is listening. An attempt that is held open through the
- * boot paces itself, and needs no gap at all. Kept generous because impatience
- * is what breaks this: enough requests during a boot and the edge rate-limits
- * every one of them, so the container never finishes starting.
+ * Sized to outlast a cold start, measured at 22-53s on the free instance type
+ * this deploys to. The host holds the request open while it starts a suspended
+ * container, so one patient call is what actually wakes it.
  */
-const RETRY_GAP_MS = 8_000;
+const WAKE_TIMEOUT_MS = 60_000;
+
+/** Only reached when an attempt fails fast, e.g. the edge answering mid-boot. */
+const RETRY_GAP_MS = 5_000;
 
 /**
- * Beyond this the service is not merely asleep. A cold start measured 22-53s on
- * this instance type, so three minutes means something is actually wrong and
- * continuing to say "waking up" would be a lie.
+ * Beyond this the service is not merely asleep, and continuing to say "waking
+ * up" would be a lie.
  */
 const GIVE_UP_MS = 180_000;
 
 export type WakePhase = 'idle' | 'waking' | 'ready' | 'unreachable';
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Asks the API whether it is up — from the BROWSER, deliberately.
+ *
+ * This was a server action first, and it did not work: two attempts in
+ * production left the API at an uptime of zero after minutes of waiting. The
+ * reason is the network path. A server action runs on the web service, and a
+ * web-service-to-API call leaves the private network and re-enters through the
+ * public edge (see readApiUrl in env.ts) — the platform calling itself through
+ * its own front door, which it rate-limits. A request from a browser is
+ * ordinary outside traffic and is not; every manual request from outside woke
+ * this API first time.
+ *
+ * Reaching the API straight from the browser is fine here: that is exactly what
+ * NEXT_PUBLIC_API_URL is, a public address inlined at build time. The endpoint
+ * is unauthenticated and no credentials are sent.
+ *
+ * `/health/ready` rather than `/health`: it answers 503 until Postgres actually
+ * responds, so success means a sign-in can complete, not merely that a process
+ * is listening.
+ */
+async function probeApi(): Promise<boolean> {
+  try {
+    const response = await fetch(`${env.apiUrl}/health/ready`, {
+      cache: 'no-store',
+      // The probe needs no session, and omitting cookies keeps this a simple
+      // CORS request against an endpoint that requires no authentication.
+      credentials: 'omit',
+      signal: AbortSignal.timeout(WAKE_TIMEOUT_MS),
+    });
+
+    return response.ok;
+  } catch (error) {
+    // Expected while the container boots: the edge's own 5xx pages carry no
+    // CORS headers, so the browser rejects them as a network error rather than
+    // reporting a status. Surfaced to the console because a wake that never
+    // succeeds is otherwise invisible — the API cannot log a request that never
+    // reached it.
+    console.warn(`[wake] probe failed: ${error instanceof Error ? error.message : String(error)}`);
+
+    return false;
+  }
+}
 
 /**
  * Wakes the API and reports when it can serve a request.
@@ -38,10 +81,6 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  *
  * So this waits instead of retrying the sign-in: it wakes the API in the
  * background and hands control back when the person can usefully try again.
- *
- * The displayed counter ticks on its own timer rather than advancing once per
- * request, because the request is deliberately a single long one — see
- * wakeApiAction for why polling makes this worse rather than better.
  *
  * @param active  Whether to be waking at all.
  * @param trigger Any value whose identity changes when a new wait begins;
@@ -67,15 +106,15 @@ export function useApiWake(active: boolean, trigger?: unknown) {
     setPhase('waking');
     setSeconds(0);
 
-    // Independent of the request, so the display keeps moving while a single
-    // 60-second call is in flight.
+    // Ticks independently of the request, so the display keeps moving while a
+    // single 60-second call is in flight.
     const ticker = setInterval(() => {
       if (!cancelled) setSeconds(Math.round((Date.now() - startedAt) / 1000));
     }, 1_000);
 
     const wake = async () => {
       while (!cancelled && Date.now() - startedAt < GIVE_UP_MS) {
-        if (await wakeApiAction()) {
+        if (await probeApi()) {
           if (!cancelled) setPhase('ready');
           return;
         }
