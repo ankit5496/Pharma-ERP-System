@@ -2,38 +2,52 @@
 
 import { useEffect, useState } from 'react';
 
-import { checkApiReadyAction } from '@/app/wake-actions';
-
-/** How often to ask whether the API is up yet. */
-const POLL_INTERVAL_MS = 3_000;
+import { wakeApiAction } from '@/app/wake-actions';
 
 /**
- * Beyond this the service is not merely asleep. A cold start on the free
- * instance type measured 22-53s; two and a half minutes means something is
- * actually wrong, and continuing to say "waking up" would be a lie.
+ * Gap between wake attempts.
+ *
+ * Only reached when an attempt fails *fast* — the edge answering 429 or 502
+ * before the container is listening. An attempt that is held open through the
+ * boot paces itself, and needs no gap at all. Kept generous because impatience
+ * is what breaks this: enough requests during a boot and the edge rate-limits
+ * every one of them, so the container never finishes starting.
  */
-const GIVE_UP_MS = 150_000;
+const RETRY_GAP_MS = 8_000;
+
+/**
+ * Beyond this the service is not merely asleep. A cold start measured 22-53s on
+ * this instance type, so three minutes means something is actually wrong and
+ * continuing to say "waking up" would be a lie.
+ */
+const GIVE_UP_MS = 180_000;
 
 export type WakePhase = 'idle' | 'waking' | 'ready' | 'unreachable';
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
- * Polls the API until it can serve a request, reporting progress.
+ * Wakes the API and reports when it can serve a request.
  *
  * Written for the sign-in forms, which face a specific problem: the API sleeps
  * after ~15 minutes of inactivity, and React 19 resets an uncontrolled form
- * once its action completes — so the password field is empty by the time the
- * failure is rendered. Resubmitting automatically would therefore send an empty
+ * once its action completes — so the password field is already empty by the
+ * time the failure renders. Resubmitting automatically would send an empty
  * password, and keeping the password in React state to avoid that would put a
  * live credential somewhere it has no business being.
  *
- * So this waits instead of retrying: it wakes the API in the background and
- * reports when the person at the keyboard can usefully try again.
+ * So this waits instead of retrying the sign-in: it wakes the API in the
+ * background and hands control back when the person can usefully try again.
  *
- * @param active  Whether to be polling at all.
+ * The displayed counter ticks on its own timer rather than advancing once per
+ * request, because the request is deliberately a single long one — see
+ * wakeApiAction for why polling makes this worse rather than better.
+ *
+ * @param active  Whether to be waking at all.
  * @param trigger Any value whose identity changes when a new wait begins;
- *                passing the action's state object restarts the poll for each
- *                fresh attempt, which `active` alone cannot do because it is
- *                already true.
+ *                passing the action's state object restarts for each fresh
+ *                attempt, which `active` alone cannot do because it is already
+ *                true.
  */
 export function useApiWake(active: boolean, trigger?: unknown) {
   const [phase, setPhase] = useState<WakePhase>('idle');
@@ -47,41 +61,38 @@ export function useApiWake(active: boolean, trigger?: unknown) {
     }
 
     let cancelled = false;
-    let timer: ReturnType<typeof setTimeout>;
 
     const startedAt = Date.now();
 
     setPhase('waking');
     setSeconds(0);
 
-    const poll = async () => {
-      const ready = await checkApiReadyAction();
+    // Independent of the request, so the display keeps moving while a single
+    // 60-second call is in flight.
+    const ticker = setInterval(() => {
+      if (!cancelled) setSeconds(Math.round((Date.now() - startedAt) / 1000));
+    }, 1_000);
 
-      // The component may have unmounted, or a new attempt superseded this one,
-      // while the request was in flight.
-      if (cancelled) return;
+    const wake = async () => {
+      while (!cancelled && Date.now() - startedAt < GIVE_UP_MS) {
+        if (await wakeApiAction()) {
+          if (!cancelled) setPhase('ready');
+          return;
+        }
 
-      if (ready) {
-        setPhase('ready');
-        return;
+        if (cancelled) return;
+
+        await sleep(RETRY_GAP_MS);
       }
 
-      const elapsed = Date.now() - startedAt;
-      setSeconds(Math.round(elapsed / 1000));
-
-      if (elapsed > GIVE_UP_MS) {
-        setPhase('unreachable');
-        return;
-      }
-
-      timer = setTimeout(poll, POLL_INTERVAL_MS);
+      if (!cancelled) setPhase('unreachable');
     };
 
-    void poll();
+    void wake().finally(() => clearInterval(ticker));
 
     return () => {
       cancelled = true;
-      clearTimeout(timer);
+      clearInterval(ticker);
     };
   }, [active, trigger]);
 
