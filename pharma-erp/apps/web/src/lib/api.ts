@@ -11,6 +11,49 @@ export type ApiResult<T> =
 const DEFAULT_TIMEOUT_MS = 5_000;
 
 /**
+ * Statuses that mean "nothing is serving this yet" rather than "the API said
+ * no".
+ *
+ * These are answered by the host's edge, not by the API: a service whose
+ * container has been suspended for inactivity has no instance to route to, so
+ * the edge replies itself — 429 when it sheds the requests piling up during a
+ * boot, 5xx while the container is still coming up. The API's own errors are
+ * always JSON and carry a message, so they never surface as a bare status here.
+ *
+ * 500 is deliberately absent: that is a real application fault, and telling
+ * someone to wait for it to finish starting would be a lie.
+ */
+const COLD_START_STATUSES = new Set([429, 502, 503, 504]);
+
+/** Connection-level failures that mean the API is not listening *yet*. */
+const COLD_START_PREFIXES = ['Timed out after', 'ECONNREFUSED', 'ECONNRESET', 'EAI_AGAIN'];
+
+/**
+ * Shown when {@link isColdStart} matches. Phrased as a wait rather than a
+ * failure, because that is what it is.
+ */
+export const COLD_START_MESSAGE =
+  'The server is waking up. This can take up to a minute after a period of inactivity.';
+
+/**
+ * Whether a failed call looks like the API being asleep rather than refusing.
+ *
+ * Worth distinguishing because the two need opposite reactions from the person
+ * at the screen: a real error means stop and read it, a cold start means wait a
+ * moment. Rendering "429 Too Many Requests" for the latter sends people looking
+ * for a rate limit that does not exist — this codebase has no throttler.
+ */
+export function isColdStart(result: ApiResult<unknown>): boolean {
+  if (result.ok) return false;
+
+  if (result.status !== null) return COLD_START_STATUSES.has(result.status);
+
+  // No status at all: the request never completed. Either it outlived its
+  // budget while the container booted, or nothing was listening to accept it.
+  return COLD_START_PREFIXES.some((prefix) => result.error.startsWith(prefix));
+}
+
+/**
  * How often to retry a request that never reached the API, and how long to wait
  * between attempts (multiplied by the attempt number, so 300ms, 600ms, 900ms).
  *
