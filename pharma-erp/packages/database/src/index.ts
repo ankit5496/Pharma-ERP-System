@@ -13,10 +13,26 @@ export * from './tenant-scope';
  * a test can assert that every one of them has a prevent_hard_delete trigger in
  * the database, rather than trusting that each migration remembered.
  */
-export const SOFT_DELETE_MODELS = ['Tenant', 'User'] as const;
+export const SOFT_DELETE_MODELS = [
+  'Tenant',
+  'User',
+  'Item',
+  'Party',
+  'PurchaseRequisition',
+  'PurchaseOrder',
+  'GoodsReceipt',
+  'PurchaseInvoice',
+  'VendorPayment',
+] as const;
 
-/** Tables that are append-only: no UPDATE, no DELETE, ever. */
-export const APPEND_ONLY_MODELS = ['AuditLog'] as const;
+/**
+ * Tables that are append-only: no UPDATE, no DELETE, ever.
+ *
+ * StockLedgerEntry and QcResult join AuditLog here. Both record something that
+ * happened — a stock movement, a quality decision — and a record of an event
+ * that can be edited afterwards is not a record. Corrections are new rows.
+ */
+export const APPEND_ONLY_MODELS = ['AuditLog', 'StockLedgerEntry', 'QcResult'] as const;
 
 // ---------------------------------------------------------------------------
 // Role enum drift guard

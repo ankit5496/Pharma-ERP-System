@@ -3,6 +3,7 @@ export * from './dashboard';
 export * from './datasets';
 export * from './health';
 export * from './platform';
+export * from './procurement';
 export * from './roles';
 export * from './tenant';
 export * from './workflows';

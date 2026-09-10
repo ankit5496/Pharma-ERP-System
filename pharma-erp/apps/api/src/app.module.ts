@@ -12,6 +12,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
 import { HealthModule } from './health/health.module';
 import { PlatformModule } from './platform/platform.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { ProcurementModule } from './procurement/procurement.module';
 import { RequestContextMiddleware } from './tenant/request-context.middleware';
 import { TenantModule } from './tenant/tenant.module';
 import { UsersModule } from './users/users.module';
@@ -35,6 +36,7 @@ import { UsersModule } from './users/users.module';
     UsersModule,
     DashboardModule,
     PlatformModule,
+    ProcurementModule,
   ],
   providers: [
     {
