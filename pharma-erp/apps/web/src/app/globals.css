@@ -56,6 +56,12 @@
     @apply pr-10;
   }
 
+  /* Same problem on the compact variants, proportionally less room to give. */
+  select.field-sm,
+  select.field-dark-sm {
+    @apply pr-8;
+  }
+
   .field-label {
     @apply block text-sm font-medium text-slate-700;
   }

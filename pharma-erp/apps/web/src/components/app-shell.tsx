@@ -1,54 +1,42 @@
-import Link from 'next/link';
 import type { ReactNode } from 'react';
 
 import { logoutAction } from '@/app/(auth)/login/actions';
-import {
-  READ_ONLY_ROLES,
-  ROLE_MODULES,
-  USER_ROLE_LABELS,
-  type AppModule,
-  type SessionUser,
-} from '@pharma-erp/types';
+import { DatasetPicker } from '@/components/dataset-picker';
+import { WorkflowNav } from '@/components/workflow-nav';
+import { READ_ONLY_ROLES, USER_ROLE_LABELS, type SessionUser } from '@pharma-erp/types';
 
 /**
- * Navigation for each feature area. The `module` field is what gates it: a role
- * sees an item only if ROLE_MODULES lists that module for them.
+ * Chrome for every signed-in staff page: company header, the four workflow
+ * tabs, the account block and the record-browser dropdown.
  *
- * `href: null` marks an area that is planned but not built yet — rendered as a
- * disabled row rather than omitted, so the shape of the product is visible
- * without offering links that 404.
- */
-const NAV: readonly { module: AppModule; label: string; href: string | null }[] = [
-  { module: 'dashboard', label: 'Dashboard', href: '/dashboard' },
-  { module: 'masters', label: 'Items & parties', href: null },
-  { module: 'purchase', label: 'Purchase', href: null },
-  { module: 'inventory', label: 'Inventory & batches', href: null },
-  { module: 'production', label: 'Production', href: null },
-  { module: 'quality', label: 'Quality & release', href: null },
-  { module: 'sales', label: 'Sales', href: null },
-  { module: 'accounts', label: 'Accounts', href: null },
-  { module: 'admin', label: 'Users & settings', href: '/admin/users' },
-];
-
-/**
- * Chrome for every signed-in page: company header, role-filtered navigation,
- * account menu.
+ * The navigation is the four workflows and nothing else. The previous
+ * per-module menu (Dashboard, Items & parties, Purchase, …) was mostly
+ * disabled placeholder rows; the workflows say the same thing in terms of the
+ * work rather than in terms of the tables, and the steps that were placeholders
+ * are now sub-tabs where they belong. Nothing was deleted to achieve that —
+ * /dashboard and /admin/users still resolve, and the API is untouched.
  *
- * The navigation is filtered from the same ROLE_MODULES table the API's guard
- * consults, so a user cannot be shown a menu item they would be refused on. To
- * be clear about what this is and isn't: hiding a link is a usability measure,
- * not a security boundary — the enforcement is RolesGuard plus row-level
- * security, both of which hold regardless of what the browser renders.
+ * Every tab is visible to every role for now, deliberately. Worth restating
+ * because the old comment here claimed otherwise: hiding a link was never the
+ * security boundary. RolesGuard and row-level security are, and both still
+ * hold regardless of what this renders.
  */
-export function AppShell({ user, children }: { user: SessionUser; children: ReactNode }) {
-  const allowed = ROLE_MODULES[user.role];
-  const visible = NAV.filter((item) => allowed.includes(item.module));
+export function AppShell({
+  user,
+  children,
+  /** Dataset key when the record browser is open, so its dropdown shows it. */
+  activeDataset,
+}: {
+  user: SessionUser;
+  children: ReactNode;
+  activeDataset?: string;
+}) {
   const isReadOnly = READ_ONLY_ROLES.includes(user.role);
 
   return (
     <div className="min-h-screen bg-slate-50">
       <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-3">
+        <div className="mx-auto flex max-w-7xl flex-wrap items-start justify-between gap-x-4 gap-y-3 px-4 py-3 sm:px-6">
           <div className="min-w-0">
             <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">
               Pharma ERP
@@ -56,46 +44,31 @@ export function AppShell({ user, children }: { user: SessionUser; children: Reac
             <p className="truncate text-sm font-semibold text-slate-900">{user.tenantName}</p>
           </div>
 
-          <div className="flex items-center gap-4">
-            <div className="hidden text-right sm:block">
-              <p className="text-sm font-medium text-slate-900">{user.fullName}</p>
-              <p className="text-xs text-slate-500">{USER_ROLE_LABELS[user.role]}</p>
+          {/* The account block, with the table picker directly beneath it.
+              `items-end` keeps both flush to the right edge on wide screens;
+              on a phone the column takes the full width and the select
+              stretches with it rather than being squeezed next to the button. */}
+          <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:items-end">
+            <div className="flex items-center justify-between gap-3 sm:justify-end">
+              <div className="min-w-0 text-left sm:text-right">
+                <p className="truncate text-sm font-medium text-slate-900">{user.fullName}</p>
+                <p className="truncate text-xs text-slate-500">{USER_ROLE_LABELS[user.role]}</p>
+              </div>
+              <form action={logoutAction}>
+                <button
+                  type="submit"
+                  className="whitespace-nowrap rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+                >
+                  Sign out
+                </button>
+              </form>
             </div>
-            <form action={logoutAction}>
-              <button
-                type="submit"
-                className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-              >
-                Sign out
-              </button>
-            </form>
+
+            <DatasetPicker current={activeDataset} />
           </div>
         </div>
 
-        <nav aria-label="Main" className="mx-auto max-w-6xl px-6">
-          <ul className="-mb-px flex gap-1 overflow-x-auto">
-            {visible.map((item) => (
-              <li key={item.module}>
-                {item.href ? (
-                  <Link
-                    href={item.href}
-                    className="inline-block whitespace-nowrap border-b-2 border-transparent px-3 py-2.5 text-sm font-medium text-slate-600 hover:border-slate-300 hover:text-slate-900"
-                  >
-                    {item.label}
-                  </Link>
-                ) : (
-                  <span
-                    aria-disabled="true"
-                    title="Not built yet"
-                    className="inline-block cursor-not-allowed whitespace-nowrap border-b-2 border-transparent px-3 py-2.5 text-sm font-medium text-slate-300"
-                  >
-                    {item.label}
-                  </span>
-                )}
-              </li>
-            ))}
-          </ul>
-        </nav>
+        <WorkflowNav />
       </header>
 
       {isReadOnly && (
