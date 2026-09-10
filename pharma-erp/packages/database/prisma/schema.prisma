@@ -103,6 +103,25 @@ model Tenant {
   users     User[]
   auditLogs AuditLog[]
 
+  // Procure-to-Pay. Every one of these tables carries `tenantId` with a real
+  // foreign key, so a row cannot reference a company that does not exist. The
+  // back-relations are required by Prisma to declare that side; nothing reads
+  // a whole tenant's purchase orders through this collection.
+  items                Item[]
+  parties              Party[]
+  documentSequences    DocumentSequence[]
+  purchaseRequisitions PurchaseRequisition[]
+  purchaseOrders       PurchaseOrder[]
+  purchaseOrderLines   PurchaseOrderLine[]
+  goodsReceipts        GoodsReceipt[]
+  goodsReceiptLines    GoodsReceiptLine[]
+  stockLots            StockLot[]
+  qcResults            QcResult[]
+  stockLedgerEntries   StockLedgerEntry[]
+  purchaseInvoices     PurchaseInvoice[]
+  purchaseInvoiceLines PurchaseInvoiceLine[]
+  vendorPayments       VendorPayment[]
+
   @@index([deletedAt])
   @@map("tenants")
 }
@@ -304,4 +323,689 @@ model PlatformAuditLog {
   @@index([createdAt])
   @@index([platformUserId, createdAt])
   @@map("platform_audit_logs")
+}
+
+// =============================================================================
+// Procure-to-Pay
+// =============================================================================
+// Buying raw materials: low stock -> requisition -> purchase order -> goods
+// receipt -> incoming QC -> usable inventory -> invoice -> payable -> payment.
+//
+// Three decisions run through every model below, stated once here:
+//
+//   1. QUANTITIES AND MONEY ARE DECIMAL, never Float. A binary float cannot
+//      represent 0.1, and a dispensing quantity or an invoice total that is
+//      wrong in the fourth decimal place is a regulatory problem, not a
+//      rounding curiosity. Prisma surfaces these as Decimal.js and the API
+//      serialises them as strings, so no value passes through a JS number.
+//
+//   2. STOCK IS DERIVED, NEVER STORED ON THE ITEM. "Available stock" is the
+//      sum of its USABLE lots. A denormalised counter on Item would be one
+//      missed decrement away from telling a Production Officer that material
+//      exists when it does not, and nothing would reveal it had drifted. The
+//      cost is an aggregate per read; correctness wins.
+//
+//   3. USER ATTRIBUTION IS A UUID COLUMN, NOT A RELATION. `requestedById`,
+//      `createdById` and friends carry no Prisma relation: eight named
+//      back-relation arrays on User would make that model unreadable, and
+//      nobody navigates "all requisitions raised by this person" from the user
+//      side. Integrity still holds because users are soft-deleted only -- the
+//      prevent_hard_delete trigger means a referenced id cannot vanish.
+// =============================================================================
+
+enum ItemType {
+  RAW_MATERIAL
+  PACKAGING
+  FINISHED_GOOD
+}
+
+/// Units the system understands. An enum rather than free text because a lot
+/// received in "kg" and issued in "Kg" is the sort of mismatch that silently
+/// breaks a stock balance.
+enum UnitOfMeasure {
+  KG
+  G
+  MG
+  L
+  ML
+  NOS
+  PACK
+}
+
+/// What a Party is to us. One register rather than separate vendor/customer
+/// tables: the same legal entity is often both, and duplicating it means two
+/// GSTINs to keep in step.
+enum PartyType {
+  VENDOR
+  CUSTOMER
+  JOB_WORK_PRINCIPAL
+}
+
+enum RequisitionStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  CONVERTED_TO_PO
+  CANCELLED
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  ISSUED
+  PARTIALLY_RECEIVED
+  FULLY_RECEIVED
+  CLOSED
+  CANCELLED
+}
+
+/// The incoming-QC decision, and by extension whether a lot may be used.
+///
+/// ON_HOLD is distinct from REJECTED on purpose: both keep material out of
+/// production, but a hold is reversible after investigation and a rejection
+/// heads to a vendor return. Collapsing them would lose the difference between
+/// "not yet cleared" and "will never be cleared".
+enum QcDecision {
+  ACCEPTED
+  REJECTED
+  ON_HOLD
+}
+
+/// Where a received lot stands. Only USABLE may be picked for production.
+enum StockLotStatus {
+  QUARANTINE
+  USABLE
+  REJECTED
+  ON_HOLD
+  CONSUMED
+}
+
+enum PurchaseInvoiceStatus {
+  DRAFT
+  APPROVED
+  CANCELLED
+}
+
+/// Why a ledger row exists. The ledger is append-only, so a correction is a new
+/// row with the opposite sign rather than an edit.
+enum StockLedgerEntryType {
+  GRN_QUARANTINE
+  QC_ACCEPTED
+  QC_REJECTED
+  QC_HOLD
+  QC_RELEASED_FROM_HOLD
+  ADJUSTMENT
+}
+
+// -----------------------------------------------------------------------------
+// Master data
+// -----------------------------------------------------------------------------
+
+/// A material or product. Raw materials are what Procure-to-Pay buys.
+model Item {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// Internal code, e.g. "RM-PARA-001". Unique within the tenant, not globally.
+  code String @db.VarChar(64)
+  name String @db.VarChar(255)
+
+  itemType ItemType      @default(RAW_MATERIAL) @map("item_type")
+  uom      UnitOfMeasure @default(KG)
+
+  /// The procurement trigger: when usable stock falls below this, the item
+  /// becomes a candidate for requisition.
+  reorderLevel Decimal @default(0) @map("reorder_level") @db.Decimal(18, 4)
+
+  /// False only for materials where a lot has no meaningful identity. Defaults
+  /// true: for a pharmaceutical raw material, batch number, manufacturing date
+  /// and expiry are mandatory, and anonymous inventory is not acceptable.
+  requiresBatchTracking Boolean @default(true) @map("requires_batch_tracking")
+
+  /// HSN code for GST classification.
+  hsnCode String? @map("hsn_code") @db.VarChar(16)
+
+  notes String? @db.VarChar(1000)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  requisitions       PurchaseRequisition[]
+  purchaseOrderLines PurchaseOrderLine[]
+  goodsReceiptLines  GoodsReceiptLine[]
+  stockLots          StockLot[]
+  ledgerEntries      StockLedgerEntry[]
+  invoiceLines       PurchaseInvoiceLine[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, itemType, deletedAt])
+  @@map("items")
+}
+
+/// A supplier, customer or job-work principal.
+model Party {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  code      String    @db.VarChar(64)
+  name      String    @db.VarChar(255)
+  partyType PartyType @default(VENDOR) @map("party_type")
+
+  gstin             String? @db.VarChar(15)
+  /// Vendors of pharmaceutical raw material hold a drug licence too.
+  drugLicenceNumber String? @map("drug_licence_number") @db.VarChar(64)
+
+  email   String? @db.VarChar(320)
+  phone   String? @db.VarChar(32)
+  address String? @db.VarChar(1000)
+
+  /// Net days agreed with this vendor. Seeds the due date on their invoices.
+  paymentTermsDays Int @default(30) @map("payment_terms_days")
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  preferredForRequisitions PurchaseRequisition[]
+  purchaseOrders           PurchaseOrder[]
+  goodsReceipts            GoodsReceipt[]
+  purchaseInvoices         PurchaseInvoice[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, partyType, deletedAt])
+  @@map("parties")
+}
+
+/// Per-tenant document numbering (PR-2026-0001, PO-2026-0001, ...).
+///
+/// A table rather than counting existing rows: two requisitions raised in the
+/// same second would otherwise compute the same number, and the unique index
+/// would turn that into a failed save for whoever lost the race. An atomic
+/// increment inside the creating transaction has no such window.
+model DocumentSequence {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// "PR", "PO", "GRN", "PINV", "PAY", "LOT".
+  docType String @map("doc_type") @db.VarChar(16)
+  year    Int
+
+  nextValue Int @default(1) @map("next_value")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, docType, year])
+  @@map("document_sequences")
+}
+
+// -----------------------------------------------------------------------------
+// 1. Purchase requisition
+// -----------------------------------------------------------------------------
+
+/// A request to buy one raw material, raised because stock fell below its
+/// reorder level.
+model PurchaseRequisition {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  number String @db.VarChar(32)
+
+  itemId String @map("item_id") @db.Uuid
+
+  /// Stock and reorder level AS THEY WERE when the requisition was raised.
+  ///
+  /// Snapshots, not live reads, because the requisition has to justify itself
+  /// later: "raised when stock was 20 against a reorder level of 50" is the
+  /// record. Live values move, and a document that silently rewrites its own
+  /// reason is not a document.
+  stockAtRequest        Decimal @map("stock_at_request") @db.Decimal(18, 4)
+  reorderLevelAtRequest Decimal @map("reorder_level_at_request") @db.Decimal(18, 4)
+
+  requiredQuantity Decimal @map("required_quantity") @db.Decimal(18, 4)
+
+  preferredVendorId String? @map("preferred_vendor_id") @db.Uuid
+
+  /// Acting user ids. See the note at the top of this section on why these
+  /// carry no relation.
+  requestedById String    @map("requested_by_id") @db.Uuid
+  approvedById  String?   @map("approved_by_id") @db.Uuid
+  approvedAt    DateTime? @map("approved_at") @db.Timestamptz(6)
+
+  requestDate    DateTime  @default(now()) @map("request_date") @db.Timestamptz(6)
+  requiredByDate DateTime? @map("required_by_date") @db.Timestamptz(6)
+
+  status RequisitionStatus @default(DRAFT)
+  notes  String?           @db.VarChar(1000)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant          Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  item            Item   @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  preferredVendor Party? @relation(fields: [preferredVendorId], references: [id], onDelete: Restrict)
+
+  purchaseOrderLines PurchaseOrderLine[]
+
+  @@unique([tenantId, number])
+  @@index([tenantId, status, deletedAt])
+  @@index([tenantId, itemId])
+  @@map("purchase_requisitions")
+}
+
+// -----------------------------------------------------------------------------
+// 2. Purchase order
+// -----------------------------------------------------------------------------
+
+model PurchaseOrder {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  number   String @db.VarChar(32)
+  vendorId String @map("vendor_id") @db.Uuid
+
+  poDate               DateTime  @default(now()) @map("po_date") @db.Timestamptz(6)
+  expectedDeliveryDate DateTime? @map("expected_delivery_date") @db.Timestamptz(6)
+
+  paymentTermsDays Int @default(30) @map("payment_terms_days")
+
+  status PurchaseOrderStatus @default(DRAFT)
+  notes  String?             @db.VarChar(1000)
+
+  /// Stored totals, computed from the lines at write time.
+  ///
+  /// Not recomputed on read: an issued purchase order is a commitment at the
+  /// figures it was issued with. If a tax rate or a rounding rule changes next
+  /// year, the document must still say what both parties agreed to.
+  taxableAmount Decimal @default(0) @map("taxable_amount") @db.Decimal(18, 2)
+  taxAmount     Decimal @default(0) @map("tax_amount") @db.Decimal(18, 2)
+  totalAmount   Decimal @default(0) @map("total_amount") @db.Decimal(18, 2)
+
+  createdById String    @map("created_by_id") @db.Uuid
+  issuedAt    DateTime? @map("issued_at") @db.Timestamptz(6)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  vendor Party  @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+
+  lines            PurchaseOrderLine[]
+  goodsReceipts    GoodsReceipt[]
+  purchaseInvoices PurchaseInvoice[]
+
+  @@unique([tenantId, number])
+  @@index([tenantId, status, deletedAt])
+  @@index([tenantId, vendorId])
+  @@map("purchase_orders")
+}
+
+/// One item on a purchase order.
+///
+/// Lines rather than one item per order: a GRN receives against specific lines,
+/// and an invoice matches against them. A single-item order would have made
+/// every one of those a special case the day a vendor ships two materials on
+/// one delivery note.
+model PurchaseOrderLine {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  purchaseOrderId String @map("purchase_order_id") @db.Uuid
+  itemId          String @map("item_id") @db.Uuid
+
+  /// The requisition this line satisfies, when it came from one. Nullable
+  /// because a buyer may add a line directly; business rule 2 is served by
+  /// keeping the link wherever it exists.
+  requisitionId String? @map("requisition_id") @db.Uuid
+
+  quantity Decimal @db.Decimal(18, 4)
+  rate     Decimal @db.Decimal(18, 4)
+  /// GST percentage applied to this line, e.g. 12.00.
+  taxRatePercent Decimal @default(0) @map("tax_rate_percent") @db.Decimal(5, 2)
+
+  taxableAmount Decimal @map("taxable_amount") @db.Decimal(18, 2)
+  taxAmount     Decimal @map("tax_amount") @db.Decimal(18, 2)
+  totalAmount   Decimal @map("total_amount") @db.Decimal(18, 2)
+
+  /// Running total of what has been received against this line, maintained by
+  /// the GRN service. Unlike item stock this IS stored: it is the line's own
+  /// fulfilment state, written in the same transaction as the receipt that
+  /// changes it, and it decides the order's status.
+  quantityReceived Decimal @default(0) @map("quantity_received") @db.Decimal(18, 4)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant        Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  purchaseOrder PurchaseOrder        @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  item          Item                 @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  requisition   PurchaseRequisition? @relation(fields: [requisitionId], references: [id], onDelete: Restrict)
+
+  goodsReceiptLines GoodsReceiptLine[]
+
+  @@index([tenantId, purchaseOrderId])
+  @@index([tenantId, itemId])
+  @@map("purchase_order_lines")
+}
+
+// -----------------------------------------------------------------------------
+// 3. Goods receipt note
+// -----------------------------------------------------------------------------
+
+model GoodsReceipt {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  number          String @db.VarChar(32)
+  purchaseOrderId String @map("purchase_order_id") @db.Uuid
+  /// Denormalised from the order so a GRN list can filter and display by vendor
+  /// without joining two levels up. Written once, from the order, never from a
+  /// request body.
+  vendorId        String @map("vendor_id") @db.Uuid
+
+  receiptDate DateTime @default(now()) @map("receipt_date") @db.Timestamptz(6)
+
+  /// Vendor's own delivery-note / invoice reference, for reconciliation.
+  vendorDocumentNumber String? @map("vendor_document_number") @db.VarChar(64)
+
+  receivedById String  @map("received_by_id") @db.Uuid
+  remarks      String? @db.VarChar(1000)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Restrict)
+  vendor        Party         @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+
+  lines            GoodsReceiptLine[]
+  purchaseInvoices PurchaseInvoice[]
+
+  @@unique([tenantId, number])
+  @@index([tenantId, purchaseOrderId])
+  @@index([tenantId, receiptDate])
+  @@map("goods_receipts")
+}
+
+/// One received material on a GRN. Each line produces exactly one StockLot.
+model GoodsReceiptLine {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  goodsReceiptId      String @map("goods_receipt_id") @db.Uuid
+  purchaseOrderLineId String @map("purchase_order_line_id") @db.Uuid
+  itemId              String @map("item_id") @db.Uuid
+
+  /// The vendor's batch identity, kept verbatim. Mandatory for batch-tracked
+  /// materials -- enforced in the service, because whether it is required
+  /// depends on the item.
+  vendorBatchNumber String?   @map("vendor_batch_number") @db.VarChar(64)
+  manufacturingDate DateTime? @map("manufacturing_date") @db.Date
+  expiryDate        DateTime? @map("expiry_date") @db.Date
+
+  quantityReceived Decimal @map("quantity_received") @db.Decimal(18, 4)
+  /// Visibly damaged or short-shipped at the gate, refused before QC ever sees
+  /// it. QC's own accept/reject decision happens later, on the lot.
+  quantityRejected Decimal @default(0) @map("quantity_rejected") @db.Decimal(18, 4)
+
+  storageLocation String? @map("storage_location") @db.VarChar(128)
+  remarks         String? @db.VarChar(1000)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant            Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  goodsReceipt      GoodsReceipt      @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
+  purchaseOrderLine PurchaseOrderLine @relation(fields: [purchaseOrderLineId], references: [id], onDelete: Restrict)
+  item              Item              @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  stockLot StockLot?
+
+  @@index([tenantId, goodsReceiptId])
+  @@map("goods_receipt_lines")
+}
+
+// -----------------------------------------------------------------------------
+// 4. Stock lot (the batch) and incoming QC
+// -----------------------------------------------------------------------------
+
+/// A physical batch of raw material, as received.
+///
+/// This is the unit inventory is tracked in -- never an anonymous quantity
+/// against an item. Batch number, manufacturing date and expiry travel with it
+/// for its whole life, which is what makes recall and FEFO possible at all.
+model StockLot {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// Our internal lot identity, e.g. "LOT-2026-0007". Distinct from the
+  /// vendor's batch number, which is theirs and may collide across vendors.
+  lotNumber String @map("lot_number") @db.VarChar(32)
+
+  itemId             String @map("item_id") @db.Uuid
+  goodsReceiptLineId String @unique @map("goods_receipt_line_id") @db.Uuid
+
+  vendorBatchNumber String?   @map("vendor_batch_number") @db.VarChar(64)
+  manufacturingDate DateTime? @map("manufacturing_date") @db.Date
+  expiryDate        DateTime? @map("expiry_date") @db.Date
+
+  /// What arrived, and what is left. `quantityAvailable` is decremented by
+  /// production issues later; it is only ever meaningful while status is USABLE.
+  quantityReceived  Decimal @map("quantity_received") @db.Decimal(18, 4)
+  quantityAvailable Decimal @map("quantity_available") @db.Decimal(18, 4)
+
+  /// QUARANTINE on creation, always. Business rule 6: a GRN does not make
+  /// material usable, incoming QC does.
+  status StockLotStatus @default(QUARANTINE)
+
+  storageLocation String? @map("storage_location") @db.VarChar(128)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  item             Item             @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  goodsReceiptLine GoodsReceiptLine @relation(fields: [goodsReceiptLineId], references: [id], onDelete: Restrict)
+
+  qcResults     QcResult[]
+  ledgerEntries StockLedgerEntry[]
+
+  @@unique([tenantId, lotNumber])
+  /// The FEFO index: usable lots of an item, earliest expiry first.
+  @@index([tenantId, itemId, status, expiryDate])
+  @@map("stock_lots")
+}
+
+/// One incoming-QC decision on one lot.
+///
+/// Rows accumulate rather than being overwritten: a lot put on hold and later
+/// released has two decisions, and both are part of the record. The lot's
+/// current `status` reflects the latest, maintained by the QC service in the
+/// same transaction.
+model QcResult {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  stockLotId String @map("stock_lot_id") @db.Uuid
+
+  decision QcDecision
+
+  /// Analytical report reference, e.g. a COA number.
+  testReference String? @map("test_reference") @db.VarChar(64)
+  remarks       String? @db.VarChar(1000)
+
+  inspectedById String   @map("inspected_by_id") @db.Uuid
+  inspectedAt   DateTime @default(now()) @map("inspected_at") @db.Timestamptz(6)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  stockLot StockLot @relation(fields: [stockLotId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, stockLotId, createdAt])
+  @@map("qc_results")
+}
+
+/// The raw-material stock ledger: every movement, append-only.
+///
+/// Append-only for the same reason AuditLog is -- a ledger whose rows can be
+/// edited is not evidence of anything. A mistake is corrected by posting the
+/// opposite entry, which is also how the correction becomes visible.
+model StockLedgerEntry {
+  id       BigInt @id @default(autoincrement())
+  tenantId String @map("tenant_id") @db.Uuid
+
+  itemId     String  @map("item_id") @db.Uuid
+  stockLotId String? @map("stock_lot_id") @db.Uuid
+
+  entryType StockLedgerEntryType @map("entry_type")
+
+  /// Signed. Positive adds to the balance this entry describes, negative
+  /// removes. A QC rejection posts a negative quarantine movement and no
+  /// usable movement at all.
+  quantityDelta Decimal @map("quantity_delta") @db.Decimal(18, 4)
+
+  /// Whether this movement affected usable stock or quarantined stock. Keeping
+  /// both in one ledger with a flag, rather than two tables, means the full
+  /// history of a lot reads in one query and in one order.
+  affectsUsableStock Boolean @default(false) @map("affects_usable_stock")
+
+  /// Document that caused it, e.g. "GRN-2026-0003".
+  reference String? @db.VarChar(64)
+  notes     String? @db.VarChar(500)
+
+  createdById String?  @map("created_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  item     Item      @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  stockLot StockLot? @relation(fields: [stockLotId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, itemId, createdAt])
+  @@index([tenantId, stockLotId, createdAt])
+  @@map("stock_ledger_entries")
+}
+
+// -----------------------------------------------------------------------------
+// 5. Purchase invoice
+// -----------------------------------------------------------------------------
+
+model PurchaseInvoice {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// Our internal reference. The vendor's own number is `vendorInvoiceNumber`;
+  /// both are kept because reconciliation needs theirs and audit needs ours.
+  number              String @db.VarChar(32)
+  vendorInvoiceNumber String @map("vendor_invoice_number") @db.VarChar(64)
+
+  vendorId        String  @map("vendor_id") @db.Uuid
+  purchaseOrderId String  @map("purchase_order_id") @db.Uuid
+  /// The receipt this invoice is matched against. Nullable only so an invoice
+  /// can be drafted before the match is made.
+  goodsReceiptId  String? @map("goods_receipt_id") @db.Uuid
+
+  invoiceDate DateTime @map("invoice_date") @db.Timestamptz(6)
+  dueDate     DateTime @map("due_date") @db.Timestamptz(6)
+
+  paymentTermsDays Int @default(30) @map("payment_terms_days")
+
+  taxableAmount Decimal @default(0) @map("taxable_amount") @db.Decimal(18, 2)
+  /// GST input tax. Captured separately because it is reclaimable and has to be
+  /// reportable on its own, not buried inside a gross total.
+  taxAmount     Decimal @default(0) @map("tax_amount") @db.Decimal(18, 2)
+  totalAmount   Decimal @default(0) @map("total_amount") @db.Decimal(18, 2)
+
+  status PurchaseInvoiceStatus @default(DRAFT)
+  notes  String?               @db.VarChar(1000)
+
+  recordedById String @map("recorded_by_id") @db.Uuid
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  vendor        Party         @relation(fields: [vendorId], references: [id], onDelete: Restrict)
+  purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Restrict)
+  goodsReceipt  GoodsReceipt? @relation(fields: [goodsReceiptId], references: [id], onDelete: Restrict)
+
+  lines    PurchaseInvoiceLine[]
+  payments VendorPayment[]
+
+  @@unique([tenantId, number])
+  /// One vendor cannot bill the same invoice number twice.
+  @@unique([tenantId, vendorId, vendorInvoiceNumber])
+  @@index([tenantId, status, deletedAt])
+  @@index([tenantId, dueDate])
+  @@map("purchase_invoices")
+}
+
+model PurchaseInvoiceLine {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  purchaseInvoiceId String @map("purchase_invoice_id") @db.Uuid
+  itemId            String @map("item_id") @db.Uuid
+
+  quantity       Decimal @db.Decimal(18, 4)
+  rate           Decimal @db.Decimal(18, 4)
+  taxRatePercent Decimal @default(0) @map("tax_rate_percent") @db.Decimal(5, 2)
+
+  taxableAmount Decimal @map("taxable_amount") @db.Decimal(18, 2)
+  taxAmount     Decimal @map("tax_amount") @db.Decimal(18, 2)
+  totalAmount   Decimal @map("total_amount") @db.Decimal(18, 2)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  purchaseInvoice PurchaseInvoice @relation(fields: [purchaseInvoiceId], references: [id], onDelete: Cascade)
+  item            Item            @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, purchaseInvoiceId])
+  @@map("purchase_invoice_lines")
+}
+
+// -----------------------------------------------------------------------------
+// 6. Vendor payment
+// -----------------------------------------------------------------------------
+
+/// A payment against one purchase invoice.
+///
+/// There is no `outstandingAmount` column anywhere. The payable is the
+/// invoice's total minus the sum of its payments, computed on read -- a stored
+/// balance is one failed update away from a vendor being chased for money
+/// already paid.
+model VendorPayment {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  number            String @db.VarChar(32)
+  purchaseInvoiceId String @map("purchase_invoice_id") @db.Uuid
+
+  paymentDate DateTime @default(now()) @map("payment_date") @db.Timestamptz(6)
+  amount      Decimal  @db.Decimal(18, 2)
+
+  /// UTR / cheque number / transaction reference.
+  reference String? @db.VarChar(64)
+  method    String? @db.VarChar(32)
+  notes     String? @db.VarChar(500)
+
+  recordedById String @map("recorded_by_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  purchaseInvoice PurchaseInvoice @relation(fields: [purchaseInvoiceId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, number])
+  @@index([tenantId, purchaseInvoiceId])
+  @@map("vendor_payments")
 }
