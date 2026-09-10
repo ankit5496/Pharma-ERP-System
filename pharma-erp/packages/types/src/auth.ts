@@ -1,4 +1,5 @@
 import type { UserRole } from './roles';
+import { WORKFLOW_HOME } from './workflows';
 
 /**
  * The authenticated user as the web app sees them, returned by `GET /api/v1/me`
@@ -168,7 +169,14 @@ export function canManageUsers(role: UserRole): boolean {
 export const AUTH_ROUTES = {
   login: '/login',
   changePassword: '/change-password',
-  afterLogin: '/dashboard',
+  /**
+   * The first workflow tab rather than /dashboard: the staff application is
+   * organised around the four workflows now, and landing somewhere absent from
+   * the tab bar leaves a user with no obvious way back. /dashboard still works
+   * for anyone holding the URL — it was removed from the navigation, not
+   * deleted.
+   */
+  afterLogin: WORKFLOW_HOME,
   afterLogout: '/login',
 } as const;
 
