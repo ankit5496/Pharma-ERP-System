@@ -5,6 +5,7 @@ export * from './health';
 export * from './master-data';
 export * from './parties';
 export * from './platform';
+export * from './procurement';
 export * from './production';
 export * from './roles';
 export * from './sections';

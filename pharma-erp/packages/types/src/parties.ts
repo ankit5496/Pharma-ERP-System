@@ -17,9 +17,11 @@
  * value would silently hide such a party from their vendor picker. A party
  * that genuinely buys and sells needs agreeing with whoever owns P2P.
  */
-export type PartyType = 'VENDOR' | 'CUSTOMER' | 'JOB_WORK_PRINCIPAL';
+export const PARTY_TYPES = ['VENDOR', 'CUSTOMER', 'JOB_WORK_PRINCIPAL'] as const;
+export type PartyType = (typeof PARTY_TYPES)[number];
 
-export type PartyStatus = 'ACTIVE' | 'INACTIVE';
+export const PARTY_STATUSES = ['ACTIVE', 'INACTIVE'] as const;
+export type PartyStatus = (typeof PARTY_STATUSES)[number];
 
 export const PARTY_TYPE_LABELS: Record<PartyType, string> = {
   VENDOR: 'Supplier',

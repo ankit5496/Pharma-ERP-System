@@ -60,49 +60,45 @@ export const WORKFLOWS: readonly Workflow[] = [
   {
     key: 'procure-to-pay',
     label: 'Procure-to-Pay',
-    purpose: 'Buying raw materials, from requisition through to paying the supplier.',
+    purpose:
+      'Manage the complete process of procuring raw materials, from identifying low stock through vendor payment.',
     steps: [
       {
-        key: 'suppliers',
-        label: 'Suppliers',
-        purpose: 'Approved vendor register, with licence and audit status.',
-        state: 'planned',
-      },
-      {
         key: 'requisitions',
-        label: 'Requisitions',
-        purpose: 'Internal indents raised against a reorder level or a production plan.',
-        state: 'planned',
+        label: 'Purchase requisitions',
+        purpose:
+          'Raw materials below their reorder level, and the requisitions raised to restock them.',
+        state: 'ready',
       },
       {
         key: 'purchase-orders',
         label: 'Purchase orders',
-        purpose: 'Orders placed on a supplier, with rates, quantities and delivery terms.',
-        state: 'planned',
+        purpose: 'Approved requisitions placed on a vendor, with rates, tax and delivery terms.',
+        state: 'ready',
       },
       {
-        key: 'goods-receipt',
-        label: 'Goods receipt',
-        purpose: 'Material arriving at the gate, recorded against its purchase order.',
-        state: 'planned',
+        key: 'goods-receipts',
+        label: 'GRN',
+        purpose: 'Material received against a purchase order, recorded batch by batch.',
+        state: 'ready',
       },
       {
-        key: 'incoming-quality',
+        key: 'incoming-qc',
         label: 'Incoming QC',
-        purpose: 'Sampling and testing before received material may be used.',
-        state: 'planned',
+        purpose: 'The quality gate: each received batch is accepted, rejected or held.',
+        state: 'ready',
       },
       {
-        key: 'supplier-invoices',
-        label: 'Supplier invoices',
-        purpose: 'Invoices matched against the order and the receipt before approval.',
-        state: 'planned',
+        key: 'invoices',
+        label: 'Purchase invoices',
+        purpose: 'Vendor invoices matched against the order and the receipt, with GST input tax.',
+        state: 'ready',
       },
       {
         key: 'payments',
-        label: 'Payments',
-        purpose: 'Settlement of approved supplier invoices.',
-        state: 'planned',
+        label: 'Vendor payments',
+        purpose: 'The payables ledger: what is outstanding, what is overdue, what has been paid.',
+        state: 'ready',
       },
     ],
   },
@@ -256,7 +252,7 @@ export const WORKFLOWS: readonly Workflow[] = [
 ];
 
 /** Where a signed-in staff member lands: the first workflow, first step. */
-export const WORKFLOW_HOME = '/workflows/procure-to-pay/suppliers';
+export const WORKFLOW_HOME = '/workflows/procure-to-pay/requisitions';
 
 /** URL for a workflow, or for one step within it. */
 export function workflowHref(workflow: WorkflowKey, step?: string): string {

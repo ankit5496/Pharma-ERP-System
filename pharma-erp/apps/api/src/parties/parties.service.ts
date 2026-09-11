@@ -234,7 +234,7 @@ function fromIsoDate(value: string): Date {
   return new Date(`${value.slice(0, 10)}T00:00:00.000Z`);
 }
 
-function toPartySummary(party: Party): PartySummary {
+export function toPartySummary(party: Party): PartySummary {
   const validTo = party.drugLicenceValidTo ? toIsoDate(party.drugLicenceValidTo) : null;
 
   return {

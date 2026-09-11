@@ -35,6 +35,8 @@ export function toItemSummary(item: ItemRow): ItemSummary {
     storageConditions: item.storageConditions,
     reorderLevel: item.reorderLevel?.toString() ?? null,
     reorderQuantity: item.reorderQuantity?.toString() ?? null,
+    requiresBatchTracking: item.requiresBatchTracking,
+    notes: item.notes,
   };
 }
 

@@ -10,7 +10,8 @@
  * on it.
  */
 
-export type ItemType = 'RAW_MATERIAL' | 'PACKING_MATERIAL' | 'SEMI_FINISHED' | 'FINISHED_GOOD';
+export const ITEM_TYPES = ['RAW_MATERIAL', 'PACKING_MATERIAL', 'SEMI_FINISHED', 'FINISHED_GOOD'] as const;
+export type ItemType = (typeof ITEM_TYPES)[number];
 
 /** Drugs & Cosmetics Rules schedule. Mirrors the Prisma enum of the same name. */
 export type ScheduleClassification = 'NONE' | 'H' | 'H1' | 'X' | 'G';
@@ -96,6 +97,13 @@ export interface ItemSummary {
   storageConditions: string | null;
   reorderLevel: string | null;
   reorderQuantity: string | null;
+  /**
+   * From the Procure-to-Pay side. False only for materials where a lot has no
+   * meaningful identity — for a pharmaceutical raw material, batch number,
+   * manufacturing date and expiry are mandatory.
+   */
+  requiresBatchTracking: boolean;
+  notes: string | null;
 }
 
 /**
