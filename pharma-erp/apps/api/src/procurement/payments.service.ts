@@ -1,7 +1,13 @@
 import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 
 import { Prisma } from '@pharma-erp/database';
-import type { ProcurementListQuery, VendorPayableRow, VendorPaymentItem } from '@pharma-erp/types';
+import type {
+  AgeingBucket,
+  PayablesReport,
+  ProcurementListQuery,
+  VendorPayableRow,
+  VendorPaymentItem,
+} from '@pharma-erp/types';
 
 import { AuditService } from '../common/audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -44,13 +50,15 @@ export class PaymentsService {
   /**
    * The payables ledger: one row per invoice, with what is owed on it.
    *
-   * Draft invoices are excluded — nothing is payable until the invoice has
-   * been approved — and so are cancelled ones.
+   * Cancelled invoices are excluded; everything else is payable, because an
+   * invoice is Booked the moment it is recorded.
    */
   async payables(query: ProcurementListQuery): Promise<VendorPayableRow[]> {
     const where: Prisma.PurchaseInvoiceWhereInput = {
       deletedAt: null,
-      status: 'APPROVED',
+      // Anything not cancelled is payable: an invoice is Booked the moment
+      // it is recorded, and there is no separate approval gate.
+      status: { not: 'CANCELLED' },
     };
 
     if (query.vendorId) where.vendorId = query.vendorId;
@@ -108,10 +116,8 @@ export class PaymentsService {
 
     if (!invoice) throw new ConflictException('Invoice not found.');
 
-    if (invoice.status !== 'APPROVED') {
-      throw new ConflictException(
-        `Only an approved invoice can be paid. This one is ${invoice.status.toLowerCase()}.`,
-      );
+    if (invoice.status === 'CANCELLED') {
+      throw new ConflictException('A cancelled invoice cannot be paid.');
     }
 
     const total = new Prisma.Decimal(invoice.totalAmount);
@@ -134,10 +140,14 @@ export class PaymentsService {
       throw new BadRequestException('Enter a valid payment date.');
     }
 
+    // The payment and the invoice's new status commit together. Separately,
+    // a failure between them would leave money recorded against an invoice
+    // still claiming to be unpaid — the kind of discrepancy that only shows up
+    // when a vendor is chased for something already settled.
     const created = await this.prisma.transaction(async (tx) => {
       const number = await this.numbering.next(tx, tenantId, 'PAY');
 
-      return tx.vendorPayment.create({
+      const payment = await tx.vendorPayment.create({
         data: {
           tenantId,
           number,
@@ -150,6 +160,21 @@ export class PaymentsService {
           recordedById,
         },
       });
+
+      // US-PUR-05 / US-PUR-06: Booked -> Partially Paid -> Paid, driven by
+      // payments and nothing else. Computed from `alreadyPaid + amount` rather
+      // than re-summing: both figures are already known here, and the
+      // overpayment guard above has already proved the total cannot exceed it.
+      const paidAfter = alreadyPaid.plus(amount);
+
+      await tx.purchaseInvoice.update({
+        where: { id: invoice.id },
+        data: {
+          status: paidAfter.greaterThanOrEqualTo(total) ? 'PAID' : 'PARTIALLY_PAID',
+        },
+      });
+
+      return payment;
     });
 
     await this.audit.record({
@@ -176,6 +201,112 @@ export class PaymentsService {
     );
 
     return this.toPayableRow(refreshed, people);
+  }
+
+  /**
+   * The outstanding payables report, one row per vendor, aged into buckets.
+   *
+   * Ageing runs from the DUE date, not the invoice date. Ageing from when an
+   * invoice was raised would call a 60-day-terms invoice "60 days old" on the
+   * day it falls due, which tells the person paying bills nothing about
+   * whether they are late — and lateness is the only question this report
+   * exists to answer.
+   *
+   * Vendors with nothing outstanding are omitted: a payables report listing
+   * everyone who has ever invoiced is a report nobody reads.
+   */
+  async payablesReport(vendorId?: string): Promise<PayablesReport> {
+    const rows = await this.prisma.scoped.purchaseInvoice.findMany({
+      where: {
+        deletedAt: null,
+        status: { not: 'CANCELLED' },
+        ...(vendorId ? { vendorId } : {}),
+      },
+      select: {
+        totalAmount: true,
+        dueDate: true,
+        vendor: { select: { id: true, name: true, code: true } },
+        payments: { select: { amount: true } },
+      },
+      orderBy: [{ dueDate: 'asc' }],
+    });
+
+    const emptyBuckets = (): Record<AgeingBucket, Prisma.Decimal> => ({
+      NOT_DUE: ZERO,
+      DUE_0_30: ZERO,
+      DUE_31_60: ZERO,
+      DUE_61_90: ZERO,
+      DUE_90_PLUS: ZERO,
+    });
+
+    const byVendor = new Map<
+      string,
+      {
+        vendor: { id: string; name: string; code: string };
+        total: Prisma.Decimal;
+        buckets: Record<AgeingBucket, Prisma.Decimal>;
+        invoiceCount: number;
+        oldestOverdueDays: number;
+      }
+    >();
+
+    const totals = { total: ZERO, buckets: emptyBuckets(), invoiceCount: 0 };
+
+    for (const row of rows) {
+      const paid = row.payments.reduce((sum, payment) => sum.plus(payment.amount), ZERO);
+      const outstanding = positiveDifference(new Prisma.Decimal(row.totalAmount), paid);
+
+      // A settled invoice is not a payable. Skipped rather than shown at zero,
+      // which would pad the report with rows that need no action.
+      if (outstanding.isZero()) continue;
+
+      // Negative daysToDue means overdue; the bucket is how far past.
+      const overdueBy = -daysUntil(row.dueDate);
+      const bucket = bucketFor(overdueBy);
+
+      const existing = byVendor.get(row.vendor.id) ?? {
+        vendor: row.vendor,
+        total: ZERO,
+        buckets: emptyBuckets(),
+        invoiceCount: 0,
+        oldestOverdueDays: 0,
+      };
+
+      existing.total = existing.total.plus(outstanding);
+      existing.buckets[bucket] = existing.buckets[bucket].plus(outstanding);
+      existing.invoiceCount += 1;
+      existing.oldestOverdueDays = Math.max(existing.oldestOverdueDays, Math.max(overdueBy, 0));
+
+      byVendor.set(row.vendor.id, existing);
+
+      totals.total = totals.total.plus(outstanding);
+      totals.buckets[bucket] = totals.buckets[bucket].plus(outstanding);
+      totals.invoiceCount += 1;
+    }
+
+    const serialiseBuckets = (buckets: Record<AgeingBucket, Prisma.Decimal>) =>
+      Object.fromEntries(
+        Object.entries(buckets).map(([key, value]) => [key, money(value)]),
+      ) as Record<AgeingBucket, string>;
+
+    return {
+      // Largest exposure first: the order somebody chasing payments works in.
+      rows: [...byVendor.values()]
+        .sort((a, b) => (a.total.greaterThan(b.total) ? -1 : 1))
+        .map((entry) => ({
+          vendor: entry.vendor,
+          totalOutstanding: money(entry.total),
+          buckets: serialiseBuckets(entry.buckets),
+          invoiceCount: entry.invoiceCount,
+          oldestOverdueDays: entry.oldestOverdueDays,
+        })),
+      totals: {
+        totalOutstanding: money(totals.total),
+        buckets: serialiseBuckets(totals.buckets),
+        invoiceCount: totals.invoiceCount,
+      },
+      generatedAt: new Date().toISOString(),
+    };
   }
 
   private requireActingUser(): string {
@@ -219,4 +350,20 @@ export class PaymentsService {
       ),
     };
   }
+}
+
+/**
+ * Which ageing bucket a payable falls into.
+ *
+ * `overdueBy` is days PAST the due date, so anything zero or negative is not
+ * yet due. The boundaries are inclusive at the top of each band, matching how
+ * the labels read: "31–60" means 31 through 60.
+ */
+function bucketFor(overdueBy: number): AgeingBucket {
+  if (overdueBy <= 0) return 'NOT_DUE';
+  if (overdueBy <= 30) return 'DUE_0_30';
+  if (overdueBy <= 60) return 'DUE_31_60';
+  if (overdueBy <= 90) return 'DUE_61_90';
+
+  return 'DUE_90_PLUS';
 }

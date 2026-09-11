@@ -13,6 +13,10 @@ import {
 
 import type {
   GoodsReceiptListItem,
+  PayablesReport,
+  BomSummary,
+  ProductionPlanSummary,
+  ReorderCheckResult,
   ItemStockPosition,
   ItemSummary,
   LowStockItem,
@@ -28,11 +32,17 @@ import type {
 } from '@pharma-erp/types';
 
 import { Auditable, SkipAudit } from '../common/audit/audit.decorators';
+import { TenantContextService } from '../tenant/tenant-context.service';
 
-import { ProcurementListQueryDto } from './dto/common.dto';
+import { parsePositive } from './decimal.util';
+import { ConsumeStockDto, ProcurementListQueryDto } from './dto/common.dto';
 import { CreateGoodsReceiptDto } from './dto/goods-receipt.dto';
 import { ChangeInvoiceStatusDto, CreatePurchaseInvoiceDto } from './dto/invoice.dto';
-import { CreateItemDto, CreatePartyDto } from './dto/masters.dto';
+import {
+  CreateItemDto,
+  CreatePartyDto,
+  CreateProductionPlanDto,
+} from './dto/masters.dto';
 import { RecordPaymentDto } from './dto/payment.dto';
 import {
   ChangePurchaseOrderStatusDto,
@@ -52,6 +62,7 @@ import { MastersService } from './masters.service';
 import { PaymentsService } from './payments.service';
 import { PurchaseOrdersService } from './purchase-orders.service';
 import { QcService } from './qc.service';
+import { ReorderService } from './reorder.service';
 import { RequisitionsService } from './requisitions.service';
 import { StockService } from './stock.service';
 import { SummaryService } from './summary.service';
@@ -90,6 +101,8 @@ export class ProcurementController {
     private readonly qc: QcService,
     private readonly invoices: InvoicesService,
     private readonly payments: PaymentsService,
+    private readonly reorder: ReorderService,
+    private readonly tenantContext: TenantContextService,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -148,6 +161,64 @@ export class ProcurementController {
   @HttpCode(HttpStatus.CREATED)
   async createParty(@Body() dto: CreatePartyDto): Promise<PartySummary> {
     return this.masters.createParty(dto);
+  }
+
+  @Get('boms')
+  @SkipAudit('Read-only.')
+  async listBoms(): Promise<BomSummary[]> {
+    return this.masters.listBoms();
+  }
+
+  @Get('production-plans')
+  @SkipAudit('Read-only.')
+  async listProductionPlans(): Promise<ProductionPlanSummary[]> {
+    return this.masters.listProductionPlans();
+  }
+
+  @Post('production-plans')
+  @Auditable('ProductionPlan')
+  @HttpCode(HttpStatus.CREATED)
+  async createProductionPlan(
+    @Body() dto: CreateProductionPlanDto,
+  ): Promise<ProductionPlanSummary> {
+    return this.masters.createProductionPlan(dto);
+  }
+
+  /**
+   * Consumes usable stock, FEFO.
+   *
+   * A real inventory operation — an issue, a breakage, a count correction —
+   * and the thing that makes the reorder trigger observable before Production
+   * exists. Runs the reorder check straight afterwards, in the same request,
+   * so a movement that crosses the level raises its requisition immediately
+   * rather than waiting for someone to open a screen.
+   */
+  @Post('stock/consume')
+  @Auditable('StockLot')
+  @HttpCode(HttpStatus.CREATED)
+  async consumeStock(@Body() dto: ConsumeStockDto): Promise<ReorderCheckResult> {
+    await this.stock.consumeStock(
+      dto.itemId,
+      parsePositive(dto.quantity, 'Quantity'),
+      dto.reason,
+      this.tenantContext.getUserId(),
+    );
+
+    return this.runReorderCheck();
+  }
+
+  /** Runs the reorder check on demand. Idempotent. */
+  @Post('reorder-check')
+  @SkipAudit('The requisitions it raises are audited individually.')
+  @HttpCode(HttpStatus.CREATED)
+  async runReorderCheck(): Promise<ReorderCheckResult> {
+    const outcome = await this.reorder.run();
+
+    const created = await Promise.all(
+      outcome.createdIds.map((id) => this.requisitions.findOne(id)),
+    );
+
+    return { created, skipped: outcome.skipped, checkedAt: new Date().toISOString() };
   }
 
   // -------------------------------------------------------------------------
@@ -361,6 +432,18 @@ export class ProcurementController {
   @SkipAudit('Read-only listing.')
   async payables(@Query() query: ProcurementListQueryDto): Promise<VendorPayableRow[]> {
     return this.payments.payables(query);
+  }
+
+  /**
+   * The outstanding payables report, aged by days past due.
+   *
+   * Filterable by vendor; the ageing bands are fixed rather than a parameter,
+   * because a report whose buckets move is a report two people cannot compare.
+   */
+  @Get('payables/report')
+  @SkipAudit('Read-only report.')
+  async payablesReport(@Query('vendorId') vendorId?: string): Promise<PayablesReport> {
+    return this.payments.payablesReport(vendorId);
   }
 
   @Post('payments')

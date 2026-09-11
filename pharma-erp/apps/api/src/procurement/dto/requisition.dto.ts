@@ -1,13 +1,4 @@
-import { Type } from 'class-transformer';
-import {
-  IsBoolean,
-  IsISO8601,
-  IsIn,
-  IsOptional,
-  IsString,
-  IsUUID,
-  MaxLength,
-} from 'class-validator';
+import { IsISO8601, IsIn, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
 
 import {
   REQUISITION_STATUSES,
@@ -19,19 +10,37 @@ import {
 import { IsDecimalString, trim } from './common.dto';
 
 /**
- * Body of `POST /api/v1/procurement/requisitions`.
+ * Body of `POST /api/v1/procurement/requisitions` — a manually raised one.
  *
- * No `status`, no `requestedById`, no stock figures: the status is decided by
- * `asDraft`, the requester is the signed-in user, and the stock snapshot is
- * read from the database. Accepting any of them from a client would let a
- * requisition claim a shortage that never existed.
+ * No `status`, no `triggerType`, no `requestedById`, no stock figures. A
+ * requisition submitted here is always OPEN and always MANUAL; the requester
+ * is the signed-in user and the stock snapshot is read from the database.
+ * Accepting any of them from a client would let a requisition claim a
+ * shortage that never existed, or claim the system raised it.
  */
 export class CreateRequisitionDto implements CreateRequisitionRequest {
   @IsUUID()
   itemId!: string;
 
+  /**
+   * Optional: defaults to the item's configured reorder quantity when absent,
+   * and remains editable. The default is applied in the service, which is the
+   * only layer that can read the item.
+   */
+  @IsOptional()
   @IsDecimalString('Required quantity')
-  requiredQuantity!: string;
+  requiredQuantity?: string;
+
+  /**
+   * The production run this material is for.
+   *
+   * Required for a manual requisition, but optional here: the requirement is
+   * conditional on the trigger type, which this layer cannot see. The service
+   * enforces presence and rejects a cancelled or completed plan.
+   */
+  @IsOptional()
+  @IsUUID()
+  productionPlanId?: string;
 
   @IsOptional()
   @IsUUID()
@@ -47,10 +56,6 @@ export class CreateRequisitionDto implements CreateRequisitionRequest {
   @MaxLength(1000)
   notes?: string;
 
-  @IsOptional()
-  @IsBoolean()
-  @Type(() => Boolean)
-  asDraft?: boolean;
 }
 
 export class UpdateRequisitionDto implements UpdateRequisitionRequest {

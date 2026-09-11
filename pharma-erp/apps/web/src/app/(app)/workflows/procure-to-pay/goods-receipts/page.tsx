@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { PROCUREMENT_ROUTES, STOCK_LOT_STATUS_LABELS, UNIT_LABELS } from '@pharma-erp/types';
+import { PROCUREMENT_ROUTES, STOCK_LOT_STATUS_LABELS } from '@pharma-erp/types';
 
 import { BookReceiptForm } from '@/components/procurement/book-receipt-form';
 import { FilterBar } from '@/components/procurement/filter-bar';
@@ -222,7 +222,7 @@ export default async function GoodsReceiptsPage({
                             <DateText value={line.expiryDate} />
                           </td>
                           <td className="py-2 pr-4 text-right tabular-nums">
-                            <Qty value={line.quantityOrdered} uom={UNIT_LABELS[line.item.uom]} />
+                            <Qty value={line.quantityOrdered} uom={line.item.uom} />
                           </td>
                           <td className="py-2 pr-4 text-right tabular-nums">
                             {line.quantityReceived}

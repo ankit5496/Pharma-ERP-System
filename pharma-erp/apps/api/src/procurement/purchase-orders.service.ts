@@ -63,10 +63,8 @@ type PurchaseOrderRow = Prisma.PurchaseOrderGetPayload<{ include: typeof PO_INCL
  * claim to be received when nothing arrived.
  */
 const ALLOWED_TRANSITIONS: Record<PurchaseOrderStatus, readonly PurchaseOrderStatus[]> = {
-  DRAFT: ['ISSUED', 'CANCELLED'],
-  ISSUED: ['CLOSED', 'CANCELLED'],
+  OPEN: ['CLOSED', 'CANCELLED'],
   PARTIALLY_RECEIVED: ['CLOSED', 'CANCELLED'],
-  FULLY_RECEIVED: ['CLOSED'],
   CLOSED: [],
   CANCELLED: [],
 };
@@ -142,9 +140,17 @@ export class PurchaseOrdersService {
         const rate = parseNonNegative(line.rate, `Rate for ${item.code}`);
         const taxRatePercent = parseNonNegative(line.taxRatePercent, `Tax rate for ${item.code}`);
 
-        if (line.requisitionId) {
-          await this.assertRequisitionConvertible(line.requisitionId);
+        // US-PUR-02: "A Purchase Order can only be created from an Approved
+        // Purchase Requisition." Every line must cite one — there is no path
+        // to an order for material nobody requested, which is what makes the
+        // requisition-to-order trace complete rather than best-effort.
+        if (!line.requisitionId) {
+          throw new BadRequestException(
+            `${item.code}: a purchase order line must come from an approved requisition.`,
+          );
         }
+
+        await this.assertRequisitionConvertible(line.requisitionId);
 
         return {
           itemId: item.id,
@@ -173,7 +179,7 @@ export class PurchaseOrdersService {
           paymentTermsDays: dto.paymentTermsDays ?? vendor.paymentTermsDays,
           notes: dto.notes ?? null,
           createdById,
-          status: 'DRAFT',
+          status: 'OPEN',
           taxableAmount: totals.taxableAmount,
           taxAmount: totals.taxAmount,
           totalAmount: totals.totalAmount,
@@ -248,8 +254,10 @@ export class PurchaseOrdersService {
   async update(id: string, dto: UpdatePurchaseOrderDto): Promise<PurchaseOrderListItem> {
     const before = await this.requireOrder(id);
 
-    if (before.status !== 'DRAFT') {
-      throw new ConflictException('Only a draft purchase order can be edited.');
+    if (before.status !== 'OPEN') {
+      throw new ConflictException(
+        'Only an open purchase order can be edited — one with receipts against it cannot.',
+      );
     }
 
     const data: Prisma.PurchaseOrderUpdateInput = {};
@@ -293,15 +301,10 @@ export class PurchaseOrdersService {
       );
     }
 
-    if (target === 'ISSUED' && before.lines.length === 0) {
-      throw new ConflictException('A purchase order needs at least one line before it is issued.');
-    }
-
     const after = await this.prisma.scoped.purchaseOrder.update({
       where: { id },
       data: {
         status: target,
-        ...(target === 'ISSUED' ? { issuedAt: new Date() } : {}),
       },
       include: PO_INCLUDE,
     });
@@ -322,7 +325,7 @@ export class PurchaseOrdersService {
   /** Orders open for receiving, for the GRN form's picker. */
   async receivable(): Promise<PurchaseOrderListItem[]> {
     const rows = await this.prisma.scoped.purchaseOrder.findMany({
-      where: { deletedAt: null, status: { in: ['ISSUED', 'PARTIALLY_RECEIVED'] } },
+      where: { deletedAt: null, status: { in: ['OPEN', 'PARTIALLY_RECEIVED'] } },
       include: PO_INCLUDE,
       orderBy: [{ poDate: 'asc' }],
     });
@@ -337,7 +340,7 @@ export class PurchaseOrdersService {
     const rows = await this.prisma.scoped.purchaseOrder.findMany({
       where: {
         deletedAt: null,
-        status: { in: ['PARTIALLY_RECEIVED', 'FULLY_RECEIVED', 'CLOSED'] },
+        status: { in: ['PARTIALLY_RECEIVED', 'CLOSED'] },
       },
       include: PO_INCLUDE,
       orderBy: [{ poDate: 'desc' }],

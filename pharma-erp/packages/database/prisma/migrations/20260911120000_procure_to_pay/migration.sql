@@ -1,14 +1,38 @@
--- CreateEnum
-CREATE TYPE "ItemType" AS ENUM ('RAW_MATERIAL', 'PACKAGING', 'FINISHED_GOOD');
-
--- CreateEnum
-CREATE TYPE "UnitOfMeasure" AS ENUM ('KG', 'G', 'MG', 'L', 'ML', 'NOS', 'PACK');
+-- =============================================================================
+-- Procure-to-Pay
+-- =============================================================================
+-- Buying raw materials: low stock -> requisition -> purchase order -> goods
+-- receipt -> incoming QC -> usable inventory -> invoice -> payable -> payment.
+--
+-- LAYERED ON TOP OF THE SHARED MASTER-DATA SCHEMA, not alongside it. The item
+-- master, bills of material and their components already exist from
+-- 20260910152116 and 20260911000000; this migration adds only what does not:
+-- the documents, the batch and stock-ledger tables, and the vendor register.
+--
+-- Three things it deliberately does NOT do, each because the shared schema
+-- already answers the question:
+--
+--   * No tax-rate table. GST comes from items.gst_rate, next to items.hsn_code.
+--   * No production-plan component list. A plan points at a BOM and reads
+--     bom_lines, so a revised formulation cannot leave stale copies behind.
+--   * No batch-tracking flag on items. It is derived from the item type.
+--
+-- Quantities and money are DECIMAL throughout, never Float: a binary float
+-- cannot represent 0.1, and a dispensing quantity or invoice total wrong in the
+-- fourth decimal place is a regulatory problem, not a rounding curiosity.
+-- =============================================================================
 
 -- CreateEnum
 CREATE TYPE "PartyType" AS ENUM ('VENDOR', 'CUSTOMER', 'JOB_WORK_PRINCIPAL');
 
 -- CreateEnum
-CREATE TYPE "RequisitionStatus" AS ENUM ('DRAFT', 'PENDING', 'APPROVED', 'CONVERTED_TO_PO', 'CANCELLED');
+CREATE TYPE "RequisitionStatus" AS ENUM ('OPEN', 'APPROVED', 'CONVERTED_TO_PO', 'CANCELLED');
+
+-- CreateEnum
+CREATE TYPE "RequisitionTriggerType" AS ENUM ('AUTO_REORDER', 'MANUAL');
+
+-- CreateEnum
+CREATE TYPE "ProductionPlanStatus" AS ENUM ('DRAFT', 'PLANNED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED');
 
 -- CreateEnum
 CREATE TYPE "PurchaseOrderStatus" AS ENUM ('DRAFT', 'ISSUED', 'PARTIALLY_RECEIVED', 'FULLY_RECEIVED', 'CLOSED', 'CANCELLED');
@@ -25,24 +49,8 @@ CREATE TYPE "PurchaseInvoiceStatus" AS ENUM ('DRAFT', 'APPROVED', 'CANCELLED');
 -- CreateEnum
 CREATE TYPE "StockLedgerEntryType" AS ENUM ('GRN_QUARANTINE', 'QC_ACCEPTED', 'QC_REJECTED', 'QC_HOLD', 'QC_RELEASED_FROM_HOLD', 'ADJUSTMENT');
 
--- CreateTable
-CREATE TABLE "items" (
-    "id" UUID NOT NULL,
-    "tenant_id" UUID NOT NULL,
-    "code" VARCHAR(64) NOT NULL,
-    "name" VARCHAR(255) NOT NULL,
-    "item_type" "ItemType" NOT NULL DEFAULT 'RAW_MATERIAL',
-    "uom" "UnitOfMeasure" NOT NULL DEFAULT 'KG',
-    "reorder_level" DECIMAL(18,4) NOT NULL DEFAULT 0,
-    "requires_batch_tracking" BOOLEAN NOT NULL DEFAULT true,
-    "hsn_code" VARCHAR(16),
-    "notes" VARCHAR(1000),
-    "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updated_at" TIMESTAMPTZ(6) NOT NULL,
-    "deleted_at" TIMESTAMPTZ(6),
-
-    CONSTRAINT "items_pkey" PRIMARY KEY ("id")
-);
+-- AlterTable
+ALTER TABLE "tenants" ADD COLUMN     "invoice_tolerance_percent" DECIMAL(5,2) NOT NULL DEFAULT 2.00;
 
 -- CreateTable
 CREATE TABLE "parties" (
@@ -85,12 +93,14 @@ CREATE TABLE "purchase_requisitions" (
     "reorder_level_at_request" DECIMAL(18,4) NOT NULL,
     "required_quantity" DECIMAL(18,4) NOT NULL,
     "preferred_vendor_id" UUID,
-    "requested_by_id" UUID NOT NULL,
+    "trigger_type" "RequisitionTriggerType" NOT NULL DEFAULT 'MANUAL',
+    "production_plan_id" UUID,
+    "requested_by_id" UUID,
     "approved_by_id" UUID,
     "approved_at" TIMESTAMPTZ(6),
     "request_date" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "required_by_date" TIMESTAMPTZ(6),
-    "status" "RequisitionStatus" NOT NULL DEFAULT 'DRAFT',
+    "status" "RequisitionStatus" NOT NULL DEFAULT 'OPEN',
     "notes" VARCHAR(1000),
     "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMPTZ(6) NOT NULL,
@@ -240,7 +250,9 @@ CREATE TABLE "purchase_invoices" (
     "vendor_invoice_number" VARCHAR(64) NOT NULL,
     "vendor_id" UUID NOT NULL,
     "purchase_order_id" UUID NOT NULL,
-    "goods_receipt_id" UUID,
+    "goods_receipt_id" UUID NOT NULL,
+    "tolerance_exceeded" BOOLEAN NOT NULL DEFAULT false,
+    "match_notes" VARCHAR(2000),
     "invoice_date" TIMESTAMPTZ(6) NOT NULL,
     "due_date" TIMESTAMPTZ(6) NOT NULL,
     "payment_terms_days" INTEGER NOT NULL DEFAULT 30,
@@ -292,11 +304,25 @@ CREATE TABLE "vendor_payments" (
     CONSTRAINT "vendor_payments_pkey" PRIMARY KEY ("id")
 );
 
--- CreateIndex
-CREATE INDEX "items_tenant_id_item_type_deleted_at_idx" ON "items"("tenant_id", "item_type", "deleted_at");
+-- CreateTable
+CREATE TABLE "production_plans" (
+    "id" UUID NOT NULL,
+    "tenant_id" UUID NOT NULL,
+    "number" VARCHAR(32) NOT NULL,
+    "finished_product_id" UUID NOT NULL,
+    "pack_variant" VARCHAR(128),
+    "bom_id" UUID,
+    "planned_quantity" DECIMAL(18,4) NOT NULL,
+    "planned_date" DATE,
+    "status" "ProductionPlanStatus" NOT NULL DEFAULT 'PLANNED',
+    "notes" VARCHAR(1000),
+    "created_by_id" UUID,
+    "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updated_at" TIMESTAMPTZ(6) NOT NULL,
+    "deleted_at" TIMESTAMPTZ(6),
 
--- CreateIndex
-CREATE UNIQUE INDEX "items_tenant_id_code_key" ON "items"("tenant_id", "code");
+    CONSTRAINT "production_plans_pkey" PRIMARY KEY ("id")
+);
 
 -- CreateIndex
 CREATE INDEX "parties_tenant_id_party_type_deleted_at_idx" ON "parties"("tenant_id", "party_type", "deleted_at");
@@ -312,6 +338,9 @@ CREATE INDEX "purchase_requisitions_tenant_id_status_deleted_at_idx" ON "purchas
 
 -- CreateIndex
 CREATE INDEX "purchase_requisitions_tenant_id_item_id_idx" ON "purchase_requisitions"("tenant_id", "item_id");
+
+-- CreateIndex
+CREATE INDEX "purchase_requisitions_tenant_id_trigger_type_status_idx" ON "purchase_requisitions"("tenant_id", "trigger_type", "status");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "purchase_requisitions_tenant_id_number_key" ON "purchase_requisitions"("tenant_id", "number");
@@ -382,8 +411,11 @@ CREATE INDEX "vendor_payments_tenant_id_purchase_invoice_id_idx" ON "vendor_paym
 -- CreateIndex
 CREATE UNIQUE INDEX "vendor_payments_tenant_id_number_key" ON "vendor_payments"("tenant_id", "number");
 
--- AddForeignKey
-ALTER TABLE "items" ADD CONSTRAINT "items_tenant_id_fkey" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+-- CreateIndex
+CREATE INDEX "production_plans_tenant_id_status_deleted_at_idx" ON "production_plans"("tenant_id", "status", "deleted_at");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "production_plans_tenant_id_number_key" ON "production_plans"("tenant_id", "number");
 
 -- AddForeignKey
 ALTER TABLE "parties" ADD CONSTRAINT "parties_tenant_id_fkey" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -399,6 +431,9 @@ ALTER TABLE "purchase_requisitions" ADD CONSTRAINT "purchase_requisitions_item_i
 
 -- AddForeignKey
 ALTER TABLE "purchase_requisitions" ADD CONSTRAINT "purchase_requisitions_preferred_vendor_id_fkey" FOREIGN KEY ("preferred_vendor_id") REFERENCES "parties"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "purchase_requisitions" ADD CONSTRAINT "purchase_requisitions_production_plan_id_fkey" FOREIGN KEY ("production_plan_id") REFERENCES "production_plans"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "purchase_orders" ADD CONSTRAINT "purchase_orders_tenant_id_fkey" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -489,3 +524,199 @@ ALTER TABLE "vendor_payments" ADD CONSTRAINT "vendor_payments_tenant_id_fkey" FO
 
 -- AddForeignKey
 ALTER TABLE "vendor_payments" ADD CONSTRAINT "vendor_payments_purchase_invoice_id_fkey" FOREIGN KEY ("purchase_invoice_id") REFERENCES "purchase_invoices"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "production_plans" ADD CONSTRAINT "production_plans_tenant_id_fkey" FOREIGN KEY ("tenant_id") REFERENCES "tenants"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "production_plans" ADD CONSTRAINT "production_plans_finished_product_id_fkey" FOREIGN KEY ("finished_product_id") REFERENCES "items"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "production_plans" ADD CONSTRAINT "production_plans_bom_id_fkey" FOREIGN KEY ("bom_id") REFERENCES "boms"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+-- =============================================================================
+-- Row-Level Security, compliance guards and privileges
+-- =============================================================================
+-- Everything below is hand-written: Prisma's schema language cannot express
+-- policies, triggers or grants, and its differ cannot see them either. The
+-- tables created above carry tenant_id and are worthless without this section.
+--
+-- items, boms and bom_lines are deliberately absent from every list here —
+-- they already have their policies and triggers from the master-data
+-- migrations, and re-creating a policy that exists is an error.
+
+-- -----------------------------------------------------------------------------
+-- 1. Tenant isolation
+-- -----------------------------------------------------------------------------
+-- Applied in a loop rather than fourteen copy-pasted blocks. The policy text is
+-- identical for every one of these tables, and a loop cannot contain the
+-- transcription error that a fifteenth hand-written copy eventually would.
+
+DO $rls$
+DECLARE
+  v_table text;
+  v_tables text[] := ARRAY[
+    'parties',
+    'document_sequences',
+    'purchase_requisitions',
+    'purchase_orders',
+    'purchase_order_lines',
+    'goods_receipts',
+    'goods_receipt_lines',
+    'stock_lots',
+    'qc_results',
+    'stock_ledger_entries',
+    'purchase_invoices',
+    'purchase_invoice_lines',
+    'vendor_payments',
+    'production_plans'
+  ];
+BEGIN
+  FOREACH v_table IN ARRAY v_tables LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', v_table);
+    EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', v_table);
+    EXECUTE format(
+      'CREATE POLICY %I ON %I FOR ALL '
+      'USING ("tenant_id" = public.current_tenant_id()) '
+      'WITH CHECK ("tenant_id" = public.require_tenant_id())',
+      v_table || '_tenant_isolation',
+      v_table
+    );
+  END LOOP;
+END
+$rls$;
+
+-- -----------------------------------------------------------------------------
+-- 2. Append-only records
+-- -----------------------------------------------------------------------------
+-- A ledger or a quality decision whose rows can be edited afterwards is not
+-- evidence of anything. Corrections are new rows, which is also how they become
+-- visible. The privilege revoke below means the guarantee does not rest on the
+-- trigger alone.
+
+CREATE TRIGGER "stock_ledger_entries_append_only"
+  BEFORE UPDATE OR DELETE ON "stock_ledger_entries"
+  FOR EACH ROW EXECUTE FUNCTION public.enforce_append_only();
+
+CREATE TRIGGER "qc_results_append_only"
+  BEFORE UPDATE OR DELETE ON "qc_results"
+  FOR EACH ROW EXECUTE FUNCTION public.enforce_append_only();
+
+-- -----------------------------------------------------------------------------
+-- 3. No hard deletes on compliance-relevant documents
+-- -----------------------------------------------------------------------------
+-- These carry deleted_at, so the soft delete is the only route. Line tables are
+-- absent on purpose: they cascade from their parent and have no independent
+-- existence, so blocking DELETE would block editing a draft order's lines.
+--
+-- stock_lots has no deleted_at and no trigger either: a received batch is never
+-- removed, it changes status. A REJECTED lot stays in the table for good, which
+-- is the whole point of rejecting it traceably.
+
+CREATE TRIGGER "purchase_requisitions_no_hard_delete"
+  BEFORE DELETE ON "purchase_requisitions"
+  FOR EACH ROW EXECUTE FUNCTION public.prevent_hard_delete();
+
+CREATE TRIGGER "purchase_orders_no_hard_delete"
+  BEFORE DELETE ON "purchase_orders"
+  FOR EACH ROW EXECUTE FUNCTION public.prevent_hard_delete();
+
+CREATE TRIGGER "goods_receipts_no_hard_delete"
+  BEFORE DELETE ON "goods_receipts"
+  FOR EACH ROW EXECUTE FUNCTION public.prevent_hard_delete();
+
+CREATE TRIGGER "purchase_invoices_no_hard_delete"
+  BEFORE DELETE ON "purchase_invoices"
+  FOR EACH ROW EXECUTE FUNCTION public.prevent_hard_delete();
+
+CREATE TRIGGER "vendor_payments_no_hard_delete"
+  BEFORE DELETE ON "vendor_payments"
+  FOR EACH ROW EXECUTE FUNCTION public.prevent_hard_delete();
+
+CREATE TRIGGER "parties_no_hard_delete"
+  BEFORE DELETE ON "parties"
+  FOR EACH ROW EXECUTE FUNCTION public.prevent_hard_delete();
+
+CREATE TRIGGER "production_plans_no_hard_delete"
+  BEFORE DELETE ON "production_plans"
+  FOR EACH ROW EXECUTE FUNCTION public.prevent_hard_delete();
+
+-- -----------------------------------------------------------------------------
+-- 4. Privileges for the runtime role
+-- -----------------------------------------------------------------------------
+-- A no-op when pharma_app does not exist, which is the case on a managed
+-- database where scripts/render-bootstrap.sql runs after the migrations. That
+-- script re-applies the same restrictions after its blanket grant — see its
+-- section 3a, which exists precisely because this block is skipped there.
+
+DO $grants$
+DECLARE
+  v_role text := 'pharma_app';
+  v_table text;
+  v_rw text[] := ARRAY[
+    'parties',
+    'document_sequences',
+    'purchase_requisitions',
+    'purchase_orders',
+    'purchase_order_lines',
+    'goods_receipts',
+    'goods_receipt_lines',
+    'stock_lots',
+    'purchase_invoices',
+    'purchase_invoice_lines',
+    'vendor_payments',
+    'production_plans'
+  ];
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = v_role) THEN
+    RAISE NOTICE 'Role % not present; skipping runtime grants.', v_role;
+    RETURN;
+  END IF;
+
+  FOREACH v_table IN ARRAY v_rw LOOP
+    EXECUTE format('GRANT SELECT, INSERT, UPDATE ON TABLE %I TO %I', v_table, v_role);
+  END LOOP;
+
+  -- Line tables need DELETE so a draft document's lines can be replaced.
+  EXECUTE format('GRANT DELETE ON TABLE "purchase_order_lines" TO %I', v_role);
+  EXECUTE format('GRANT DELETE ON TABLE "purchase_invoice_lines" TO %I', v_role);
+  EXECUTE format('GRANT DELETE ON TABLE "goods_receipt_lines" TO %I', v_role);
+
+  -- Append-only pair: insert and read, never update or delete.
+  EXECUTE format('GRANT SELECT, INSERT ON TABLE "qc_results" TO %I', v_role);
+  EXECUTE format('REVOKE UPDATE, DELETE, TRUNCATE ON TABLE "qc_results" FROM %I', v_role);
+
+  EXECUTE format('GRANT SELECT, INSERT ON TABLE "stock_ledger_entries" TO %I', v_role);
+  EXECUTE format('REVOKE UPDATE, DELETE, TRUNCATE ON TABLE "stock_ledger_entries" FROM %I', v_role);
+  EXECUTE format('GRANT USAGE, SELECT ON SEQUENCE "stock_ledger_entries_id_seq" TO %I', v_role);
+END
+$grants$;
+
+-- -----------------------------------------------------------------------------
+-- 5. Assert nothing was missed
+-- -----------------------------------------------------------------------------
+-- A tenant-scoped table without RLS is a cross-tenant leak that no application
+-- test would catch, because the application filters by tenant too. This check
+-- fails the migration instead.
+
+DO $verify$
+DECLARE
+  v_unprotected text;
+BEGIN
+  SELECT string_agg(c.relname, ', ' ORDER BY c.relname)
+  INTO v_unprotected
+  FROM pg_class c
+  JOIN pg_namespace n ON n.oid = c.relnamespace
+  JOIN pg_attribute a ON a.attrelid = c.oid
+  WHERE n.nspname = 'public'
+    AND c.relkind = 'r'
+    AND a.attname = 'tenant_id'
+    AND a.attnum > 0
+    AND NOT a.attisdropped
+    AND (c.relrowsecurity IS FALSE OR c.relforcerowsecurity IS FALSE);
+
+  IF v_unprotected IS NOT NULL THEN
+    RAISE EXCEPTION 'Tables carry tenant_id but lack ENABLE/FORCE row level security: %', v_unprotected
+      USING HINT = 'Add the table to the tenant-isolation loop in this migration.';
+  END IF;
+END
+$verify$;

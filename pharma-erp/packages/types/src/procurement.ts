@@ -14,32 +14,69 @@
 // Enumerations — mirrored from the Prisma schema
 // ---------------------------------------------------------------------------
 
-export const ITEM_TYPES = ['RAW_MATERIAL', 'PACKAGING', 'FINISHED_GOOD'] as const;
+export const ITEM_TYPES = ['RAW_MATERIAL', 'PACKING_MATERIAL', 'SEMI_FINISHED', 'FINISHED_GOOD'] as const;
 export type ItemType = (typeof ITEM_TYPES)[number];
 
-export const UNITS_OF_MEASURE = ['KG', 'G', 'MG', 'L', 'ML', 'NOS', 'PACK'] as const;
-export type UnitOfMeasure = (typeof UNITS_OF_MEASURE)[number];
+/**
+ * Unit of measure is FREE TEXT on the shared item master, not an enum.
+ *
+ * Looser than this module would have chosen — "kg" and "Kg" can both be
+ * stored — but the shared schema is authoritative and a column other teams
+ * write to is not the place to unilaterally tighten a type. These are the
+ * conventional values, offered as suggestions in the UI rather than enforced.
+ */
+export const COMMON_UNITS = ['kg', 'g', 'mg', 'L', 'mL', 'nos', 'pack'] as const;
+
+/** Drugs and Cosmetics Rules schedule. H1 obliges a separate supply register. */
+export const SCHEDULE_CLASSIFICATIONS = ['NONE', 'H', 'H1', 'X', 'G'] as const;
+export type ScheduleClassification = (typeof SCHEDULE_CLASSIFICATIONS)[number];
+
+export const SCHEDULE_LABELS: Record<ScheduleClassification, string> = {
+  NONE: 'Not scheduled',
+  H: 'Schedule H',
+  H1: 'Schedule H1',
+  X: 'Schedule X',
+  G: 'Schedule G',
+};
+
+export const ITEM_TYPE_LABELS: Record<ItemType, string> = {
+  RAW_MATERIAL: 'Raw material',
+  PACKING_MATERIAL: 'Packing material',
+  SEMI_FINISHED: 'Semi-finished',
+  FINISHED_GOOD: 'Finished good',
+};
 
 export const PARTY_TYPES = ['VENDOR', 'CUSTOMER', 'JOB_WORK_PRINCIPAL'] as const;
 export type PartyType = (typeof PARTY_TYPES)[number];
 
 export const REQUISITION_STATUSES = [
-  'DRAFT',
-  'PENDING',
+  'OPEN',
   'APPROVED',
   'CONVERTED_TO_PO',
   'CANCELLED',
 ] as const;
 export type RequisitionStatus = (typeof REQUISITION_STATUSES)[number];
 
-export const PURCHASE_ORDER_STATUSES = [
+/** Why a requisition exists: raised by the reorder check, or by a person. */
+export const REQUISITION_TRIGGER_TYPES = ['AUTO_REORDER', 'MANUAL'] as const;
+export type RequisitionTriggerType = (typeof REQUISITION_TRIGGER_TYPES)[number];
+
+export const REQUISITION_TRIGGER_LABELS: Record<RequisitionTriggerType, string> = {
+  AUTO_REORDER: 'Auto-reorder',
+  MANUAL: 'Manual',
+};
+
+export const PRODUCTION_PLAN_STATUSES = [
   'DRAFT',
-  'ISSUED',
-  'PARTIALLY_RECEIVED',
-  'FULLY_RECEIVED',
-  'CLOSED',
+  'PLANNED',
+  'IN_PROGRESS',
+  'COMPLETED',
   'CANCELLED',
 ] as const;
+export type ProductionPlanStatus = (typeof PRODUCTION_PLAN_STATUSES)[number];
+
+
+export const PURCHASE_ORDER_STATUSES = ['OPEN', 'PARTIALLY_RECEIVED', 'CLOSED', 'CANCELLED'] as const;
 export type PurchaseOrderStatus = (typeof PURCHASE_ORDER_STATUSES)[number];
 
 export const QC_DECISIONS = ['ACCEPTED', 'REJECTED', 'ON_HOLD'] as const;
@@ -54,7 +91,7 @@ export const STOCK_LOT_STATUSES = [
 ] as const;
 export type StockLotStatus = (typeof STOCK_LOT_STATUSES)[number];
 
-export const PURCHASE_INVOICE_STATUSES = ['DRAFT', 'APPROVED', 'CANCELLED'] as const;
+export const PURCHASE_INVOICE_STATUSES = ['BOOKED', 'PARTIALLY_PAID', 'PAID', 'CANCELLED'] as const;
 export type PurchaseInvoiceStatus = (typeof PURCHASE_INVOICE_STATUSES)[number];
 
 /**
@@ -72,18 +109,15 @@ export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
 // ---------------------------------------------------------------------------
 
 export const REQUISITION_STATUS_LABELS: Record<RequisitionStatus, string> = {
-  DRAFT: 'Draft',
-  PENDING: 'Pending approval',
+  OPEN: 'Open',
   APPROVED: 'Approved',
   CONVERTED_TO_PO: 'Converted to PO',
   CANCELLED: 'Cancelled',
 };
 
 export const PURCHASE_ORDER_STATUS_LABELS: Record<PurchaseOrderStatus, string> = {
-  DRAFT: 'Draft',
-  ISSUED: 'Issued',
+  OPEN: 'Open',
   PARTIALLY_RECEIVED: 'Partially received',
-  FULLY_RECEIVED: 'Fully received',
   CLOSED: 'Closed',
   CANCELLED: 'Cancelled',
 };
@@ -103,8 +137,9 @@ export const QC_DECISION_LABELS: Record<QcDecision, string> = {
 };
 
 export const PURCHASE_INVOICE_STATUS_LABELS: Record<PurchaseInvoiceStatus, string> = {
-  DRAFT: 'Draft',
-  APPROVED: 'Approved',
+  BOOKED: 'Booked',
+  PARTIALLY_PAID: 'Partially paid',
+  PAID: 'Paid',
   CANCELLED: 'Cancelled',
 };
 
@@ -115,29 +150,66 @@ export const PAYMENT_STATUS_LABELS: Record<PaymentStatus, string> = {
   OVERDUE: 'Overdue',
 };
 
-export const UNIT_LABELS: Record<UnitOfMeasure, string> = {
-  KG: 'kg',
-  G: 'g',
-  MG: 'mg',
-  L: 'L',
-  ML: 'mL',
-  NOS: 'nos',
-  PACK: 'pack',
-};
-
 // ---------------------------------------------------------------------------
 // Master data
 // ---------------------------------------------------------------------------
 
+/**
+ * The item master as every Procure-to-Pay screen sees it.
+ *
+ * Mirrors the shared `items` table field for field — that table is owned by
+ * the master-data work, not by this module, so this contract follows it rather
+ * than the other way round. Note what is NOT here: no batch-tracking flag (it
+ * is derived from `type`) and no tax-rate reference, because `gstRate` sits on
+ * the item itself. The item master IS the tax master.
+ */
 export interface ItemSummary {
   id: string;
   code: string;
   name: string;
-  itemType: ItemType;
-  uom: UnitOfMeasure;
-  reorderLevel: string;
-  requiresBatchTracking: boolean;
+  type: ItemType;
+  /** Free text on the shared schema. */
+  uom: string;
+  shelfLifeMonths: number | null;
   hsnCode: string | null;
+  brandName: string | null;
+  genericName: string | null;
+  scheduleClassification: ScheduleClassification;
+  /** GST percentage. Null means no rate is configured and it cannot be invoiced. */
+  gstRate: string | null;
+  mrp: string | null;
+  dpcoCeiling: boolean;
+  storageConditions: string | null;
+  /** Null means no reorder policy is configured — different from a level of zero. */
+  reorderLevel: string | null;
+  reorderQuantity: string | null;
+  /** Derived, not stored: every pharmaceutical material is batch tracked. */
+  requiresBatchTracking: boolean;
+}
+
+/** One component a formulation consumes, per unit of output. */
+export interface BomLineItem {
+  id: string;
+  item: ItemSummary;
+  quantityPer: string;
+  notes: string | null;
+}
+
+/**
+ * A versioned bill of material from the shared master data.
+ *
+ * Procure-to-Pay reads it rather than keeping its own component list: a manual
+ * requisition cites a production plan, the plan cites a BOM, and "what does
+ * this run consume" therefore has exactly one answer.
+ */
+export interface BomSummary {
+  id: string;
+  version: number;
+  product: ItemSummary;
+  outputQuantity: string;
+  isActive: boolean;
+  effectiveFrom: string | null;
+  lines: BomLineItem[];
 }
 
 export interface PartySummary {
@@ -181,7 +253,11 @@ export interface RequisitionListItem {
   /** `reorderLevelAtRequest - stockAtRequest`, floored at zero. */
   shortfallAtRequest: string;
   requiredQuantity: string;
+  triggerType: RequisitionTriggerType;
+  /** Present for MANUAL requisitions; the run the material is for. */
+  productionPlan: ProductionPlanSummary | null;
   preferredVendor: { id: string; name: string } | null;
+  /** Null when the system raised it — an auto-reorder has no author. */
   requestedBy: string | null;
   approvedBy: string | null;
   requestDate: string;
@@ -195,12 +271,13 @@ export interface RequisitionListItem {
 
 export interface CreateRequisitionRequest {
   itemId: string;
-  requiredQuantity: string;
+  /** Defaults to the item's reorder quantity when omitted. */
+  requiredQuantity?: string;
+  /** Required by the API when the trigger is MANUAL. */
+  productionPlanId?: string;
   preferredVendorId?: string;
   requiredByDate?: string;
   notes?: string;
-  /** Save as a draft rather than submitting for approval. */
-  asDraft?: boolean;
 }
 
 export interface UpdateRequisitionRequest {
@@ -208,6 +285,49 @@ export interface UpdateRequisitionRequest {
   preferredVendorId?: string | null;
   requiredByDate?: string | null;
   notes?: string | null;
+}
+
+/** Result of running the reorder check. */
+export interface ReorderCheckResult {
+  /** Requisitions the system raised on this run. */
+  created: RequisitionListItem[];
+  /** Items below their level that already had one open, so were skipped. */
+  skipped: { itemCode: string; itemName: string; reason: string }[];
+  checkedAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// Production plan — the reason a MANUAL requisition exists
+// ---------------------------------------------------------------------------
+
+/**
+ * A planned manufacturing run.
+ *
+ * The packaging detail the brief asks a requisition to carry — component,
+ * level, quantity per unit, mandatory — lives on `components` here rather than
+ * being copied onto every requisition raised against the plan. A requisition
+ * points at the plan and reads them, so revising the recipe cannot leave stale
+ * copies behind on documents that already exist.
+ */
+export interface ProductionPlanSummary {
+  id: string;
+  number: string;
+  finishedProduct: ItemSummary;
+  packVariant: string | null;
+  plannedQuantity: string;
+  plannedDate: string | null;
+  status: ProductionPlanStatus;
+  /** The formulation this run follows; its lines are the component list. */
+  bom: BomSummary | null;
+}
+
+export interface CreateProductionPlanRequest {
+  finishedProductId: string;
+  packVariant?: string;
+  plannedQuantity: string;
+  plannedDate?: string;
+  notes?: string;
+  bomId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -428,7 +548,8 @@ export interface PurchaseInvoiceListItem {
   vendorInvoiceNumber: string;
   vendor: PartySummary;
   purchaseOrder: { id: string; number: string };
-  goodsReceipt: { id: string; number: string } | null;
+  /** Mandatory: an invoice always bills for a specific receipt. */
+  goodsReceipt: { id: string; number: string };
   invoiceDate: string;
   dueDate: string;
   paymentTermsDays: number;
@@ -439,6 +560,15 @@ export interface PurchaseInvoiceListItem {
   notes: string | null;
   recordedBy: string | null;
   lines: PurchaseInvoiceLineItem[];
+  /**
+   * True when a line's quantity or rate differs from the receipt / order by
+   * more than the company's configured tolerance. The invoice is still
+   * bookable — a genuine price revision has to be recordable — but it is
+   * flagged rather than folded silently into a total.
+   */
+  toleranceExceeded: boolean;
+  /** Which lines differed and by how much. Null when everything matched. */
+  matchNotes: string | null;
   /** Payable position, computed from the payments. */
   amountPaid: string;
   outstandingAmount: string;
@@ -446,16 +576,23 @@ export interface PurchaseInvoiceListItem {
   createdAt: string;
 }
 
+/**
+ * One invoice line as the client submits it.
+ *
+ * THERE IS NO TAX FIELD, deliberately. GST is read from the item's tax master
+ * entry, never accepted from the caller — a rate typed per document is
+ * eventually typed wrong on one of them, and an incorrect input-tax claim is a
+ * filing problem rather than a rounding one.
+ */
 export interface CreatePurchaseInvoiceLineRequest {
   itemId: string;
   quantity: string;
   rate: string;
-  taxRatePercent: string;
 }
 
 export interface CreatePurchaseInvoiceRequest {
-  purchaseOrderId: string;
-  goodsReceiptId?: string;
+  /** Mandatory. The order is derived from the receipt. */
+  goodsReceiptId: string;
   vendorInvoiceNumber: string;
   invoiceDate: string;
   paymentTermsDays?: number;
@@ -503,6 +640,49 @@ export interface RecordPaymentRequest {
   reference?: string;
   method?: string;
   notes?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Outstanding payables report
+// ---------------------------------------------------------------------------
+
+/**
+ * Ageing buckets, by days past the due date.
+ *
+ * Measured from the DUE date, not the invoice date. Ageing a payable from
+ * when it was raised would call a 60-day-terms invoice "60 days old" on the
+ * day it falls due, which tells the person paying bills nothing about whether
+ * they are late.
+ */
+export const AGEING_BUCKETS = ['NOT_DUE', 'DUE_0_30', 'DUE_31_60', 'DUE_61_90', 'DUE_90_PLUS'] as const;
+export type AgeingBucket = (typeof AGEING_BUCKETS)[number];
+
+export const AGEING_BUCKET_LABELS: Record<AgeingBucket, string> = {
+  NOT_DUE: 'Not yet due',
+  DUE_0_30: 'Overdue 1–30 days',
+  DUE_31_60: 'Overdue 31–60 days',
+  DUE_61_90: 'Overdue 61–90 days',
+  DUE_90_PLUS: 'Overdue 90+ days',
+};
+
+/** One vendor's outstanding position, broken into ageing buckets. */
+export interface VendorAgeingRow {
+  vendor: { id: string; name: string; code: string };
+  totalOutstanding: string;
+  buckets: Record<AgeingBucket, string>;
+  invoiceCount: number;
+  /** The single oldest overdue invoice, for a place to start. */
+  oldestOverdueDays: number;
+}
+
+export interface PayablesReport {
+  rows: VendorAgeingRow[];
+  totals: {
+    totalOutstanding: string;
+    buckets: Record<AgeingBucket, string>;
+    invoiceCount: number;
+  };
+  generatedAt: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -561,4 +741,5 @@ export const PROCUREMENT_ROUTES = {
   incomingQc: '/workflows/procure-to-pay/incoming-qc',
   invoices: '/workflows/procure-to-pay/invoices',
   payments: '/workflows/procure-to-pay/payments',
+  productionPlans: '/workflows/procure-to-pay/requisitions?view=plans',
 } as const;

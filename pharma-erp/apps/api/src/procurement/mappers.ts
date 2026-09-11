@@ -1,11 +1,13 @@
 import type {
   ItemSummary,
   PartySummary,
+  BomSummary,
+  ProductionPlanSummary,
   QcResultItem,
   StockLotSummary,
 } from '@pharma-erp/types';
 
-import { qty } from './decimal.util';
+import { money, percent, qty } from './decimal.util';
 
 /**
  * Row-to-contract mappers.
@@ -16,17 +18,115 @@ import { qty } from './decimal.util';
  * expiry and another silently omitting it.
  */
 
-/** Fields every caller selects for an item. Keep in step with ItemSummary. */
+/** Fields every caller selects for an item. Mirrors the shared items table. */
 export const ITEM_SELECT = {
   id: true,
   code: true,
   name: true,
-  itemType: true,
+  type: true,
   uom: true,
-  reorderLevel: true,
-  requiresBatchTracking: true,
+  shelfLifeMonths: true,
   hsnCode: true,
+  brandName: true,
+  genericName: true,
+  scheduleClassification: true,
+  gstRate: true,
+  mrp: true,
+  dpcoCeiling: true,
+  storageConditions: true,
+  reorderLevel: true,
+  reorderQuantity: true,
 } as const;
+
+/**
+ * Whether a receipt of this item must carry a batch number and expiry.
+ *
+ * DERIVED, because the shared item master has no such column — and derived as
+ * "always", because this is a pharmaceutical ERP. Every material that enters a
+ * plant, from an API to a carton, has to be traceable to a vendor lot for
+ * recall and for inspection. If an exception ever turns out to be real it
+ * belongs as a column on the shared table, decided with the master-data work,
+ * not as a quiet special case here.
+ */
+export function requiresBatchTracking(_type: string): boolean {
+  return true;
+}
+
+type ItemRow = {
+  id: string;
+  code: string;
+  name: string;
+  type: string;
+  uom: string;
+  shelfLifeMonths: number | null;
+  hsnCode: string | null;
+  brandName: string | null;
+  genericName: string | null;
+  scheduleClassification: string;
+  gstRate: unknown;
+  mrp: unknown;
+  dpcoCeiling: boolean;
+  storageConditions: string | null;
+  reorderLevel: unknown;
+  reorderQuantity: unknown;
+};
+
+export function toItemSummary(row: ItemRow): ItemSummary {
+  return {
+    id: row.id,
+    code: row.code,
+    name: row.name,
+    type: row.type as ItemSummary['type'],
+    uom: row.uom,
+    shelfLifeMonths: row.shelfLifeMonths,
+    hsnCode: row.hsnCode,
+    brandName: row.brandName,
+    genericName: row.genericName,
+    scheduleClassification: row.scheduleClassification as ItemSummary['scheduleClassification'],
+    // Nullable throughout: on the shared schema these are genuinely optional,
+    // and null means "not configured" rather than zero. Coercing a missing
+    // reorder level to 0 would quietly exempt the item from the low-stock
+    // check instead of flagging that nobody has set a policy for it.
+    gstRate: row.gstRate === null ? null : percent(row.gstRate as never),
+    mrp: row.mrp === null ? null : money(row.mrp as never),
+    dpcoCeiling: row.dpcoCeiling,
+    storageConditions: row.storageConditions,
+    reorderLevel: row.reorderLevel === null ? null : qty(row.reorderLevel as never),
+    reorderQuantity: row.reorderQuantity === null ? null : qty(row.reorderQuantity as never),
+    requiresBatchTracking: requiresBatchTracking(row.type),
+  };
+}
+
+/** Shape a BOM must be loaded with for the mapper below. */
+export const BOM_INCLUDE = {
+  product: { select: ITEM_SELECT },
+  lines: { include: { item: { select: ITEM_SELECT } }, orderBy: { id: 'asc' } },
+} as const;
+
+export function toBomSummary(row: {
+  id: string;
+  version: number;
+  outputQuantity: unknown;
+  isActive: boolean;
+  effectiveFrom: Date | null;
+  product: ItemRow;
+  lines: { id: string; quantityPer: unknown; notes: string | null; item: ItemRow }[];
+}): BomSummary {
+  return {
+    id: row.id,
+    version: row.version,
+    product: toItemSummary(row.product),
+    outputQuantity: qty(row.outputQuantity as never),
+    isActive: row.isActive,
+    effectiveFrom: toDateOnly(row.effectiveFrom),
+    lines: row.lines.map((line) => ({
+      id: line.id,
+      item: toItemSummary(line.item),
+      quantityPer: qty(line.quantityPer as never),
+      notes: line.notes,
+    })),
+  };
+}
 
 export const PARTY_SELECT = {
   id: true,
@@ -51,30 +151,6 @@ export const LOT_SELECT = {
   status: true,
   storageLocation: true,
 } as const;
-
-type ItemRow = {
-  id: string;
-  code: string;
-  name: string;
-  itemType: string;
-  uom: string;
-  reorderLevel: unknown;
-  requiresBatchTracking: boolean;
-  hsnCode: string | null;
-};
-
-export function toItemSummary(row: ItemRow): ItemSummary {
-  return {
-    id: row.id,
-    code: row.code,
-    name: row.name,
-    itemType: row.itemType as ItemSummary['itemType'],
-    uom: row.uom as ItemSummary['uom'],
-    reorderLevel: qty(row.reorderLevel as never),
-    requiresBatchTracking: row.requiresBatchTracking,
-    hsnCode: row.hsnCode,
-  };
-}
 
 type PartyRow = {
   id: string;
@@ -154,6 +230,35 @@ export function toQcResultItem(
 /** `YYYY-MM-DD` for a Postgres `date`, or null. */
 export function toDateOnly(value: Date | null): string | null {
   return value ? value.toISOString().slice(0, 10) : null;
+}
+
+/** Shape a production plan must be loaded with for the mapper below. */
+export const PRODUCTION_PLAN_INCLUDE = {
+  finishedProduct: { select: ITEM_SELECT },
+  bom: { include: BOM_INCLUDE },
+} as const;
+
+export function toProductionPlanSummary(row: {
+  id: string;
+  number: string;
+  packVariant: string | null;
+  plannedQuantity: unknown;
+  plannedDate: Date | null;
+  status: string;
+  finishedProduct: Parameters<typeof toItemSummary>[0];
+  bom: Parameters<typeof toBomSummary>[0] | null;
+}): ProductionPlanSummary {
+  return {
+    id: row.id,
+    number: row.number,
+    finishedProduct: toItemSummary(row.finishedProduct),
+    packVariant: row.packVariant,
+    plannedQuantity: qty(row.plannedQuantity as never),
+    plannedDate: toDateOnly(row.plannedDate),
+    status: row.status as ProductionPlanSummary['status'],
+    // The component list comes from the BOM, not from a parallel table.
+    bom: row.bom ? toBomSummary(row.bom) : null,
+  };
 }
 
 // ---------------------------------------------------------------------------

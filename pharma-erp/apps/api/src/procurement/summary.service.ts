@@ -43,17 +43,17 @@ export class SummaryService {
       approvedInvoices,
     ] = await Promise.all([
       this.stock.lowStockItems(),
-      scoped.purchaseRequisition.count({ where: { deletedAt: null, status: 'PENDING' } }),
+      scoped.purchaseRequisition.count({ where: { deletedAt: null, status: 'OPEN' } }),
       scoped.purchaseRequisition.count({ where: { deletedAt: null, status: 'APPROVED' } }),
-      scoped.purchaseOrder.count({ where: { deletedAt: null, status: 'DRAFT' } }),
+      scoped.purchaseOrder.count({ where: { deletedAt: null, status: 'OPEN' } }),
       scoped.purchaseOrder.count({
-        where: { deletedAt: null, status: { in: ['ISSUED', 'PARTIALLY_RECEIVED'] } },
+        where: { deletedAt: null, status: { in: ['OPEN', 'PARTIALLY_RECEIVED'] } },
       }),
       scoped.stockLot.count({ where: { status: 'QUARANTINE' } }),
       scoped.stockLot.count({ where: { status: 'ON_HOLD' } }),
-      scoped.purchaseInvoice.count({ where: { deletedAt: null, status: 'DRAFT' } }),
+      scoped.purchaseInvoice.count({ where: { deletedAt: null, status: 'BOOKED' } }),
       scoped.purchaseInvoice.findMany({
-        where: { deletedAt: null, status: 'APPROVED' },
+        where: { deletedAt: null, status: { not: 'CANCELLED' } },
         select: { totalAmount: true, dueDate: true, payments: { select: { amount: true } } },
       }),
     ]);
@@ -97,18 +97,18 @@ export class SummaryService {
       },
       {
         key: 'pending-requisitions',
-        label: 'Pending requisitions',
+        label: 'Open requisitions',
         count: pendingRequisitions,
         detail: approvedRequisitions > 0 ? `${approvedRequisitions} approved, ready for PO` : null,
-        href: `${PROCUREMENT_ROUTES.requisitions}?status=PENDING`,
+        href: `${PROCUREMENT_ROUTES.requisitions}?status=OPEN`,
         tone: pendingRequisitions > 0 ? 'attention' : 'neutral',
       },
       {
         key: 'draft-orders',
-        label: 'Draft purchase orders',
+        label: 'Open purchase orders',
         count: draftOrders,
-        detail: draftOrders > 0 ? 'Not yet issued to the vendor' : null,
-        href: `${PROCUREMENT_ROUTES.purchaseOrders}?status=DRAFT`,
+        detail: draftOrders > 0 ? 'Awaiting delivery' : null,
+        href: `${PROCUREMENT_ROUTES.purchaseOrders}?status=OPEN`,
         tone: draftOrders > 0 ? 'attention' : 'neutral',
       },
       {
@@ -116,7 +116,7 @@ export class SummaryService {
         label: 'Orders awaiting delivery',
         count: openOrders,
         detail: openOrders > 0 ? 'Issued or part received' : null,
-        href: `${PROCUREMENT_ROUTES.purchaseOrders}?status=ISSUED`,
+        href: `${PROCUREMENT_ROUTES.purchaseOrders}?status=PARTIALLY_RECEIVED`,
         tone: 'neutral',
       },
       {
@@ -129,10 +129,10 @@ export class SummaryService {
       },
       {
         key: 'draft-invoices',
-        label: 'Invoices to approve',
+        label: 'Unpaid invoices',
         count: draftInvoices,
-        detail: draftInvoices > 0 ? 'Match against PO and GRN' : null,
-        href: `${PROCUREMENT_ROUTES.invoices}?status=DRAFT`,
+        detail: draftInvoices > 0 ? 'Booked, nothing paid yet' : null,
+        href: `${PROCUREMENT_ROUTES.invoices}?status=BOOKED`,
         tone: draftInvoices > 0 ? 'attention' : 'neutral',
       },
       {
