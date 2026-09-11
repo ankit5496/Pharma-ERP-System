@@ -12,6 +12,30 @@ export type TenantScopedClient = ReturnType<typeof forTenant>;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
+ * Transaction budgets for every interactive transaction in this package.
+ *
+ * Prisma's defaults are maxWait 2s / timeout 5s, which assume a database on the
+ * same network. They are not enough for a managed database reached across a
+ * region: one round trip can be over half a second, and a cold pool connection
+ * pays a TLS handshake on top, so merely STARTING a transaction can exceed 2s
+ * and fail with P2028 — "Unable to start a transaction in the given time".
+ *
+ * That failure mode is worth being generous about because of what it hits
+ * first: every sign-in runs a transaction before anything else, so a tight
+ * budget presents as "nobody can log in" rather than as a slow query.
+ *
+ * Still bounded, not disabled. A transaction that cannot start in 10 seconds
+ * means the database is unreachable or the pool is exhausted, and failing then
+ * is better than holding the request open.
+ */
+export const TRANSACTION_TIMEOUTS = {
+  /** How long to wait for a connection from the pool to begin the transaction. */
+  maxWait: 10_000,
+  /** How long the transaction body may run once started. */
+  timeout: 15_000,
+} as const;
+
+/**
  * Binds a client to a tenant for the lifetime of the returned object.
  *
  * The mechanism matters, so: PostgreSQL settings are per-session, and Prisma
@@ -65,10 +89,13 @@ export async function runInTenantTransaction<T>(
 ): Promise<T> {
   assertTenantId(tenantId);
 
-  return prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT set_config(${PG_TENANT_SETTING}, ${tenantId}, true)`;
-    return fn(tx);
-  }, options);
+  return prisma.$transaction(
+    async (tx) => {
+      await tx.$executeRaw`SELECT set_config(${PG_TENANT_SETTING}, ${tenantId}, true)`;
+      return fn(tx);
+    },
+    { ...TRANSACTION_TIMEOUTS, ...options },
+  );
 }
 
 /**

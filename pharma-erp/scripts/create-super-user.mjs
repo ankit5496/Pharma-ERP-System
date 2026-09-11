@@ -146,7 +146,6 @@ try {
   console.log(`  Email    : ${operator.email}`);
   console.log(`  Password : ${password}`);
   console.log(`${line}`);
-  console,log('super user');
 
   if (generated) {
     console.log('\n  This password is shown once and is not stored in readable form.');

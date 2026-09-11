@@ -8,7 +8,20 @@ import { env } from './env';
 export type ApiResult<T> =
   { ok: true; data: T } | { ok: false; status: number | null; error: string };
 
-const DEFAULT_TIMEOUT_MS = 5_000;
+/**
+ * Budget for a page's data fetch.
+ *
+ * 5s originally, which assumed the API and its database were on the same host.
+ * A page that aggregates across tenants makes several round trips, and against
+ * a database in another region each one costs a large fraction of a second —
+ * so a dashboard that renders fine locally times out with "is the API
+ * running?", which sends you looking at the wrong thing entirely.
+ *
+ * Deliberately still short enough that a genuinely unreachable API fails while
+ * someone is still looking at the screen. Slow endpoints raise it themselves:
+ * sign-in passes 75s to outlast a cold start.
+ */
+const DEFAULT_TIMEOUT_MS = 15_000;
 
 /**
  * Statuses that mean "nothing is serving this yet" rather than "the API said
