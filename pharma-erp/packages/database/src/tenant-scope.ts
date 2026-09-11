@@ -75,8 +75,8 @@ export function forTenant(prisma: PrismaClient, tenantId: string) {
  * for the same work over a slow link. Long-running batch work still belongs
  * outside one.
  */
-const TRANSACTION_TIMEOUT_MS = 30_000;
-const TRANSACTION_MAX_WAIT_MS = 10_000;
+export const TRANSACTION_TIMEOUT_MS = 30_000;
+export const TRANSACTION_MAX_WAIT_MS = 10_000;
 
 export async function runInTenantTransaction<T>(
   prisma: PrismaClient,

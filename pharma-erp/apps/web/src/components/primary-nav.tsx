@@ -2,21 +2,25 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { WORKFLOWS, workflowHref } from '@pharma-erp/types';
+import { WORKFLOWS, findSectionForPath, workflowHref } from '@pharma-erp/types';
 
 /**
- * The four main workflow tabs.
+ * The header's tab row: the four workflows.
  *
- * A client component purely so it can read `usePathname()` for the active
- * state. The alternative — an `active` prop, as PlatformShell takes — means
- * every page that renders the shell has to remember to pass the right value,
- * and the one that forgets shows no tab as current.
+ * Renders nothing inside Master Data, where the registers are a rail beside
+ * the form instead. The alternative was to keep showing the workflow tabs
+ * there, but none of them would be current — and a tab bar with no tab
+ * selected reads as a bug rather than as "you are somewhere else".
  *
- * Every tab is shown to every role: see the note in @pharma-erp/types
- * workflows.ts on why there is no gating here yet.
+ * A client component purely to read `usePathname()`. The alternative — an
+ * `active` prop, as PlatformShell takes — means every page rendering the shell
+ * has to pass the right value, and the one that forgets shows no tab as
+ * current. This one cannot be got wrong from a call site.
  */
-export function WorkflowNav() {
+export function PrimaryNav() {
   const pathname = usePathname();
+
+  if (findSectionForPath(pathname)?.key === 'master-data') return null;
 
   return (
     <nav aria-label="Workflows" className="mx-auto max-w-7xl px-4 sm:px-6">

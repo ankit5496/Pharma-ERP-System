@@ -10,9 +10,11 @@ import { AuditModule } from './common/audit/audit.module';
 import { validateEnv } from './config/env.validation';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { HealthModule } from './health/health.module';
+import { PartiesModule } from './parties/parties.module';
 import { PlatformModule } from './platform/platform.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProcurementModule } from './procurement/procurement.module';
+import { ProductionModule } from './production/production.module';
 import { RequestContextMiddleware } from './tenant/request-context.middleware';
 import { TenantModule } from './tenant/tenant.module';
 import { UsersModule } from './users/users.module';
@@ -37,6 +39,8 @@ import { UsersModule } from './users/users.module';
     DashboardModule,
     PlatformModule,
     ProcurementModule,
+    PartiesModule,
+    ProductionModule,
   ],
   providers: [
     {

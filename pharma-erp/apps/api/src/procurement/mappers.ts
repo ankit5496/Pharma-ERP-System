@@ -36,21 +36,22 @@ export const ITEM_SELECT = {
   storageConditions: true,
   reorderLevel: true,
   reorderQuantity: true,
+  requiresBatchTracking: true,
+  notes: true,
 } as const;
 
 /**
  * Whether a receipt of this item must carry a batch number and expiry.
  *
- * DERIVED, because the shared item master has no such column — and derived as
- * "always", because this is a pharmaceutical ERP. Every material that enters a
- * plant, from an API to a carton, has to be traceable to a vendor lot for
- * recall and for inspection. If an exception ever turns out to be real it
- * belongs as a column on the shared table, decided with the master-data work,
- * not as a quiet special case here.
+ * Read from the item, not derived. It was derived as "always" while the
+ * shared item master had no such column; 20260911160000 added one, for the
+ * reason this comment used to give — an exception belongs as a column agreed
+ * with the master-data work, not a special case here.
+ *
+ * It defaults true and no form exposes it, so behaviour is unchanged: every
+ * material entering the plant is traceable to a vendor lot. Turning that off
+ * for an item is a decision that needs a recorded reason.
  */
-export function requiresBatchTracking(_type: string): boolean {
-  return true;
-}
 
 type ItemRow = {
   id: string;
@@ -69,6 +70,8 @@ type ItemRow = {
   storageConditions: string | null;
   reorderLevel: unknown;
   reorderQuantity: unknown;
+  notes: string | null;
+  requiresBatchTracking: boolean;
 };
 
 export function toItemSummary(row: ItemRow): ItemSummary {
@@ -93,7 +96,8 @@ export function toItemSummary(row: ItemRow): ItemSummary {
     storageConditions: row.storageConditions,
     reorderLevel: row.reorderLevel === null ? null : qty(row.reorderLevel as never),
     reorderQuantity: row.reorderQuantity === null ? null : qty(row.reorderQuantity as never),
-    requiresBatchTracking: requiresBatchTracking(row.type),
+    requiresBatchTracking: row.requiresBatchTracking,
+    notes: row.notes,
   };
 }
 
@@ -138,6 +142,11 @@ export const PARTY_SELECT = {
   email: true,
   phone: true,
   paymentTermsDays: true,
+  address: true,
+  status: true,
+  drugLicenceValidTo: true,
+  creditLimit: true,
+  creditPeriodDays: true,
 } as const;
 
 export const LOT_SELECT = {
@@ -162,6 +171,11 @@ type PartyRow = {
   email: string | null;
   phone: string | null;
   paymentTermsDays: number;
+  address: string | null;
+  status: string;
+  drugLicenceValidTo: Date | null;
+  creditLimit: unknown;
+  creditPeriodDays: number | null;
 };
 
 export function toPartySummary(row: PartyRow): PartySummary {
@@ -175,6 +189,16 @@ export function toPartySummary(row: PartyRow): PartySummary {
     email: row.email,
     phone: row.phone,
     paymentTermsDays: row.paymentTermsDays,
+    address: row.address,
+    status: row.status as PartySummary['status'],
+    drugLicenceValidTo: toDateOnly(row.drugLicenceValidTo),
+    creditLimit: row.creditLimit === null ? null : money(row.creditLimit as never),
+    creditPeriodDays: row.creditPeriodDays,
+    // A licence is valid THROUGH its final day, so only a date strictly
+    // before today has lapsed. Compared as calendar days in UTC.
+    licenceExpired:
+      row.drugLicenceValidTo !== null &&
+      toDateOnly(row.drugLicenceValidTo)! < new Date().toISOString().slice(0, 10),
   };
 }
 

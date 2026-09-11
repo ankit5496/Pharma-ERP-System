@@ -17,6 +17,45 @@ import { PasswordService } from '../auth/password.service';
 import type { CreateCompanyDto } from './dto/create-company.dto';
 import { PlatformDbService } from './platform-db.service';
 
+/**
+ * How many per-tenant dashboard transactions may be in flight at once.
+ *
+ * Five, not unlimited: each one holds a pooled connection until it commits, so
+ * the ceiling has to stay well under the pool size or the dashboard would
+ * starve every other request on the instance.
+ */
+const DASHBOARD_FAN_OUT = 5;
+
+/**
+ * `Promise.all` with a ceiling on how many run at once.
+ *
+ * Written here rather than pulled in as a dependency: it is a dozen lines, and
+ * the alternative — an unbounded fan out — is the kind of thing that works on a
+ * deployment with three companies and takes the API down on one with three
+ * hundred.
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    // Each worker takes the next index until they are all claimed. Index-based
+    // rather than shift()ing a queue so results stay in the input's order.
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await fn(items[index] as T);
+    }
+  });
+
+  await Promise.all(workers);
+
+  return results;
+}
+
 @Injectable()
 export class PlatformService {
   private readonly logger = new Logger(PlatformService.name);
@@ -314,17 +353,22 @@ export class PlatformService {
       select: { id: true, status: true, createdAt: true },
     });
 
-    // Per-tenant again, for the same FORCE-RLS reason as listCompanies.
-    let totalUsers = 0;
-    let admins = 0;
-    let activeUsers = 0;
-    let pendingUsers = 0;
-    let disabledUsers = 0;
-    let signInsLast24h = 0;
-    let auditRecordCount = 0;
-
-    for (const company of companies) {
-      const stats = await db.$transaction(async (tx) => {
+    // Per-tenant again, for the same FORCE-RLS reason as listCompanies: the
+    // counts below cannot be one GROUP BY, because each tenant's rows are only
+    // visible inside a transaction that has set `app.current_tenant_id`.
+    //
+    // Run in parallel, in bounded batches. Sequentially this was one full
+    // round-trip chain per company — BEGIN, set_config, the counts, COMMIT —
+    // which is unnoticeable against a database on the same host and roughly
+    // 2.5 seconds each against one in another region. Three companies were
+    // enough to exceed the caller's timeout.
+    //
+    // Bounded rather than a plain Promise.all over every tenant: each entry
+    // holds a connection for the life of its transaction, so an unbounded fan
+    // out would exhaust the pool once this deployment has more companies than
+    // it has connections — turning a slow dashboard into a site-wide outage.
+    const perCompany = await mapWithConcurrency(companies, DASHBOARD_FAN_OUT, (company) =>
+      db.$transaction(async (tx) => {
         await tx.$executeRaw`SELECT set_config(${PG_TENANT_SETTING}, ${company.id}, true)`;
 
         const [total, adminCount, active, pending, disabled, recentSignIns, audits] =
@@ -346,16 +390,16 @@ export class PlatformService {
           ]);
 
         return { total, adminCount, active, pending, disabled, recentSignIns, audits };
-      });
+      }),
+    );
 
-      totalUsers += stats.total;
-      admins += stats.adminCount;
-      activeUsers += stats.active;
-      pendingUsers += stats.pending;
-      disabledUsers += stats.disabled;
-      signInsLast24h += stats.recentSignIns;
-      auditRecordCount += stats.audits;
-    }
+    const totalUsers = perCompany.reduce((sum, s) => sum + s.total, 0);
+    const admins = perCompany.reduce((sum, s) => sum + s.adminCount, 0);
+    const activeUsers = perCompany.reduce((sum, s) => sum + s.active, 0);
+    const pendingUsers = perCompany.reduce((sum, s) => sum + s.pending, 0);
+    const disabledUsers = perCompany.reduce((sum, s) => sum + s.disabled, 0);
+    const signInsLast24h = perCompany.reduce((sum, s) => sum + s.recentSignIns, 0);
+    const auditRecordCount = perCompany.reduce((sum, s) => sum + s.audits, 0);
 
     const [platformTotal, platformActive, recentPlatformActivity] = await Promise.all([
       db.platformUser.count({ where: { deletedAt: null } }),

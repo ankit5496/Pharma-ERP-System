@@ -139,8 +139,8 @@ export class ProcurementController {
 
   @Get('items')
   @SkipAudit('Read-only.')
-  async listItems(@Query('itemType') itemType?: string): Promise<ItemSummary[]> {
-    return this.masters.listItems(itemType);
+  async listItems(@Query('type') type?: string): Promise<ItemSummary[]> {
+    return this.masters.listItems(type);
   }
 
   @Post('items')

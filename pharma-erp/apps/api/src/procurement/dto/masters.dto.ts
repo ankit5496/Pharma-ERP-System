@@ -37,7 +37,7 @@ export class CreateItemDto {
 
   @IsOptional()
   @IsIn(ITEM_TYPES)
-  itemType?: ItemType;
+  type?: ItemType;
 
   /// Free text on the shared item master; length-checked, not enumerated.
   @IsOptional()
