@@ -3,7 +3,6 @@ import {
   PROCUREMENT_ROUTES,
   PURCHASE_ORDER_STATUSES,
   PURCHASE_ORDER_STATUS_LABELS,
-  unitLabel,
 } from '@pharma-erp/types';
 
 import { FilterBar } from '@/components/procurement/filter-bar';
@@ -200,7 +199,7 @@ export default async function PurchaseOrdersPage({
                           )}
                         </td>
                         <td className="py-2 pr-4 text-right tabular-nums">
-                          <Qty value={line.quantity} uom={unitLabel(line.item.uom)} />
+                          <Qty value={line.quantity} uom={line.item.uom} />
                         </td>
                         <td className="py-2 pr-4 text-right tabular-nums">
                           {line.quantityReceived === '0' ? (

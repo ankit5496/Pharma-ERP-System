@@ -12,13 +12,12 @@
  * serialising a credit limit as a number silently rounds it.
  */
 
-/**
- * NOT ours to extend. Purchase orders filter on `VENDOR`, so adding a "both"
- * value would silently hide such a party from their vendor picker. A party
- * that genuinely buys and sells needs agreeing with whoever owns P2P.
- */
-export const PARTY_TYPES = ['VENDOR', 'CUSTOMER', 'JOB_WORK_PRINCIPAL'] as const;
-export type PartyType = (typeof PARTY_TYPES)[number];
+// PartyType and PartySummary live in ./procurement, alongside the rest of
+// the shared master data. This module adds what only the Party register
+// needs: status, the licence validity, and the credit terms.
+import type { PartyType } from './procurement';
+
+
 
 export const PARTY_STATUSES = ['ACTIVE', 'INACTIVE'] as const;
 export type PartyStatus = (typeof PARTY_STATUSES)[number];
@@ -39,33 +38,6 @@ export function isCustomerParty(type: PartyType): boolean {
   return type === 'CUSTOMER';
 }
 
-export interface PartySummary {
-  id: string;
-  code: string;
-  name: string;
-  partyType: PartyType;
-  status: PartyStatus;
-  gstin: string | null;
-  email: string | null;
-  phone: string | null;
-  address: string | null;
-  /** Days until a supplier invoice falls due. */
-  paymentTermsDays: number;
-  drugLicenceNumber: string | null;
-  /** ISO date, no time component. */
-  drugLicenceValidTo: string | null;
-  creditLimit: string | null;
-  creditPeriodDays: number | null;
-  /**
-   * Computed by the API, not stored: whether the licence on file has already
-   * lapsed. Derived server-side so every screen agrees on the answer — a
-   * browser comparing against its own clock and timezone would not.
-   *
-   * A lapsed licence does NOT make the party inactive by itself. Nothing
-   * sweeps for expiry yet, so this is what the grid warns on.
-   */
-  licenceExpired: boolean;
-}
 
 /**
  * What the create endpoint accepts.

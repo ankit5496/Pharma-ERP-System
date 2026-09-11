@@ -1,9 +1,9 @@
-import { unitLabel, type LowStockItem, type PartySummary } from '@pharma-erp/types';
+import { type LowStockItem } from '@pharma-erp/types';
 
 import type { ApiResult } from '@/lib/api';
 
-import { RaiseRequisitionForm } from './raise-requisition-form';
-import { EmptyState, ErrorState, Panel, Qty, TableWrap, Td, Th } from './ui';
+import { ReorderCheckButton } from './reorder-check-button';
+import { EmptyState, ErrorState, Panel, Pill, Qty, TableWrap, Td, Th } from './ui';
 
 /**
  * The trigger for the whole workflow: raw materials whose usable stock has
@@ -13,17 +13,25 @@ import { EmptyState, ErrorState, Panel, Qty, TableWrap, Td, Th } from './ui';
  * awaiting QC is shown in its own column but is NOT counted as available,
  * because it cannot be dispensed — counting it would suppress a shortage that
  * genuinely needs a requisition raised.
+ *
+ * THERE IS NO PER-ROW "RAISE" BUTTON, and its absence is the design. The
+ * specification distinguishes two kinds of requisition: an AUTO_REORDER one
+ * the system raises from this exact condition, and a MANUAL one a person
+ * raises against a production plan. A per-row button would be neither — a
+ * human action producing a document that claims no plan and no author. The
+ * reorder check raises them all as what they are, and the manual path lives
+ * in the toolbar above, where a plan can be chosen.
  */
 export function LowStockPanel({
   result,
-  vendors,
   highlighted,
 }: {
   result: ApiResult<LowStockItem[]>;
-  vendors: readonly PartySummary[];
   /** True when the user arrived from the Low stock summary card. */
   highlighted?: boolean;
 }) {
+  const pending = result.ok ? result.data.filter((row) => !row.hasOpenRequisition).length : 0;
+
   return (
     <div
       className={highlighted ? 'rounded-lg ring-2 ring-amber-400 ring-offset-2' : undefined}
@@ -31,7 +39,8 @@ export function LowStockPanel({
     >
       <Panel
         title="Low stock — needs procurement"
-        subtitle="Available stock is below the reorder level. Available counts QC-accepted material only."
+        subtitle="Available counts QC-accepted material only. The reorder check raises a requisition for each item that has none open."
+        action={<ReorderCheckButton pendingCount={pending} />}
       >
         {!result.ok ? (
           <ErrorState message={`Could not load low-stock items: ${result.error}`} />
@@ -42,15 +51,16 @@ export function LowStockPanel({
           />
         ) : (
           <TableWrap>
-            <table className="w-full min-w-[56rem] text-left text-sm">
+            <table className="w-full min-w-[60rem] text-left text-sm">
               <thead>
                 <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
                   <Th>Item</Th>
                   <Th align="right">Available</Th>
                   <Th align="right">Reorder level</Th>
                   <Th align="right">Shortfall</Th>
+                  <Th align="right">Reorder qty</Th>
                   <Th align="right">In quarantine</Th>
-                  <Th>Action</Th>
+                  <Th>Status</Th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -63,21 +73,39 @@ export function LowStockPanel({
 
                     <Td align="right">
                       <span className="font-semibold text-amber-900">
-                        <Qty value={row.availableStock} uom={unitLabel(row.item.uom)} />
+                        <Qty value={row.availableStock} uom={row.item.uom} />
                       </span>
                     </Td>
 
                     <Td align="right">
-                      {/* An item can have no reorder level configured, which is
-                          not the same as a level of zero. This row only exists
-                          because one is set, but the type allows null. */}
-                      <Qty value={row.item.reorderLevel ?? '0'} uom={unitLabel(row.item.uom)} />
+                      {row.item.reorderLevel === null ? (
+                        <span className="text-slate-300">not set</span>
+                      ) : (
+                        <Qty value={row.item.reorderLevel} uom={row.item.uom} />
+                      )}
                     </Td>
 
                     <Td align="right">
                       <span className="font-semibold text-slate-900">
-                        <Qty value={row.shortfall} uom={unitLabel(row.item.uom)} />
+                        <Qty value={row.shortfall} uom={row.item.uom} />
                       </span>
+                    </Td>
+
+                    {/* What the reorder check will actually order — the
+                        configured quantity, not the shortfall. Ordering the
+                        shortfall would put stock back exactly on the
+                        threshold, so the next issue trips the reorder again. */}
+                    <Td align="right">
+                      {row.item.reorderQuantity === null || row.item.reorderQuantity === '0' ? (
+                        <span
+                          className="text-red-700"
+                          title="Not configured — the reorder check cannot raise a requisition"
+                        >
+                          not set
+                        </span>
+                      ) : (
+                        <Qty value={row.item.reorderQuantity} uom={row.item.uom} />
+                      )}
                     </Td>
 
                     <Td align="right">
@@ -85,22 +113,19 @@ export function LowStockPanel({
                         <span className="text-slate-300">—</span>
                       ) : (
                         <span title="Received but not yet QC-accepted, so not usable">
-                          <Qty value={row.quarantineStock} uom={unitLabel(row.item.uom)} />
+                          <Qty value={row.quarantineStock} uom={row.item.uom} />
                         </span>
                       )}
                     </Td>
 
                     <Td>
-                      {/* Always the same component, whether or not a
-                          requisition is already open — it decides internally.
-                          Choosing here would unmount it the instant a submit
-                          succeeded and swallow the confirmation. */}
-                      <RaiseRequisitionForm
-                        item={row.item}
-                        suggestedQuantity={row.shortfall}
-                        vendors={vendors}
-                        hasOpenRequisition={row.hasOpenRequisition}
-                      />
+                      {row.hasOpenRequisition ? (
+                        <Pill tone="info">Requisition open</Pill>
+                      ) : row.item.reorderQuantity === null || row.item.reorderQuantity === '0' ? (
+                        <Pill tone="danger">No reorder qty</Pill>
+                      ) : (
+                        <Pill tone="warn">Awaiting reorder check</Pill>
+                      )}
                     </Td>
                   </tr>
                 ))}

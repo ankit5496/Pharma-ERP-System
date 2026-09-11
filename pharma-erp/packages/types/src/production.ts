@@ -10,11 +10,14 @@
  * on it.
  */
 
-export const ITEM_TYPES = ['RAW_MATERIAL', 'PACKING_MATERIAL', 'SEMI_FINISHED', 'FINISHED_GOOD'] as const;
-export type ItemType = (typeof ITEM_TYPES)[number];
+// ItemType, ItemSummary and ScheduleClassification are declared in
+// ./procurement, which is where the shared item master lives. Imported here
+// rather than redeclared: two definitions of one table is what produced the
+// merge this comment is being written during.
+import type { ItemSummary, ItemType, ScheduleClassification } from './procurement';
 
-/** Drugs & Cosmetics Rules schedule. Mirrors the Prisma enum of the same name. */
-export type ScheduleClassification = 'NONE' | 'H' | 'H1' | 'X' | 'G';
+
+
 
 export type MaterialLotStatus = 'QUARANTINE' | 'USABLE' | 'REJECTED';
 
@@ -23,12 +26,6 @@ export type ProductionOrderStatus =
 
 export type BatchReleaseStatus = 'PENDING' | 'RELEASED' | 'BLOCKED';
 
-export const ITEM_TYPE_LABELS: Record<ItemType, string> = {
-  RAW_MATERIAL: 'Raw material',
-  PACKING_MATERIAL: 'Packing material',
-  SEMI_FINISHED: 'Semi-finished',
-  FINISHED_GOOD: 'Finished good',
-};
 
 /**
  * Short labels for the tab row and grid; the long form is in
@@ -79,32 +76,6 @@ export const BATCH_RELEASE_STATUS_LABELS: Record<BatchReleaseStatus, string> = {
 // Items and stock
 // ---------------------------------------------------------------------------
 
-export interface ItemSummary {
-  id: string;
-  code: string;
-  name: string;
-  type: ItemType;
-  uom: string;
-  shelfLifeMonths: number | null;
-  hsnCode: string | null;
-  brandName: string | null;
-  genericName: string | null;
-  scheduleClassification: ScheduleClassification;
-  /** Percentage as a string — see the note at the top of this file. */
-  gstRate: string | null;
-  mrp: string | null;
-  dpcoCeiling: boolean;
-  storageConditions: string | null;
-  reorderLevel: string | null;
-  reorderQuantity: string | null;
-  /**
-   * From the Procure-to-Pay side. False only for materials where a lot has no
-   * meaningful identity — for a pharmaceutical raw material, batch number,
-   * manufacturing date and expiry are mandatory.
-   */
-  requiresBatchTracking: boolean;
-  notes: string | null;
-}
 
 /**
  * What the create endpoint accepts.

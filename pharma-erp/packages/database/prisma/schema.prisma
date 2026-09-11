@@ -94,6 +94,15 @@ model Tenant {
   /// meaningful, so they are rendered in the tenant's own zone, not the server's.
   timezone          String  @default("Asia/Kolkata") @db.VarChar(64)
 
+  /// How far a vendor's invoice may depart from the receipt before the match
+  /// is flagged, as a percentage of quantity or rate.
+  ///
+  /// Configurable per company because the right number is a commercial
+  /// decision, not a technical one: a business buying commodity solvents at a
+  /// quoted index price expects small variance, one buying on fixed contracts
+  /// expects none. 2% is a conventional starting point, not a recommendation.
+  invoiceTolerancePercent Decimal @default(2.00) @map("invoice_tolerance_percent") @db.Decimal(5, 2)
+
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   /// Soft delete. A tenant is never physically removed — its records are
@@ -123,11 +132,14 @@ model Tenant {
   purchaseInvoices     PurchaseInvoice[]
   purchaseInvoiceLines PurchaseInvoiceLine[]
   vendorPayments       VendorPayment[]
+  boms                 Bom[]
+  bomLines             BomLine[]
+  productionPlans      ProductionPlan[]
 
-  // Production & Quality Gate.
+  // Production & Quality Gate. `boms` and `bomLines` are not repeated here:
+  // formulations are master data, shared with Procure-to-Pay, and declared
+  // once in the block above.
   materialLots       MaterialLot[]
-  boms               Bom[]
-  bomLines           BomLine[]
   productionOrders   ProductionOrder[]
   materialIssues     MaterialIssue[]
   materialIssueLines MaterialIssueLine[]
@@ -275,27 +287,7 @@ model AuditLog {
 // dispensed quantity is a regulatory finding, not a cosmetic bug.
 // -----------------------------------------------------------------------------
 
-/// What kind of thing an Item is. Drives which side of a formulation it can
-/// appear on: a Bom's product must be FINISHED_GOOD, its lines must not be.
-enum ItemType {
-  RAW_MATERIAL
-  PACKING_MATERIAL
-  /// Bulk that has been manufactured but not yet packed — granules, a
-  /// compressed core. Distinct from a finished good because it cannot be sold.
-  SEMI_FINISHED
-  FINISHED_GOOD
-}
 
-/// Drugs & Cosmetics Rules schedule. Decides what the sale of the item
-/// legally requires: H and H1 need a prescription, X needs one retained for
-/// two years, G carries a warning on the label.
-enum ScheduleClassification {
-  NONE
-  H
-  H1
-  X
-  G
-}
 
 /// Which side of the business a party sits on.
 ///
@@ -351,102 +343,6 @@ enum BatchReleaseStatus {
 // Item
 // -----------------------------------------------------------------------------
 
-/// Anything with a code and a unit of measure: raw materials, packing materials
-/// and finished products, in one table.
-///
-/// One table rather than three because every downstream record — formulation
-/// lines, issues, stock — needs to point at "a thing", and three tables would
-/// mean three nullable foreign keys on each of them.
-model Item {
-  id       String @id @default(uuid()) @db.Uuid
-  tenantId String @map("tenant_id") @db.Uuid
-
-  /// The company's own material code, as used on paperwork.
-  code String   @db.VarChar(64)
-  name String   @db.VarChar(255)
-  type ItemType
-
-  /// Unit of measure. Free text rather than an enum: the set is long, varies by
-  /// company, and a wrong guess here would block someone from recording work.
-  uom String @db.VarChar(16)
-
-  /// Months from manufacture to expiry, used to date a batch made from this
-  /// product. Null for materials whose shelf life comes from the supplier's lot.
-  shelfLifeMonths Int? @map("shelf_life_months")
-
-  /// HSN code for GST. Nullable — needed to invoice, not to manufacture.
-  hsnCode String? @map("hsn_code") @db.VarChar(16)
-
-  /// Marketed name. Null for a raw or packing material, which has no brand —
-  /// only a finished good carries one.
-  brandName String? @map("brand_name") @db.VarChar(255)
-
-  /// The actual composition, as it must appear on the label. Held separately
-  /// from `name` because the brand and the molecule are different facts and a
-  /// prescription is written against the second one.
-  genericName String? @map("generic_name") @db.VarChar(512)
-
-  scheduleClassification ScheduleClassification @default(NONE) @map("schedule_classification")
-
-  /// Percentage, 0–28. Nullable in the column so items predating this field
-  /// survive; the create endpoint requires it, because an invoice cannot be
-  /// raised without one.
-  gstRate Decimal? @map("gst_rate") @db.Decimal(5, 2)
-
-  /// Maximum retail price, inclusive of tax.
-  mrp Decimal? @db.Decimal(12, 2)
-
-  /// Whether a DPCO ceiling price applies. Scheduled formulations cannot be
-  /// priced above the NPPA ceiling, and recording the fact here is what lets
-  /// a later check refuse an MRP that breaches it.
-  dpcoCeiling Boolean @default(false) @map("dpco_ceiling")
-
-  storageConditions String? @map("storage_conditions") @db.VarChar(255)
-
-  /// Stock at or below this triggers a purchase alert; reorderQuantity is how
-  /// much to buy when it does.
-  reorderLevel    Decimal? @map("reorder_level") @db.Decimal(14, 3)
-  reorderQuantity Decimal? @map("reorder_quantity") @db.Decimal(14, 3)
-
-  // --- From the Procure-to-Pay work, merged into this model rather than a
-  // --- second `items` table. Both are real requirements that the master-data
-  // --- side did not have.
-
-  /// False only for materials where a lot has no meaningful identity. Defaults
-  /// true: for a pharmaceutical raw material, batch number, manufacturing date
-  /// and expiry are mandatory, and anonymous inventory is not acceptable.
-  requiresBatchTracking Boolean @default(true) @map("requires_batch_tracking")
-
-  notes String? @db.VarChar(1000)
-
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
-
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-
-  // Production & Quality Gate.
-  lots              MaterialLot[]
-  bomsAsProduct     Bom[]               @relation("BomProduct")
-  bomLines          BomLine[]
-  productionOrders  ProductionOrder[]
-  issueLines        MaterialIssueLine[]
-  finishedGoodsLots FinishedGoodsLot[]
-
-  // Procure-to-Pay.
-  requisitions       PurchaseRequisition[]
-  purchaseOrderLines PurchaseOrderLine[]
-  goodsReceiptLines  GoodsReceiptLine[]
-  stockLots          StockLot[]
-  ledgerEntries      StockLedgerEntry[]
-  invoiceLines       PurchaseInvoiceLine[]
-
-  /// Codes are unique per company, not globally — two tenants may both call
-  /// something "PARA-500".
-  @@unique([tenantId, code])
-  @@index([tenantId, type, deletedAt])
-  @@map("items")
-}
 
 // -----------------------------------------------------------------------------
 // Party — suppliers and customers in one register
@@ -462,60 +358,6 @@ model Item {
 // because selling to an unlicensed buyer is the kind of thing that has to be
 // impossible rather than merely discouraged.
 
-model Party {
-  id       String @id @default(uuid()) @db.Uuid
-  tenantId String @map("tenant_id") @db.Uuid
-
-  // --- Existing columns. Shape, names and nullability all belong to the
-  // --- Procure-to-Pay work; they are mirrored here, not designed here.
-  code      String    @db.VarChar(64)
-  name      String    @db.VarChar(255)
-  partyType PartyType @default(VENDOR) @map("party_type")
-
-  /// Nullable, because an unregistered small supplier genuinely has no GSTIN.
-  /// The format is checked when one IS given.
-  gstin String? @db.VarChar(15)
-
-  email   String? @db.VarChar(320)
-  phone   String? @db.VarChar(32)
-  address String? @db.VarChar(1000)
-
-  /// Days until a supplier invoice falls due. An integer rather than a terms
-  /// enum — again, theirs.
-  paymentTermsDays Int @default(30) @map("payment_terms_days")
-
-  drugLicenceNumber String? @map("drug_licence_number") @db.VarChar(64)
-
-  // --- Added by 20260911150000_party_master_compliance for US-MD-02.
-
-  /// A CUSTOMER may only be ACTIVE with a licence number AND validity on
-  /// file. Enforced by a CHECK constraint, so it holds for any writer.
-  status PartyStatus @default(ACTIVE)
-
-  drugLicenceValidTo DateTime? @map("drug_licence_valid_to") @db.Date
-
-  /// Total outstanding this customer may carry, and how long an invoice may
-  /// remain unpaid.
-  creditLimit      Decimal? @map("credit_limit") @db.Decimal(14, 2)
-  creditPeriodDays Int?     @map("credit_period_days")
-
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
-
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-
-  // Procure-to-Pay.
-  preferredForRequisitions PurchaseRequisition[]
-  purchaseOrders           PurchaseOrder[]
-  goodsReceipts            GoodsReceipt[]
-  purchaseInvoices         PurchaseInvoice[]
-
-  @@unique([tenantId, code])
-  @@index([tenantId, partyType, deletedAt])
-  @@index([tenantId, drugLicenceValidTo])
-  @@map("parties")
-}
 
 // -----------------------------------------------------------------------------
 // MaterialLot
@@ -571,73 +413,7 @@ model MaterialLot {
 // Bom — the formulation
 // -----------------------------------------------------------------------------
 
-/// A versioned recipe: what one standard output quantity of a product consumes.
-///
-/// Versioned rather than edited in place. A batch made last year was made to
-/// the formulation as it stood then, and rewriting that record would destroy the
-/// only evidence of what was actually followed.
-model Bom {
-  id        String @id @default(uuid()) @db.Uuid
-  tenantId  String @map("tenant_id") @db.Uuid
-  productId String @map("product_id") @db.Uuid
 
-  version        Int
-  /// The quantity the line quantities are expressed against — "this recipe
-  /// makes 1000 tablets". Scaling to a work order's size is proportional.
-  outputQuantity Decimal @map("output_quantity") @db.Decimal(14, 3)
-
-  /// Standard manufacturing instructions, free text for now.
-  instructions String? @db.Text
-
-  /// Only one version per product may be active; the migration enforces it with
-  /// a partial unique index. A new active version supersedes the old one, which
-  /// is retained because batches still reference it.
-  isActive      Boolean  @default(false) @map("is_active")
-  effectiveFrom DateTime @default(now()) @map("effective_from") @db.Date
-
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
-
-  tenant  Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  product Item   @relation("BomProduct", fields: [productId], references: [id], onDelete: Restrict)
-
-  lines            BomLine[]
-  productionOrders ProductionOrder[]
-
-  @@unique([tenantId, productId, version])
-  @@index([tenantId, deletedAt])
-  @@map("boms")
-}
-
-/// One material a formulation consumes, per `outputQuantity` of the product.
-///
-/// Carries `tenantId` even though it is reachable only through its Bom. The
-/// invariant at the top of this file is that every tenant-scoped table has the
-/// column and its own RLS policy: a policy written as EXISTS(parent) would work
-/// but makes isolation depend on the parent's policy still being correct, and
-/// on nobody ever querying this table directly.
-model BomLine {
-  id       String @id @default(uuid()) @db.Uuid
-  tenantId String @map("tenant_id") @db.Uuid
-  bomId    String @map("bom_id") @db.Uuid
-  itemId   String @map("item_id") @db.Uuid
-
-  /// Quantity consumed per the BOM's `outputQuantity`, NOT per unit — keeping
-  /// the ratio explicit avoids a per-unit figure with misleading precision.
-  quantityPer Decimal @map("quantity_per") @db.Decimal(14, 3)
-
-  notes String? @db.VarChar(255)
-
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  bom    Bom    @relation(fields: [bomId], references: [id], onDelete: Cascade)
-  item   Item   @relation(fields: [itemId], references: [id], onDelete: Restrict)
-
-  /// A material appears once per formulation; two lines for the same item would
-  /// make "planned quantity" ambiguous.
-  @@unique([bomId, itemId])
-  @@map("bom_lines")
-}
 
 // -----------------------------------------------------------------------------
 // ProductionOrder — the work order
@@ -968,34 +744,70 @@ model PlatformAuditLog {
 //      prevent_hard_delete trigger means a referenced id cannot vanish.
 // =============================================================================
 
+/// Item categories, as defined on the shared database. PACKING_MATERIAL and
+/// SEMI_FINISHED are Render's vocabulary, not this repo's earlier PACKAGING —
+/// the shared schema is authoritative and the code follows it.
+enum ItemType {
+  RAW_MATERIAL
+  PACKING_MATERIAL
+  SEMI_FINISHED
+  FINISHED_GOOD
+}
 
-/// Units the system understands. An enum rather than free text because a lot
-/// received in "kg" and issued in "Kg" is the sort of mismatch that silently
-/// breaks a stock balance.
-enum UnitOfMeasure {
-  KG
+/// Drugs and Cosmetics Rules schedule. Decides prescription and record-keeping
+/// obligations; H1 in particular requires a separate register of supply.
+enum ScheduleClassification {
+  NONE
+  H
+  H1
+  X
   G
-  MG
-  L
-  ML
-  NOS
-  PACK
 }
 
 
+/// Lifecycle of a purchase requisition.
+///
+/// OPEN covers everything before approval — whether the system raised it from
+/// a reorder level or a Store Officer typed it. An earlier draft/pending split
+/// existed here and was collapsed: nobody could say what distinguished them,
+/// and two states that behave identically are two chances to filter wrongly.
 enum RequisitionStatus {
-  DRAFT
-  PENDING
+  OPEN
   APPROVED
   CONVERTED_TO_PO
   CANCELLED
 }
 
-enum PurchaseOrderStatus {
+/// Why a requisition exists.
+///
+/// AUTO_REORDER is raised by the system when usable stock crosses the item's
+/// reorder level; MANUAL is raised by a person, normally against a production
+/// plan. The distinction is worth storing rather than inferring from whether
+/// `requestedById` is null: it decides which fields are required, and a buyer
+/// reviewing the queue treats the two differently.
+enum RequisitionTriggerType {
+  AUTO_REORDER
+  MANUAL
+}
+
+enum ProductionPlanStatus {
   DRAFT
-  ISSUED
+  PLANNED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+/// Lifecycle of a purchase order, as US-PUR-02 defines it.
+///
+/// Three working states, all driven by goods receipts rather than chosen by a
+/// user: an order is OPEN from the moment it is raised, PARTIALLY_RECEIVED
+/// once some of it arrives, CLOSED once all of it has. Nobody sets these by
+/// hand — an order that claims to be received when nothing arrived is exactly
+/// what that removes.
+enum PurchaseOrderStatus {
+  OPEN
   PARTIALLY_RECEIVED
-  FULLY_RECEIVED
   CLOSED
   CANCELLED
 }
@@ -1021,9 +833,20 @@ enum StockLotStatus {
   CONSUMED
 }
 
+/// Payment progress of a purchase invoice, as US-PUR-05 defines it.
+///
+/// The status IS the payment progress, maintained by the payment service. An
+/// earlier design kept a document status here and derived the payment state
+/// separately, which meant two fields answering "has this been paid" and the
+/// possibility of them disagreeing.
+///
+/// Overdue is deliberately absent: it is "unpaid and past the due date", a
+/// fact about today rather than about the invoice, so the payables report
+/// computes it per request instead of storing a flag that goes stale nightly.
 enum PurchaseInvoiceStatus {
-  DRAFT
-  APPROVED
+  BOOKED
+  PARTIALLY_PAID
+  PAID
   CANCELLED
 }
 
@@ -1042,7 +865,228 @@ enum StockLedgerEntryType {
 // Master data
 // -----------------------------------------------------------------------------
 
+/// A material or product — the item master.
+///
+/// THIS MODEL MIRRORS THE SHARED DATABASE EXACTLY and is not this module's to
+/// redesign. It arrived from the master-data branch, it is what the Render
+/// database holds, and Procure-to-Pay reads it rather than keeping a parallel
+/// item table of its own. Three consequences worth naming, because each one
+/// shaped code elsewhere:
+///
+///   * `uom` is free text, not an enum. Looser than this module would have
+///     chosen — "kg" and "Kg" can both be stored — but a shared column is not
+///     the place to unilaterally tighten a type.
+///   * `gstRate` lives here, next to `hsnCode`, rather than in a separate tax
+///     master. So the item master IS the tax master, and a purchase invoice
+///     reads its GST percentage straight off the item.
+///   * There is no `requiresBatchTracking` flag. Whether a receipt must carry a
+///     batch number is derived from `type` instead: raw material, packing
+///     material and semi-finished goods are all batch tracked.
+model Item {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
 
+  /// Internal code, e.g. "RM-PARA-001". Unique within the tenant.
+  code String   @db.VarChar(64)
+  name String   @db.VarChar(255)
+  type ItemType
+
+  /// Unit of measure, free text on the shared schema.
+  uom String @db.VarChar(16)
+
+  /// Total shelf life of the material, in MONTHS — not the remaining life
+  /// demanded on arrival. Goods receipt converts it before comparing.
+  shelfLifeMonths Int? @map("shelf_life_months")
+
+  hsnCode String? @map("hsn_code") @db.VarChar(16)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  // ---------------------------------------------------------------------------
+  // Pharmaceutical and commercial attributes
+  // ---------------------------------------------------------------------------
+
+  brandName   String? @map("brand_name") @db.VarChar(255)
+  genericName String? @map("generic_name") @db.VarChar(512)
+
+  /// Drugs and Cosmetics Rules schedule. H1 in particular obliges a separate
+  /// register of supply, so it is a property of the item, not of a document.
+  scheduleClassification ScheduleClassification @default(NONE) @map("schedule_classification")
+
+  /// GST percentage for this item. The figure a purchase invoice computes tax
+  /// from — never typed onto the invoice itself.
+  gstRate Decimal? @map("gst_rate") @db.Decimal(5, 2)
+
+  mrp Decimal? @db.Decimal(12, 2)
+
+  /// True when the product sits under a DPCO price ceiling, so its MRP is
+  /// capped by order rather than chosen.
+  dpcoCeiling Boolean @default(false) @map("dpco_ceiling")
+
+  storageConditions String? @map("storage_conditions") @db.VarChar(255)
+
+  // ---------------------------------------------------------------------------
+  // Reorder policy — the Procure-to-Pay trigger
+  // ---------------------------------------------------------------------------
+
+  /// When usable stock falls below this, the item is a candidate for
+  /// requisition. NULLABLE on the shared schema: null means no reorder policy
+  /// is configured, which is different from a level of zero and must not be
+  /// silently treated as one.
+  reorderLevel Decimal? @map("reorder_level") @db.Decimal(14, 3)
+
+  /// How much to buy when the level is breached — the order quantity, not the
+  /// shortfall. Ordering exactly the shortfall puts stock back on the
+  /// threshold, so the next issue trips the reorder again.
+  reorderQuantity Decimal? @map("reorder_quantity") @db.Decimal(14, 3)
+
+  /// Whether a receipt of this item must carry a batch number and expiry.
+  /// A COLUMN, not a derived constant: printed leaflets and cartons are both
+  /// packing material, and one may reasonably be lot-tracked while the other
+  /// is not — so `type` cannot express the exception. Defaults true and no
+  /// form exposes it: turning off lot traceability in a GMP plant needs a
+  /// recorded reason, not a tick box.
+  requiresBatchTracking Boolean @default(true) @map("requires_batch_tracking")
+
+  notes String? @db.VarChar(1000)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  boms            Bom[]
+  bomLines        BomLine[]
+  productionPlans ProductionPlan[]
+
+  requisitions       PurchaseRequisition[]
+  purchaseOrderLines PurchaseOrderLine[]
+  goodsReceiptLines  GoodsReceiptLine[]
+  stockLots          StockLot[]
+  ledgerEntries      StockLedgerEntry[]
+  invoiceLines       PurchaseInvoiceLine[]
+
+  // Production & Quality Gate.
+  lots              MaterialLot[]
+  productionOrders  ProductionOrder[]
+  issueLines        MaterialIssueLine[]
+  finishedGoodsLots FinishedGoodsLot[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, type, deletedAt])
+  @@map("items")
+}
+
+// -----------------------------------------------------------------------------
+// Bill of material
+// -----------------------------------------------------------------------------
+
+/// A versioned formulation: what one production run of a product consumes.
+///
+/// Also from the master-data branch. Procure-to-Pay uses it rather than keeping
+/// its own component list — a manual requisition cites the production plan, and
+/// the plan cites the BOM, so "what does this run need" has exactly one answer.
+model Bom {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// The finished or semi-finished item this formulation makes.
+  productId String @map("product_id") @db.Uuid
+
+  /// Versioned rather than edited in place: a batch made last year was made to
+  /// a specific formulation, and that has to stay readable.
+  version Int
+
+  /// What one run of this BOM yields, in the product's own unit.
+  outputQuantity Decimal @map("output_quantity") @db.Decimal(14, 3)
+
+  instructions String?
+
+  /// Only one version should be active at a time; enforced by process rather
+  /// than a constraint, since a changeover is momentarily ambiguous.
+  isActive      Boolean  @default(false) @map("is_active")
+  effectiveFrom DateTime @default(now()) @map("effective_from") @db.Date
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant  Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  product Item   @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  lines           BomLine[]
+  productionPlans ProductionPlan[]
+  productionOrders ProductionOrder[]
+
+  @@unique([tenantId, productId, version])
+  @@index([tenantId, deletedAt])
+  @@map("boms")
+}
+
+/// One component a formulation consumes, per unit of output.
+model BomLine {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  bomId  String @map("bom_id") @db.Uuid
+  itemId String @map("item_id") @db.Uuid
+
+  /// Quantity of this component per unit of the BOM's output.
+  quantityPer Decimal @map("quantity_per") @db.Decimal(14, 3)
+
+  notes String? @db.VarChar(255)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  bom    Bom    @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  item   Item   @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  @@unique([bomId, itemId])
+  @@map("bom_lines")
+}
+
+/// A supplier, customer or job-work principal.
+model Party {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  code      String    @db.VarChar(64)
+  name      String    @db.VarChar(255)
+  partyType PartyType @default(VENDOR) @map("party_type")
+
+  gstin             String? @db.VarChar(15)
+  /// Vendors of pharmaceutical raw material hold a drug licence too.
+  drugLicenceNumber String? @map("drug_licence_number") @db.VarChar(64)
+
+  email   String? @db.VarChar(320)
+  phone   String? @db.VarChar(32)
+  address String? @db.VarChar(1000)
+
+  /// Net days agreed with this vendor. Seeds the due date on their invoices.
+  paymentTermsDays Int @default(30) @map("payment_terms_days")
+
+  // Added by 20260911150000_party_master_compliance for US-MD-02. A CUSTOMER
+  // may only be ACTIVE with a licence number AND validity on file — enforced
+  // by the parties_active_customer_is_licensed CHECK constraint.
+  status             PartyStatus @default(ACTIVE)
+  drugLicenceValidTo DateTime?   @map("drug_licence_valid_to") @db.Date
+  creditLimit        Decimal?    @map("credit_limit") @db.Decimal(14, 2)
+  creditPeriodDays   Int?        @map("credit_period_days")
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  preferredForRequisitions PurchaseRequisition[]
+  purchaseOrders           PurchaseOrder[]
+  goodsReceipts            GoodsReceipt[]
+  purchaseInvoices         PurchaseInvoice[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId, partyType, deletedAt])
+  @@index([tenantId, drugLicenceValidTo])
+  @@map("parties")
+}
 
 /// Per-tenant document numbering (PR-2026-0001, PO-2026-0001, ...).
 ///
@@ -1093,31 +1137,46 @@ model PurchaseRequisition {
 
   preferredVendorId String? @map("preferred_vendor_id") @db.Uuid
 
+  /// Why this requisition exists. Decides what else is required: a MANUAL one
+  /// must name a production plan, an AUTO_REORDER one must not.
+  triggerType RequisitionTriggerType @default(MANUAL) @map("trigger_type")
+
+  /// The production run this material is for. Required for MANUAL, enforced
+  /// in the service because the rule is conditional on `triggerType`.
+  productionPlanId String? @map("production_plan_id") @db.Uuid
+
   /// Acting user ids. See the note at the top of this section on why these
   /// carry no relation.
-  requestedById String    @map("requested_by_id") @db.Uuid
+  ///
+  /// NULLABLE because an auto-reorder requisition has no author. Attributing
+  /// one to whichever user's request happened to trip the reorder check would
+  /// be a lie in the audit trail — the system raised it, and the trail should
+  /// say so.
+  requestedById String?   @map("requested_by_id") @db.Uuid
   approvedById  String?   @map("approved_by_id") @db.Uuid
   approvedAt    DateTime? @map("approved_at") @db.Timestamptz(6)
 
   requestDate    DateTime  @default(now()) @map("request_date") @db.Timestamptz(6)
   requiredByDate DateTime? @map("required_by_date") @db.Timestamptz(6)
 
-  status RequisitionStatus @default(DRAFT)
+  status RequisitionStatus @default(OPEN)
   notes  String?           @db.VarChar(1000)
 
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
 
-  tenant          Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  item            Item   @relation(fields: [itemId], references: [id], onDelete: Restrict)
-  preferredVendor Party? @relation(fields: [preferredVendorId], references: [id], onDelete: Restrict)
+  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  item            Item            @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  preferredVendor Party?          @relation(fields: [preferredVendorId], references: [id], onDelete: Restrict)
+  productionPlan  ProductionPlan? @relation(fields: [productionPlanId], references: [id], onDelete: Restrict)
 
   purchaseOrderLines PurchaseOrderLine[]
 
   @@unique([tenantId, number])
   @@index([tenantId, status, deletedAt])
   @@index([tenantId, itemId])
+  @@index([tenantId, triggerType, status])
   @@map("purchase_requisitions")
 }
 
@@ -1137,7 +1196,7 @@ model PurchaseOrder {
 
   paymentTermsDays Int @default(30) @map("payment_terms_days")
 
-  status PurchaseOrderStatus @default(DRAFT)
+  status PurchaseOrderStatus @default(OPEN)
   notes  String?             @db.VarChar(1000)
 
   /// Stored totals, computed from the lines at write time.
@@ -1429,11 +1488,22 @@ model PurchaseInvoice {
   number              String @db.VarChar(32)
   vendorInvoiceNumber String @map("vendor_invoice_number") @db.VarChar(64)
 
-  vendorId        String  @map("vendor_id") @db.Uuid
-  purchaseOrderId String  @map("purchase_order_id") @db.Uuid
-  /// The receipt this invoice is matched against. Nullable only so an invoice
-  /// can be drafted before the match is made.
-  goodsReceiptId  String? @map("goods_receipt_id") @db.Uuid
+  vendorId        String @map("vendor_id") @db.Uuid
+  purchaseOrderId String @map("purchase_order_id") @db.Uuid
+  /// The receipt this invoice bills for. MANDATORY: an invoice with no
+  /// receipt behind it is a request to pay for goods nobody confirmed
+  /// arriving, which is precisely what three-way matching exists to prevent.
+  goodsReceiptId  String @map("goods_receipt_id") @db.Uuid
+
+  /// Set when quantity or rate departs from the GRN/PO by more than the
+  /// tenant's configured tolerance.
+  ///
+  /// Recorded rather than merely refused: a genuine price revision has to be
+  /// bookable, but it must be visible as an exception afterwards rather than
+  /// disappearing into a total. `matchNotes` says which lines differed and by
+  /// how much.
+  toleranceExceeded Boolean @default(false) @map("tolerance_exceeded")
+  matchNotes        String? @map("match_notes") @db.VarChar(2000)
 
   invoiceDate DateTime @map("invoice_date") @db.Timestamptz(6)
   dueDate     DateTime @map("due_date") @db.Timestamptz(6)
@@ -1446,7 +1516,7 @@ model PurchaseInvoice {
   taxAmount     Decimal @default(0) @map("tax_amount") @db.Decimal(18, 2)
   totalAmount   Decimal @default(0) @map("total_amount") @db.Decimal(18, 2)
 
-  status PurchaseInvoiceStatus @default(DRAFT)
+  status PurchaseInvoiceStatus @default(BOOKED)
   notes  String?               @db.VarChar(1000)
 
   recordedById String @map("recorded_by_id") @db.Uuid
@@ -1458,7 +1528,7 @@ model PurchaseInvoice {
   tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   vendor        Party         @relation(fields: [vendorId], references: [id], onDelete: Restrict)
   purchaseOrder PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Restrict)
-  goodsReceipt  GoodsReceipt? @relation(fields: [goodsReceiptId], references: [id], onDelete: Restrict)
+  goodsReceipt  GoodsReceipt  @relation(fields: [goodsReceiptId], references: [id], onDelete: Restrict)
 
   lines    PurchaseInvoiceLine[]
   payments VendorPayment[]
@@ -1533,3 +1603,57 @@ model VendorPayment {
   @@index([tenantId, purchaseInvoiceId])
   @@map("vendor_payments")
 }
+
+
+// -----------------------------------------------------------------------------
+// Production plan
+// -----------------------------------------------------------------------------
+
+/// A planned manufacturing run, and the reason a manual requisition exists.
+///
+/// Deliberately minimal: this is not the Production module. It carries only
+/// what Procure-to-Pay needs in order to answer "what is this material being
+/// bought for" — the finished product, the pack variant, the planned quantity,
+/// and the components that run consumes. Production & Quality Gate will extend
+/// it rather than replace it.
+model ProductionPlan {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  number String @db.VarChar(32)
+
+  /// The finished product this run makes. An Item of type FINISHED_GOOD —
+  /// pointing at the item master rather than repeating a product name, so the
+  /// two cannot disagree.
+  finishedProductId String @map("finished_product_id") @db.Uuid
+
+  /// Pack presentation, e.g. "10x10 blister" or "60 mL bottle".
+  packVariant String? @map("pack_variant") @db.VarChar(128)
+
+  /// The formulation this run follows. Its lines ARE the component list, so
+  /// the plan keeps none of its own — a recipe revised in one place cannot
+  /// leave stale copies on plans already raised.
+  bomId String? @map("bom_id") @db.Uuid
+
+  plannedQuantity Decimal   @map("planned_quantity") @db.Decimal(18, 4)
+  plannedDate     DateTime? @map("planned_date") @db.Date
+
+  status ProductionPlanStatus @default(PLANNED)
+  notes  String?              @db.VarChar(1000)
+
+  createdById String?   @map("created_by_id") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant          Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  finishedProduct Item   @relation(fields: [finishedProductId], references: [id], onDelete: Restrict)
+  bom             Bom?   @relation(fields: [bomId], references: [id], onDelete: Restrict)
+
+  requisitions PurchaseRequisition[]
+
+  @@unique([tenantId, number])
+  @@index([tenantId, status, deletedAt])
+  @@map("production_plans")
+}
+

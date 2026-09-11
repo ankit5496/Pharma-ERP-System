@@ -93,10 +93,17 @@ export async function createItemAction(
     {
       code: values.code,
       name: values.name,
-      type: opt(form, 'type') ?? 'RAW_MATERIAL',
-      uom: opt(form, 'uom') ?? 'KG',
+      itemType: opt(form, 'itemType') ?? 'RAW_MATERIAL',
+      uom: opt(form, 'uom') ?? 'kg',
       reorderLevel: values.reorderLevel || '0',
-      requiresBatchTracking: form.get('requiresBatchTracking') !== null,
+      reorderQuantity: str(form, 'reorderQuantity') || values.reorderLevel || '0',
+      shelfLifeMonths: str(form, 'shelfLifeMonths') ? Number(str(form, 'shelfLifeMonths')) : undefined,
+      // GST lives on the item master; there is no separate tax table.
+      gstRate: opt(form, 'gstRate'),
+      scheduleClassification: opt(form, 'scheduleClassification'),
+      brandName: opt(form, 'brandName'),
+      genericName: opt(form, 'genericName'),
+      storageConditions: opt(form, 'storageConditions'),
       hsnCode: opt(form, 'hsnCode'),
     },
     `Item ${values.code} created.`,
@@ -127,6 +134,65 @@ export async function createVendorAction(
   );
 }
 
+/**
+ * Creates a production plan.
+ *
+ * The plan carries no component list of its own: it cites a bill of material
+ * from the shared master data, and that BOM's lines are the components. A
+ * revised formulation therefore cannot leave stale copies on plans already
+ * raised.
+ */
+export async function createProductionPlanAction(
+  _previous: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  return submit(
+    `${BASE}/production-plans`,
+    {
+      finishedProductId: str(form, 'finishedProductId'),
+      packVariant: opt(form, 'packVariant'),
+      plannedQuantity: str(form, 'plannedQuantity'),
+      plannedDate: toIsoDate(opt(form, 'plannedDate')),
+      notes: opt(form, 'notes'),
+      bomId: opt(form, 'bomId'),
+    },
+    'Production plan created.',
+  );
+}
+
+/**
+ * Issues or writes off usable stock.
+ *
+ * The API runs the reorder check straight after, so a movement that takes an
+ * item below its level raises its requisition in the same request rather than
+ * waiting for someone to notice.
+ */
+export async function consumeStockAction(
+  _previous: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const values = { quantity: str(form, 'quantity'), reason: str(form, 'reason') };
+
+  return submit(
+    `${BASE}/stock/consume`,
+    {
+      itemId: str(form, 'itemId'),
+      quantity: values.quantity,
+      reason: values.reason || 'Manual stock issue',
+    },
+    'Stock issued. Any item that fell below its reorder level has been requisitioned.',
+    values,
+  );
+}
+
+/** Runs the reorder check by hand. Idempotent — safe to press twice. */
+export async function runReorderCheckAction(
+  _previous: ActionState,
+  _form: FormData,
+): Promise<ActionState> {
+  return submit(`${BASE}/reorder-check`, {}, 'Reorder check complete.');
+}
+
 // ---------------------------------------------------------------------------
 // 1. Requisitions
 // ---------------------------------------------------------------------------
@@ -145,7 +211,7 @@ export async function createRequisitionAction(
       preferredVendorId: opt(form, 'preferredVendorId'),
       requiredByDate: toIsoDate(opt(form, 'requiredByDate')),
       notes: opt(form, 'notes'),
-      asDraft: form.get('asDraft') !== null,
+      productionPlanId: opt(form, 'productionPlanId'),
     },
     'Requisition raised.',
     values,
@@ -292,12 +358,13 @@ export async function createInvoiceAction(
   const values = { vendorInvoiceNumber: str(form, 'vendorInvoiceNumber') };
   const lineIds = form.getAll('lineItemId').map(String);
 
+  // No tax field is posted: GST comes from the item's tax master entry on the
+  // API side. Sending one from here would be a rate a client chose.
   const lines = lineIds
     .map((itemId, index) => ({
       itemId,
       quantity: str(form, `quantity_${index}`),
       rate: str(form, `rate_${index}`),
-      taxRatePercent: str(form, `taxRatePercent_${index}`) || '0',
     }))
     .filter((line) => line.quantity.length > 0 && Number(line.quantity) > 0);
 
@@ -308,8 +375,7 @@ export async function createInvoiceAction(
   return submit(
     `${BASE}/invoices`,
     {
-      purchaseOrderId: str(form, 'purchaseOrderId'),
-      goodsReceiptId: opt(form, 'goodsReceiptId'),
+      goodsReceiptId: str(form, 'goodsReceiptId'),
       vendorInvoiceNumber: values.vendorInvoiceNumber,
       invoiceDate: toIsoDate(str(form, 'invoiceDate')) ?? new Date().toISOString(),
       notes: opt(form, 'notes'),

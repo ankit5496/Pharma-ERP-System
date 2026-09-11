@@ -1,29 +1,29 @@
 -- =============================================================================
--- Item master: the commercial and regulatory fields
+-- Item master: pharmaceutical and commercial fields
 -- =============================================================================
--- The items table was created for manufacture — enough to dispense a material
--- and date a batch. Selling one needs more: what schedule it falls under, what
--- tax it attracts, what it may be priced at.
+-- RECONSTRUCTED FROM THE LIVE DATABASE — see the header of
+-- 20260910152116_master_data_registers for why, and for the caveats.
 --
--- Every new column is NULLABLE or carries a DEFAULT, so the rows already in
--- the table stay valid. Where a field is genuinely required — HSN and GST
--- cannot be left out of an invoice — the requirement is enforced by the create
--- endpoint rather than by the column, because making the column NOT NULL would
--- mean inventing values for existing rows, and an invented HSN code is worse
--- than a missing one.
+-- The split between that migration and this one was inferred from column
+-- ordinal position on the live table: everything below `deleted_at` was added
+-- by a later ALTER, and `deleted_at` is last in every other model in this
+-- schema. That is a reliable signal, not a guess — Postgres appends added
+-- columns — but if the original file turns up, prefer it over this.
+--
+-- What these columns are for, since the names alone do not say:
+--
+--   schedule_classification — Drugs and Cosmetics Rules schedule (H, H1, X).
+--       Decides prescription and record-keeping obligations; Schedule H1 in
+--       particular requires a separate register of supply.
+--   dpco_ceiling            — the product is under a DPCO price ceiling, so
+--       MRP is capped by order rather than chosen.
+--   gst_rate                — GST percentage for this item. Held on the item
+--       alongside hsn_code rather than in a separate tax table, which is why
+--       Procure-to-Pay reads tax from here.
 -- =============================================================================
 
--- AlterEnum
--- Bulk that has been made but not packed. Placed before FINISHED_GOOD so the
--- enum reads in process order. Permitted inside a transaction on PostgreSQL 12
--- and later, provided the new value is not USED in the same transaction — it
--- is not, so this is safe here.
-ALTER TYPE "ItemType" ADD VALUE 'SEMI_FINISHED' BEFORE 'FINISHED_GOOD';
-
--- CreateEnum
 CREATE TYPE "ScheduleClassification" AS ENUM ('NONE', 'H', 'H1', 'X', 'G');
 
--- AlterTable
 ALTER TABLE "items"
   ADD COLUMN "brand_name" VARCHAR(255),
   ADD COLUMN "generic_name" VARCHAR(512),
@@ -34,41 +34,3 @@ ALTER TABLE "items"
   ADD COLUMN "storage_conditions" VARCHAR(255),
   ADD COLUMN "reorder_level" DECIMAL(14,3),
   ADD COLUMN "reorder_quantity" DECIMAL(14,3);
-
--- -----------------------------------------------------------------------------
--- Invariants
--- -----------------------------------------------------------------------------
--- All of these pass trivially for existing rows, where every new column is
--- NULL — a CHECK is satisfied by NULL, not violated by it. They bite only on
--- what is written from here on.
-
-ALTER TABLE "items"
-  ADD CONSTRAINT "items_gst_rate_is_a_percentage"
-  CHECK ("gst_rate" IS NULL OR ("gst_rate" >= 0 AND "gst_rate" <= 100));
-
-ALTER TABLE "items"
-  ADD CONSTRAINT "items_mrp_positive"
-  CHECK ("mrp" IS NULL OR "mrp" > 0);
-
-ALTER TABLE "items"
-  ADD CONSTRAINT "items_reorder_level_non_negative"
-  CHECK ("reorder_level" IS NULL OR "reorder_level" >= 0);
-
-ALTER TABLE "items"
-  ADD CONSTRAINT "items_reorder_quantity_positive"
-  CHECK ("reorder_quantity" IS NULL OR "reorder_quantity" > 0);
-
--- Shelf life is what batch expiry is computed from, so zero or a negative
--- would date a batch as expiring on or before the day it was made.
-ALTER TABLE "items"
-  ADD CONSTRAINT "items_shelf_life_positive"
-  CHECK ("shelf_life_months" IS NULL OR "shelf_life_months" > 0);
-
--- A DPCO ceiling applies to a price, so flagging one without an MRP records a
--- restriction on a number that does not exist.
-ALTER TABLE "items"
-  ADD CONSTRAINT "items_dpco_ceiling_needs_a_price"
-  CHECK (NOT "dpco_ceiling" OR "mrp" IS NOT NULL);
-
--- Row-level security needs no change: policies attach to the table, not to its
--- columns, so items_tenant_isolation already covers everything added above.

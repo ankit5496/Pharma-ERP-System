@@ -33,7 +33,18 @@
 -- -----------------------------------------------------------------------------
 -- Use a long random value. It ends up in DATABASE_URL, which Render stores as a
 -- secret, so it never needs to be memorable.
+-- Supply it on the command line rather than editing this file:
+--
+--   psql "<owner URL>" -v app_password="$(openssl rand -base64 24)" -f scripts/render-bootstrap.sql
+--
+-- The \if below only applies the placeholder when nothing was passed, so the
+-- secret need never be written to disk or committed by accident. An
+-- unconditional \set here would silently override -v, which is a trap worth
+-- closing: the command would appear to work and quietly set the placeholder.
+\if :{?app_password}
+\else
 \set app_password 'CHANGE_ME_before_running'
+\endif
 
 -- -----------------------------------------------------------------------------
 -- 2. The role
@@ -123,9 +134,65 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO pharma_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO pharma_app;
 
--- audit_logs is append-only. Withholding UPDATE/DELETE at the privilege level
--- means that guarantee does not rest on the trigger alone.
-REVOKE UPDATE, DELETE, TRUNCATE ON TABLE audit_logs FROM pharma_app;
+-- -----------------------------------------------------------------------------
+-- 3a. Take back what the blanket grant above should not have given
+-- -----------------------------------------------------------------------------
+-- THIS SECTION IS NOT OPTIONAL, and the reason is an ordering trap worth
+-- stating plainly.
+--
+-- Every migration that needs to restrict pharma_app does so in a DO block that
+-- begins "IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'pharma_app')
+-- THEN RETURN". On a managed database the documented order is `prisma migrate
+-- deploy` FIRST and this script second — so at migration time the role does not
+-- exist yet and every one of those blocks silently skips. The GRANT ON ALL
+-- TABLES above then hands pharma_app everything, including the tables those
+-- migrations meant to withhold.
+--
+-- So the restrictions have to be re-applied here, after the blanket grant. The
+-- lists below mirror the migrations; the verification block in section 4 fails
+-- the script if they ever fall behind, which is the part that makes this safe
+-- to maintain rather than merely correct today.
+
+-- Append-only tables: readable and insertable, never updatable or deletable.
+-- Withholding the privilege means the guarantee does not rest on the trigger
+-- alone. Mirrors migrations 20260901000100 and 20260910090000.
+DO $append_only$
+DECLARE
+  v_table text;
+BEGIN
+  FOREACH v_table IN ARRAY ARRAY['audit_logs', 'qc_results', 'stock_ledger_entries']
+  LOOP
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = v_table) THEN
+      EXECUTE format('REVOKE UPDATE, DELETE, TRUNCATE ON TABLE %I FROM pharma_app', v_table);
+    END IF;
+  END LOOP;
+END
+$append_only$;
+
+-- Platform tables: no access at all. These hold the vendor's own operator
+-- accounts and their password hashes, and they are NOT tenant-scoped — there is
+-- no RLS policy to fall back on, because isolation here comes from privileges.
+-- A request-scoped connection must get "permission denied", not an empty result
+-- and certainly not a row. Mirrors migration 20260903000000.
+DO $platform$
+DECLARE
+  v_object text;
+BEGIN
+  FOREACH v_object IN ARRAY ARRAY['platform_users', 'platform_audit_logs']
+  LOOP
+    IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = v_object) THEN
+      EXECUTE format('REVOKE ALL ON TABLE %I FROM pharma_app', v_object);
+    END IF;
+  END LOOP;
+
+  IF EXISTS (
+    SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relname = 'platform_audit_logs_id_seq' AND c.relkind = 'S'
+  ) THEN
+    REVOKE ALL ON SEQUENCE platform_audit_logs_id_seq FROM pharma_app;
+  END IF;
+END
+$platform$;
 
 -- Tables added by future migrations get the same treatment without anyone
 -- having to remember. `current_user` here is the owner running this script.
@@ -200,6 +267,50 @@ BEGIN
   RAISE NOTICE 'pharma_app verified: not a superuser, does not bypass RLS.';
 END
 $verify$;
+
+-- The privilege checks. These assert the OUTCOME rather than trusting that the
+-- statements above ran in the right order, which is the whole point: this
+-- script is run by hand, once, against a database whose exact state nobody has
+-- checked.
+DO $verify_privileges$
+DECLARE
+  v_leaked text;
+BEGIN
+  -- Any privilege at all on a platform table is a failure. There is no RLS on
+  -- these tables to catch a mistake here.
+  SELECT string_agg(DISTINCT table_name, ', ')
+  INTO v_leaked
+  FROM information_schema.table_privileges
+  WHERE grantee = 'pharma_app'
+    AND table_schema = 'public'
+    AND table_name IN ('platform_users', 'platform_audit_logs');
+
+  IF v_leaked IS NOT NULL THEN
+    RAISE EXCEPTION
+      'pharma_app still holds privileges on platform table(s): %. The application role must have no access to platform operator accounts.',
+      v_leaked
+      USING HINT = 'Re-run this script; section 3a performs the revocation.';
+  END IF;
+
+  -- Append-only means no UPDATE and no DELETE, at the privilege level.
+  SELECT string_agg(DISTINCT table_name || ' (' || privilege_type || ')', ', ')
+  INTO v_leaked
+  FROM information_schema.table_privileges
+  WHERE grantee = 'pharma_app'
+    AND table_schema = 'public'
+    AND table_name IN ('audit_logs', 'qc_results', 'stock_ledger_entries')
+    AND privilege_type IN ('UPDATE', 'DELETE', 'TRUNCATE');
+
+  IF v_leaked IS NOT NULL THEN
+    RAISE EXCEPTION
+      'pharma_app can still modify append-only table(s): %. These record what happened and must never be editable.',
+      v_leaked
+      USING HINT = 'Re-run this script; section 3a performs the revocation.';
+  END IF;
+
+  RAISE NOTICE 'pharma_app verified: no platform-table access, append-only tables are insert-only.';
+END
+$verify_privileges$;
 
 SELECT
   relname                AS table_name,

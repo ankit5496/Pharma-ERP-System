@@ -12,30 +12,6 @@ export type TenantScopedClient = ReturnType<typeof forTenant>;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
- * Transaction budgets for every interactive transaction in this package.
- *
- * Prisma's defaults are maxWait 2s / timeout 5s, which assume a database on the
- * same network. They are not enough for a managed database reached across a
- * region: one round trip can be over half a second, and a cold pool connection
- * pays a TLS handshake on top, so merely STARTING a transaction can exceed 2s
- * and fail with P2028 — "Unable to start a transaction in the given time".
- *
- * That failure mode is worth being generous about because of what it hits
- * first: every sign-in runs a transaction before anything else, so a tight
- * budget presents as "nobody can log in" rather than as a slow query.
- *
- * Still bounded, not disabled. A transaction that cannot start in 10 seconds
- * means the database is unreachable or the pool is exhausted, and failing then
- * is better than holding the request open.
- */
-export const TRANSACTION_TIMEOUTS = {
-  /** How long to wait for a connection from the pool to begin the transaction. */
-  maxWait: 10_000,
-  /** How long the transaction body may run once started. */
-  timeout: 15_000,
-} as const;
-
-/**
  * Binds a client to a tenant for the lifetime of the returned object.
  *
  * The mechanism matters, so: PostgreSQL settings are per-session, and Prisma
@@ -77,6 +53,31 @@ export function forTenant(prisma: PrismaClient, tenantId: string) {
  * client passed to `fn` is the transaction client: queries issued on it are in
  * scope, queries issued on the outer client are NOT.
  */
+/**
+ * How long an interactive transaction may run, and how long it may wait for a
+ * connection.
+ *
+ * Prisma's defaults are 5s and 2s, which are comfortable against a database on
+ * localhost and demonstrably too tight against a managed one over the internet.
+ * Two things compound there:
+ *
+ *   1. Every transaction here spends its first round trip on `set_config`
+ *      before any real work starts — the price of tenant scoping.
+ *   2. A document write is several statements: allocate a number, insert the
+ *      header, insert the lines, update what it came from.
+ *
+ * At ~500ms per round trip to another continent, a six-statement purchase
+ * order takes over three seconds of pure latency and a goods receipt with
+ * several lines takes far more. The 5s default failed on the first purchase
+ * order raised against Render, with "Transaction already closed".
+ *
+ * 30s is not a licence to do more work inside a transaction — it is headroom
+ * for the same work over a slow link. Long-running batch work still belongs
+ * outside one.
+ */
+export const TRANSACTION_TIMEOUT_MS = 30_000;
+export const TRANSACTION_MAX_WAIT_MS = 10_000;
+
 export async function runInTenantTransaction<T>(
   prisma: PrismaClient,
   tenantId: string,
@@ -94,7 +95,11 @@ export async function runInTenantTransaction<T>(
       await tx.$executeRaw`SELECT set_config(${PG_TENANT_SETTING}, ${tenantId}, true)`;
       return fn(tx);
     },
-    { ...TRANSACTION_TIMEOUTS, ...options },
+    {
+      maxWait: TRANSACTION_MAX_WAIT_MS,
+      timeout: TRANSACTION_TIMEOUT_MS,
+      ...options,
+    },
   );
 }
 

@@ -17,6 +17,7 @@ import {
   ErrorState,
   Money,
   Panel,
+  Pill,
   RecordLink,
   StatusPill,
   TableWrap,
@@ -141,6 +142,14 @@ export default async function InvoicesPage({
                       <p className="mt-0.5 text-xs text-slate-600">
                         vendor ref {invoice.vendorInvoiceNumber}
                       </p>
+                      {/* The three-way match result. Flagged, not hidden: a
+                          genuine price revision is bookable, but it has to be
+                          visible as an exception afterwards. */}
+                      {invoice.toleranceExceeded && (
+                        <p className="mt-1">
+                          <Pill tone="warn">Outside tolerance</Pill>
+                        </p>
+                      )}
                     </Td>
 
                     <Td>
@@ -212,7 +221,11 @@ export default async function InvoicesPage({
                           status={invoice.status}
                           label={PURCHASE_INVOICE_STATUS_LABELS[invoice.status]}
                         />
-                        {invoice.status === 'APPROVED' && (
+                        {/* The stored status already says Booked / Partially
+                            paid / Paid. The derived one adds exactly one thing
+                            the column cannot: whether an unpaid invoice is
+                            past its due date. So it is shown only then. */}
+                        {invoice.paymentStatus === 'OVERDUE' && (
                           <StatusPill
                             status={invoice.paymentStatus}
                             label={PAYMENT_STATUS_LABELS[invoice.paymentStatus]}
@@ -223,6 +236,11 @@ export default async function InvoicesPage({
 
                     <Td>
                       <InvoiceActions invoice={invoice} />
+                      {invoice.matchNotes && (
+                        <p className="mt-1 max-w-[16rem] text-[11px] leading-snug text-amber-900">
+                          {invoice.matchNotes}
+                        </p>
+                      )}
                     </Td>
                   </tr>
                 ))}

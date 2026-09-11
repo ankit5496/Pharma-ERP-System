@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { unitLabel, type PurchaseOrderListItem } from '@pharma-erp/types';
+import { type PurchaseOrderListItem } from '@pharma-erp/types';
 
 import { createInvoiceAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
@@ -28,10 +28,11 @@ export function RecordInvoiceForm({ orders }: { orders: readonly PurchaseOrderLi
       <ActionMessage state={state} />
 
       <div className="grid gap-3 sm:grid-cols-4">
-        <Field label="Purchase order" htmlFor="inv-order" required className="sm:col-span-2">
+        {/* Not posted — the API derives the order from the receipt. This is
+            a filter for the receipt list below it. */}
+        <Field label="Purchase order" htmlFor="inv-order" className="sm:col-span-2">
           <select
             id="inv-order"
-            name="purchaseOrderId"
             required
             value={orderId}
             onChange={(event) => setOrderId(event.target.value)}
@@ -46,12 +47,23 @@ export function RecordInvoiceForm({ orders }: { orders: readonly PurchaseOrderLi
         </Field>
 
         <Field
-          label="Match to GRN"
+          label="Goods receipt"
           htmlFor="inv-grn"
-          hint={order?.goodsReceipts.length === 0 ? 'No receipts on this order yet.' : undefined}
+          required
+          hint={
+            order?.goodsReceipts.length === 0
+              ? 'No receipts on this order yet — nothing to invoice.'
+              : 'Mandatory: an invoice always bills for a specific receipt.'
+          }
         >
-          <select id="inv-grn" name="goodsReceiptId" className="field-sm w-full" defaultValue="">
-            <option value="">Not matched</option>
+          <select
+            id="inv-grn"
+            name="goodsReceiptId"
+            required
+            className="field-sm w-full"
+            defaultValue=""
+          >
+            <option value="">Choose a receipt</option>
             {order?.goodsReceipts.map((grn) => (
               <option key={grn.id} value={grn.id}>
                 {grn.number} ({grn.receiptDate.slice(0, 10)})
@@ -110,7 +122,7 @@ export function RecordInvoiceForm({ orders }: { orders: readonly PurchaseOrderLi
                   Rate
                 </th>
                 <th scope="col" className="px-3 py-2 font-medium">
-                  GST %
+                  GST (from HSN)
                 </th>
               </tr>
             </thead>
@@ -125,7 +137,7 @@ export function RecordInvoiceForm({ orders }: { orders: readonly PurchaseOrderLi
                     </span>
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums text-slate-500">
-                    {line.quantity} {unitLabel(line.item.uom)}
+                    {line.quantity} {line.item.uom}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums text-slate-700">
                     {line.quantityReceived}
@@ -154,17 +166,23 @@ export function RecordInvoiceForm({ orders }: { orders: readonly PurchaseOrderLi
                       className="field-sm w-24"
                     />
                   </td>
+                  {/* Read-only, and not posted. GST is computed on the server
+                      from the item master's own gstRate; an input here would be
+                      a rate the client chose, which is what the brief and the
+                      filing rules both rule out. */}
                   <td className="px-3 py-2">
-                    <label className="sr-only" htmlFor={`inv-tax-${index}`}>
-                      GST percent for {line.item.name}
-                    </label>
-                    <input
-                      id={`inv-tax-${index}`}
-                      name={`taxRatePercent_${index}`}
-                      inputMode="decimal"
-                      defaultValue={line.taxRatePercent}
-                      className="field-sm w-20"
-                    />
+                    {line.item.gstRate !== null ? (
+                      <span
+                        className="text-slate-700"
+                        title={`HSN ${line.item.hsnCode ?? 'not set'}`}
+                      >
+                        {line.item.gstRate}%
+                      </span>
+                    ) : (
+                      <span className="text-red-700" title="Set a GST rate on this item">
+                        no GST rate
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}

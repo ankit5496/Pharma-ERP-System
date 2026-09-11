@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { unitLabel, type PurchaseOrderListItem } from '@pharma-erp/types';
+import { type PurchaseOrderListItem } from '@pharma-erp/types';
 
 import { createGoodsReceiptAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
@@ -125,7 +125,7 @@ export function BookReceiptForm({ orders }: { orders: readonly PurchaseOrderList
                     </td>
 
                     <td className="px-3 py-2 text-right tabular-nums text-slate-600">
-                      {line.quantityPending} {unitLabel(line.item.uom)}
+                      {line.quantityPending} {line.item.uom}
                     </td>
 
                     <td className="px-3 py-2">

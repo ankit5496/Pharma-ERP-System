@@ -14,7 +14,13 @@ import { TenantContextService } from '../tenant/tenant-context.service';
 import { parsePositive, positiveDifference, qty } from './decimal.util';
 import type { CreateRequisitionDto, UpdateRequisitionDto } from './dto/requisition.dto';
 import { dateRange } from './filters.util';
-import { ITEM_SELECT, collectIds, toItemSummary } from './mappers';
+import {
+  ITEM_SELECT,
+  PRODUCTION_PLAN_INCLUDE,
+  collectIds,
+  toItemSummary,
+  toProductionPlanSummary,
+} from './mappers';
 import { NumberingService } from './numbering.service';
 import { PeopleService } from './people.service';
 import { StockService } from './stock.service';
@@ -22,6 +28,7 @@ import { StockService } from './stock.service';
 const REQUISITION_INCLUDE = {
   item: { select: ITEM_SELECT },
   preferredVendor: { select: { id: true, name: true } },
+  productionPlan: { include: PRODUCTION_PLAN_INCLUDE },
   purchaseOrderLines: {
     select: { purchaseOrder: { select: { id: true, number: true, status: true } } },
   },
@@ -38,15 +45,20 @@ type RequisitionRow = Prisma.PurchaseRequisitionGetPayload<{ include: typeof REQ
  * figures that would then no longer match.
  */
 const ALLOWED_TRANSITIONS: Record<RequisitionStatus, readonly RequisitionStatus[]> = {
-  DRAFT: ['PENDING', 'CANCELLED'],
-  PENDING: ['APPROVED', 'CANCELLED'],
+  OPEN: ['APPROVED', 'CANCELLED'],
   APPROVED: ['CONVERTED_TO_PO', 'CANCELLED'],
   CONVERTED_TO_PO: [],
   CANCELLED: [],
 };
 
-/** Statuses whose figures may still be edited. */
-const EDITABLE_STATUSES: readonly RequisitionStatus[] = ['DRAFT', 'PENDING'];
+/**
+ * Statuses whose figures may still be edited.
+ *
+ * Only OPEN. Once approved, the quantity is what somebody signed off; once
+ * converted, a purchase order cites it. Editing either would leave a document
+ * downstream quoting a figure that no longer exists upstream.
+ */
+const EDITABLE_STATUSES: readonly RequisitionStatus[] = ['OPEN'];
 
 @Injectable()
 export class RequisitionsService {
@@ -110,24 +122,44 @@ export class RequisitionsService {
   }
 
   /**
-   * Raises a requisition for an item.
+   * Raises a requisition by hand — always MANUAL, always against a production
+   * plan.
    *
-   * The stock figure is read here and stored on the row, not read again later:
-   * the requisition's job is to record why it was raised, and "stock was 20
-   * against a reorder level of 50" has to stay true after the next receipt.
+   * The plan requirement is conditional on the trigger type and therefore
+   * lives here rather than in the DTO: a class-validator rule cannot say
+   * "required when this other field has this value" without a custom
+   * validator that would then need the same reasoning written twice.
    */
   async create(dto: CreateRequisitionDto): Promise<RequisitionListItem> {
     const tenantId = this.tenantContext.requireTenantId();
     const requestedById = this.requireActingUser();
 
-    const requiredQuantity = parsePositive(dto.requiredQuantity, 'Required quantity');
-
     const item = await this.prisma.scoped.item.findFirst({
       where: { id: dto.itemId, deletedAt: null },
-      select: { ...ITEM_SELECT, reorderLevel: true },
+      select: ITEM_SELECT,
     });
 
     if (!item) throw new NotFoundException('Item not found.');
+
+    // Defaults to the item's configured reorder quantity, and stays editable.
+    const requiredQuantity =
+      dto.requiredQuantity === undefined || dto.requiredQuantity === ''
+        ? new Prisma.Decimal(item.reorderQuantity ?? 0)
+        : parsePositive(dto.requiredQuantity, 'Required quantity');
+
+    if (requiredQuantity.lessThanOrEqualTo(0)) {
+      throw new BadRequestException(
+        `Enter a quantity: ${item.code} has no reorder quantity configured to default from.`,
+      );
+    }
+
+    if (!dto.productionPlanId) {
+      throw new BadRequestException(
+        'A manually raised requisition must name the production plan it is for.',
+      );
+    }
+
+    await this.requireProductionPlan(dto.productionPlanId);
 
     if (dto.preferredVendorId) {
       await this.requireVendor(dto.preferredVendorId);
@@ -144,17 +176,14 @@ export class RequisitionsService {
           number,
           itemId: dto.itemId,
           stockAtRequest,
-          // Null means no reorder level is configured, which is not the
-          // same as a level of zero — but the requisition has to record the
-          // figure it was raised against, and that figure is zero.
           reorderLevelAtRequest: item.reorderLevel ?? 0,
           requiredQuantity,
+          triggerType: 'MANUAL',
+          productionPlanId: dto.productionPlanId,
           preferredVendorId: dto.preferredVendorId ?? null,
           requestedById,
           requiredByDate: dto.requiredByDate ? new Date(dto.requiredByDate) : null,
-          // A draft is a private working copy; anything else enters the
-          // approval queue immediately.
-          status: dto.asDraft ? 'DRAFT' : 'PENDING',
+          status: 'OPEN',
           notes: dto.notes ?? null,
         },
         include: REQUISITION_INCLUDE,
@@ -169,6 +198,7 @@ export class RequisitionsService {
         number: created.number,
         item: item.code,
         requiredQuantity: qty(requiredQuantity),
+        triggerType: 'MANUAL',
         status: created.status,
       },
     });
@@ -176,6 +206,21 @@ export class RequisitionsService {
     const people = await this.people.load(collectIds(created.requestedById));
 
     return this.toListItem(created, people);
+  }
+
+  private async requireProductionPlan(planId: string): Promise<void> {
+    const plan = await this.prisma.scoped.productionPlan.findFirst({
+      where: { id: planId, deletedAt: null },
+      select: { id: true, status: true, number: true },
+    });
+
+    if (!plan) throw new NotFoundException('Production plan not found.');
+
+    if (plan.status === 'CANCELLED' || plan.status === 'COMPLETED') {
+      throw new ConflictException(
+        `Production plan ${plan.number} is ${plan.status.toLowerCase()} and cannot take new requisitions.`,
+      );
+    }
   }
 
   async update(id: string, dto: UpdateRequisitionDto): Promise<RequisitionListItem> {
@@ -338,8 +383,11 @@ export class RequisitionsService {
         ),
       ),
       requiredQuantity: qty(row.requiredQuantity),
+      triggerType: row.triggerType,
+      productionPlan: row.productionPlan ? toProductionPlanSummary(row.productionPlan) : null,
       preferredVendor: row.preferredVendor,
-      requestedBy: people.get(row.requestedById) ?? null,
+      // Null for an auto-reorder: the system raised it and the trail says so.
+      requestedBy: row.requestedById ? (people.get(row.requestedById) ?? null) : null,
       approvedBy: row.approvedById ? (people.get(row.approvedById) ?? null) : null,
       requestDate: row.requestDate.toISOString(),
       requiredByDate: row.requiredByDate?.toISOString() ?? null,

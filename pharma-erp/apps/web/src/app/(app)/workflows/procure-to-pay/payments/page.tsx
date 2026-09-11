@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { PAYMENT_STATUSES, PAYMENT_STATUS_LABELS, PROCUREMENT_ROUTES } from '@pharma-erp/types';
 
 import { FilterBar } from '@/components/procurement/filter-bar';
+import { PayablesReportPanel } from '@/components/procurement/payables-report';
 import { RecordPaymentForm } from '@/components/procurement/record-payment-form';
 import {
   DateText,
@@ -16,7 +17,13 @@ import {
   Td,
   Th,
 } from '@/components/procurement/ui';
-import { fetchPayables, fetchVendors, toListQuery, toOptions } from '@/lib/procurement';
+import {
+  fetchPayables,
+  fetchPayablesReport,
+  fetchVendors,
+  toListQuery,
+  toOptions,
+} from '@/lib/procurement';
 
 export const metadata: Metadata = { title: 'Vendor payments' };
 export const dynamic = 'force-dynamic';
@@ -39,12 +46,21 @@ export default async function PaymentsPage({
 }) {
   const query = toListQuery(await searchParams);
 
-  const [payables, vendors] = await Promise.all([fetchPayables(query), fetchVendors()]);
+  const [payables, vendors, report] = await Promise.all([
+    fetchPayables(query),
+    fetchVendors(),
+    // The report honours the vendor filter so the summary and the list below
+    // always describe the same set of invoices.
+    fetchPayablesReport(query.vendorId),
+  ]);
 
   const isFiltered = Object.values(query).some(Boolean);
 
   return (
-    <Panel
+    <div className="space-y-6">
+      <PayablesReportPanel result={report} />
+
+      <Panel
       title="Vendor payables"
       subtitle={
         payables.ok
@@ -205,5 +221,6 @@ export default async function PaymentsPage({
         it. A payment larger than the outstanding balance is refused.
       </p>
     </Panel>
+    </div>
   );
 }

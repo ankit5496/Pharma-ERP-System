@@ -1,9 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 
 import { Prisma } from '@pharma-erp/database';
 import type { ItemStockPosition, LowStockItem, StockLedgerRow } from '@pharma-erp/types';
 
 import { PrismaService } from '../prisma/prisma.service';
+import { TenantContextService } from '../tenant/tenant-context.service';
 
 import { ZERO, positiveDifference, qty } from './decimal.util';
 import { ITEM_SELECT, LOT_SELECT, toItemSummary, toStockLotSummary } from './mappers';
@@ -20,7 +21,10 @@ import { ITEM_SELECT, LOT_SELECT, toItemSummary, toStockLotSummary } from './map
  */
 @Injectable()
 export class StockService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tenantContext: TenantContextService,
+  ) {}
 
   /**
    * Usable stock per item, as a map.
@@ -45,13 +49,13 @@ export class StockService {
    * Raw materials whose usable stock has fallen below their reorder level.
    *
    * This is the trigger for the whole Procure-to-Pay flow: `available < reorder`.
-   * Restricted to RAW_MATERIAL and PACKING_MATERIAL because finished goods are made,
+   * Restricted to RAW_MATERIAL and PACKAGING because finished goods are made,
    * not bought, and would otherwise sit permanently in the buyer's queue.
    */
   async lowStockItems(): Promise<LowStockItem[]> {
     const [items, usable, quarantine, openRequisitions] = await Promise.all([
       this.prisma.scoped.item.findMany({
-        where: { deletedAt: null, type: { in: ['RAW_MATERIAL', 'PACKING_MATERIAL'] } },
+        where: { deletedAt: null, type: { in: ['RAW_MATERIAL', 'PACKING_MATERIAL', 'SEMI_FINISHED'] } },
         select: ITEM_SELECT,
         orderBy: [{ name: 'asc' }],
       }),
@@ -60,7 +64,7 @@ export class StockService {
       // Items already being dealt with. Shown rather than hidden, flagged so a
       // buyer does not raise a second requisition for the same shortage.
       this.prisma.scoped.purchaseRequisition.findMany({
-        where: { deletedAt: null, status: { in: ['DRAFT', 'PENDING', 'APPROVED'] } },
+        where: { deletedAt: null, status: { in: ['OPEN', 'APPROVED'] } },
         select: { itemId: true },
         distinct: ['itemId'],
       }),
@@ -71,7 +75,6 @@ export class StockService {
     return items
       .map((item) => {
         const available = usable.get(item.id) ?? ZERO;
-        // An item with no reorder level configured never falls below it.
         const reorderLevel = new Prisma.Decimal(item.reorderLevel ?? 0);
 
         return {
@@ -164,6 +167,92 @@ export class StockService {
       notes: row.notes,
       createdAt: row.createdAt.toISOString(),
     }));
+  }
+
+  /**
+   * Consumes or corrects usable stock, lot by lot in FEFO order.
+   *
+   * Exists because stock has to be able to GO DOWN for the reorder trigger to
+   * mean anything, and production — the normal consumer — is not built yet.
+   * It is a real inventory operation, not a test hook: an adjustment for
+   * breakage, a stock count correction or a manual issue all land here, and
+   * each one posts a ledger entry with a reason.
+   *
+   * FEFO is not optional here. Consuming the earliest-expiring lot first is
+   * the rule the whole batch model exists to support; picking an arbitrary lot
+   * would leave short-dated material to expire on the shelf.
+   */
+  async consumeStock(
+    itemId: string,
+    quantity: Prisma.Decimal,
+    reason: string,
+    actingUserId: string | null,
+  ): Promise<{ consumedFrom: { lotNumber: string; quantity: string }[] }> {
+    const tenantId = this.tenantContext.requireTenantId();
+
+    return this.prisma.transaction(async (tx) => {
+      const item = await tx.item.findFirst({
+        where: { id: itemId, deletedAt: null },
+        select: { id: true, code: true },
+      });
+
+      if (!item) throw new NotFoundException('Item not found.');
+
+      const lots = await tx.stockLot.findMany({
+        where: { itemId, status: 'USABLE', quantityAvailable: { gt: 0 } },
+        orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }],
+        select: { id: true, lotNumber: true, quantityAvailable: true },
+      });
+
+      const total = lots.reduce((sum, lot) => sum.plus(lot.quantityAvailable), ZERO);
+
+      if (total.lessThan(quantity)) {
+        throw new ConflictException(
+          `Only ${qty(total)} of ${item.code} is usable; cannot consume ${qty(quantity)}.`,
+        );
+      }
+
+      let remaining = quantity;
+      const consumedFrom: { lotNumber: string; quantity: string }[] = [];
+
+      for (const lot of lots) {
+        if (remaining.lessThanOrEqualTo(0)) break;
+
+        const available = new Prisma.Decimal(lot.quantityAvailable);
+        const take = available.lessThan(remaining) ? available : remaining;
+        const left = available.minus(take);
+
+        await tx.stockLot.update({
+          where: { id: lot.id },
+          data: {
+            quantityAvailable: left,
+            // A lot drawn to zero is CONSUMED, not deleted: its batch number
+            // and expiry stay traceable for as long as anything made from it
+            // is on the market.
+            ...(left.isZero() ? { status: 'CONSUMED' as const } : {}),
+          },
+        });
+
+        await tx.stockLedgerEntry.create({
+          data: {
+            tenantId,
+            itemId,
+            stockLotId: lot.id,
+            entryType: 'ADJUSTMENT',
+            quantityDelta: take.negated(),
+            affectsUsableStock: true,
+            reference: null,
+            notes: reason,
+            createdById: actingUserId,
+          },
+        });
+
+        consumedFrom.push({ lotNumber: lot.lotNumber, quantity: qty(take) });
+        remaining = remaining.minus(take);
+      }
+
+      return { consumedFrom };
+    });
   }
 
   /** Usable stock for one item, for the requisition form's snapshot. */

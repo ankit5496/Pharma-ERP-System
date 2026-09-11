@@ -3,7 +3,8 @@ import {
   PROCUREMENT_ROUTES,
   REQUISITION_STATUSES,
   REQUISITION_STATUS_LABELS,
-  unitLabel,
+  REQUISITION_TRIGGER_LABELS,
+  type RequisitionListItem,
 } from '@pharma-erp/types';
 
 import { FilterBar } from '@/components/procurement/filter-bar';
@@ -16,6 +17,7 @@ import {
   EmptyState,
   ErrorState,
   Panel,
+  Pill,
   Qty,
   StatusPill,
   TableWrap,
@@ -25,7 +27,9 @@ import {
 import {
   fetchItems,
   fetchLowStock,
+  fetchProductionPlans,
   fetchRequisitions,
+  fetchBoms,
   fetchVendors,
   toListQuery,
   toOptions,
@@ -50,11 +54,13 @@ export default async function RequisitionsPage({
   const params = await searchParams;
   const query = toListQuery(params);
 
-  const [requisitions, lowStock, items, vendors] = await Promise.all([
+  const [requisitions, lowStock, items, vendors, boms, plans] = await Promise.all([
     fetchRequisitions(query),
     fetchLowStock(),
     fetchItems(),
     fetchVendors(),
+    fetchBoms(),
+    fetchProductionPlans(),
   ]);
 
   const itemOptions = items.ok ? toOptions(items.data) : [];
@@ -63,11 +69,7 @@ export default async function RequisitionsPage({
 
   return (
     <div className="space-y-6">
-      <LowStockPanel
-        result={lowStock}
-        vendors={vendors.ok ? vendors.data : []}
-        highlighted={params.view === 'low-stock'}
-      />
+      <LowStockPanel result={lowStock} highlighted={params.view === 'low-stock'} />
 
       <Panel
         title="Requisitions"
@@ -76,7 +78,14 @@ export default async function RequisitionsPage({
             ? `${requisitions.data.length} requisition${requisitions.data.length === 1 ? '' : 's'}`
             : undefined
         }
-        action={<MastersToolbar items={items.ok ? items.data : []} vendors={vendors.ok ? vendors.data : []} />}
+        action={
+          <MastersToolbar
+            items={items.ok ? items.data : []}
+            vendors={vendors.ok ? vendors.data : []}
+            boms={boms.ok ? boms.data : []}
+            plans={plans.ok ? plans.data : []}
+          />
+        }
       >
         <FilterBar
           statuses={REQUISITION_STATUSES.map((status) => ({
@@ -102,6 +111,7 @@ export default async function RequisitionsPage({
               <thead>
                 <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
                   <Th>Number</Th>
+                  <Th>Trigger</Th>
                   <Th>Item</Th>
                   <Th>Why</Th>
                   <Th align="right">Required</Th>
@@ -119,6 +129,10 @@ export default async function RequisitionsPage({
                       <span className="font-mono text-xs font-medium text-slate-900">
                         {requisition.number}
                       </span>
+                    </Td>
+
+                    <Td>
+                      <TriggerCell requisition={requisition} />
                     </Td>
 
                     <Td>
@@ -143,7 +157,7 @@ export default async function RequisitionsPage({
                     <Td align="right">
                       <Qty
                         value={requisition.requiredQuantity}
-                        uom={unitLabel(requisition.item.uom)}
+                        uom={requisition.item.uom}
                       />
                     </Td>
 
@@ -205,6 +219,40 @@ export default async function RequisitionsPage({
           </TableWrap>
         )}
       </Panel>
+    </div>
+  );
+}
+
+/**
+ * Why this requisition exists, and what it is for.
+ *
+ * The trigger is worth a column of its own rather than a footnote: an
+ * auto-reorder requisition has no author and needs none, while a manual one
+ * names the production run it serves. Showing both in one cell keeps the two
+ * distinguishable at a glance without a second table.
+ */
+function TriggerCell({ requisition }: { requisition: RequisitionListItem }) {
+  const isAuto = requisition.triggerType === 'AUTO_REORDER';
+
+  return (
+    <div className="space-y-1">
+      <Pill tone={isAuto ? 'info' : 'neutral'}>
+        {REQUISITION_TRIGGER_LABELS[requisition.triggerType]}
+      </Pill>
+
+      {requisition.productionPlan && (
+        <p className="text-[11px] leading-snug text-slate-600">
+          <span className="font-mono">{requisition.productionPlan.number}</span>
+          <span className="block text-slate-500">
+            {requisition.productionPlan.finishedProduct.name}
+            {requisition.productionPlan.packVariant
+              ? ` · ${requisition.productionPlan.packVariant}`
+              : ''}
+          </span>
+        </p>
+      )}
+
+      {isAuto && <p className="text-[11px] text-slate-400">raised by the system</p>}
     </div>
   );
 }

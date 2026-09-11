@@ -1,20 +1,13 @@
-import type { QcResultItem, StockLotSummary } from '@pharma-erp/types';
+import type {
+  ItemSummary,
+  PartySummary,
+  BomSummary,
+  ProductionPlanSummary,
+  QcResultItem,
+  StockLotSummary,
+} from '@pharma-erp/types';
 
-import { toPartySummary } from '../parties/parties.service';
-import { toItemSummary } from '../production/production.mappers';
-
-import { qty } from './decimal.util';
-
-/**
- * Items and parties are mapped by the modules that own those registers, not
- * here.
- *
- * This module used to build its own, from its own narrower row type. That was
- * how two shapes for one table stayed hidden — each flow mapped what it
- * happened to select and neither noticed the other. Re-exported so the call
- * sites in this flow are unchanged.
- */
-export { toItemSummary, toPartySummary };
+import { money, percent, qty } from './decimal.util';
 
 /**
  * Row-to-contract mappers.
@@ -25,19 +18,9 @@ export { toItemSummary, toPartySummary };
  * expiry and another silently omitting it.
  */
 
-/**
- * The whole item row, not a hand-picked subset.
- *
- * It used to select eight columns, which was right when procurement owned its
- * own `items` shape. It no longer does: `ItemSummary` is declared once, in
- * @pharma-erp/types production.ts, and describes every column the master-data
- * screens maintain. A narrower select here would mean this flow could not
- * build one — and keeping two lists in step by hand is the thing that went
- * wrong in the first place.
- */
+/** Fields every caller selects for an item. Mirrors the shared items table. */
 export const ITEM_SELECT = {
   id: true,
-  tenantId: true,
   code: true,
   name: true,
   type: true,
@@ -55,30 +38,115 @@ export const ITEM_SELECT = {
   reorderQuantity: true,
   requiresBatchTracking: true,
   notes: true,
-  createdAt: true,
-  updatedAt: true,
-  deletedAt: true,
 } as const;
+
+/**
+ * Whether a receipt of this item must carry a batch number and expiry.
+ *
+ * Read from the item, not derived. It was derived as "always" while the
+ * shared item master had no such column; 20260911160000 added one, for the
+ * reason this comment used to give — an exception belongs as a column agreed
+ * with the master-data work, not a special case here.
+ *
+ * It defaults true and no form exposes it, so behaviour is unchanged: every
+ * material entering the plant is traceable to a vendor lot. Turning that off
+ * for an item is a decision that needs a recorded reason.
+ */
+
+type ItemRow = {
+  id: string;
+  code: string;
+  name: string;
+  type: string;
+  uom: string;
+  shelfLifeMonths: number | null;
+  hsnCode: string | null;
+  brandName: string | null;
+  genericName: string | null;
+  scheduleClassification: string;
+  gstRate: unknown;
+  mrp: unknown;
+  dpcoCeiling: boolean;
+  storageConditions: string | null;
+  reorderLevel: unknown;
+  reorderQuantity: unknown;
+  notes: string | null;
+  requiresBatchTracking: boolean;
+};
+
+export function toItemSummary(row: ItemRow): ItemSummary {
+  return {
+    id: row.id,
+    code: row.code,
+    name: row.name,
+    type: row.type as ItemSummary['type'],
+    uom: row.uom,
+    shelfLifeMonths: row.shelfLifeMonths,
+    hsnCode: row.hsnCode,
+    brandName: row.brandName,
+    genericName: row.genericName,
+    scheduleClassification: row.scheduleClassification as ItemSummary['scheduleClassification'],
+    // Nullable throughout: on the shared schema these are genuinely optional,
+    // and null means "not configured" rather than zero. Coercing a missing
+    // reorder level to 0 would quietly exempt the item from the low-stock
+    // check instead of flagging that nobody has set a policy for it.
+    gstRate: row.gstRate === null ? null : percent(row.gstRate as never),
+    mrp: row.mrp === null ? null : money(row.mrp as never),
+    dpcoCeiling: row.dpcoCeiling,
+    storageConditions: row.storageConditions,
+    reorderLevel: row.reorderLevel === null ? null : qty(row.reorderLevel as never),
+    reorderQuantity: row.reorderQuantity === null ? null : qty(row.reorderQuantity as never),
+    requiresBatchTracking: row.requiresBatchTracking,
+    notes: row.notes,
+  };
+}
+
+/** Shape a BOM must be loaded with for the mapper below. */
+export const BOM_INCLUDE = {
+  product: { select: ITEM_SELECT },
+  lines: { include: { item: { select: ITEM_SELECT } }, orderBy: { id: 'asc' } },
+} as const;
+
+export function toBomSummary(row: {
+  id: string;
+  version: number;
+  outputQuantity: unknown;
+  isActive: boolean;
+  effectiveFrom: Date | null;
+  product: ItemRow;
+  lines: { id: string; quantityPer: unknown; notes: string | null; item: ItemRow }[];
+}): BomSummary {
+  return {
+    id: row.id,
+    version: row.version,
+    product: toItemSummary(row.product),
+    outputQuantity: qty(row.outputQuantity as never),
+    isActive: row.isActive,
+    effectiveFrom: toDateOnly(row.effectiveFrom),
+    lines: row.lines.map((line) => ({
+      id: line.id,
+      item: toItemSummary(line.item),
+      quantityPer: qty(line.quantityPer as never),
+      notes: line.notes,
+    })),
+  };
+}
 
 export const PARTY_SELECT = {
   id: true,
-  tenantId: true,
   code: true,
   name: true,
   partyType: true,
-  status: true,
   gstin: true,
   drugLicenceNumber: true,
-  drugLicenceValidTo: true,
   email: true,
   phone: true,
-  address: true,
   paymentTermsDays: true,
+  address: true,
+  status: true,
+  drugLicenceValidTo: true,
   creditLimit: true,
   creditPeriodDays: true,
-  createdAt: true,
-  updatedAt: true,
-  deletedAt: true,
 } as const;
 
 export const LOT_SELECT = {
@@ -93,7 +161,46 @@ export const LOT_SELECT = {
   storageLocation: true,
 } as const;
 
+type PartyRow = {
+  id: string;
+  code: string;
+  name: string;
+  partyType: string;
+  gstin: string | null;
+  drugLicenceNumber: string | null;
+  email: string | null;
+  phone: string | null;
+  paymentTermsDays: number;
+  address: string | null;
+  status: string;
+  drugLicenceValidTo: Date | null;
+  creditLimit: unknown;
+  creditPeriodDays: number | null;
+};
 
+export function toPartySummary(row: PartyRow): PartySummary {
+  return {
+    id: row.id,
+    code: row.code,
+    name: row.name,
+    partyType: row.partyType as PartySummary['partyType'],
+    gstin: row.gstin,
+    drugLicenceNumber: row.drugLicenceNumber,
+    email: row.email,
+    phone: row.phone,
+    paymentTermsDays: row.paymentTermsDays,
+    address: row.address,
+    status: row.status as PartySummary['status'],
+    drugLicenceValidTo: toDateOnly(row.drugLicenceValidTo),
+    creditLimit: row.creditLimit === null ? null : money(row.creditLimit as never),
+    creditPeriodDays: row.creditPeriodDays,
+    // A licence is valid THROUGH its final day, so only a date strictly
+    // before today has lapsed. Compared as calendar days in UTC.
+    licenceExpired:
+      row.drugLicenceValidTo !== null &&
+      toDateOnly(row.drugLicenceValidTo)! < new Date().toISOString().slice(0, 10),
+  };
+}
 
 type LotRow = {
   id: string;
@@ -147,6 +254,35 @@ export function toQcResultItem(
 /** `YYYY-MM-DD` for a Postgres `date`, or null. */
 export function toDateOnly(value: Date | null): string | null {
   return value ? value.toISOString().slice(0, 10) : null;
+}
+
+/** Shape a production plan must be loaded with for the mapper below. */
+export const PRODUCTION_PLAN_INCLUDE = {
+  finishedProduct: { select: ITEM_SELECT },
+  bom: { include: BOM_INCLUDE },
+} as const;
+
+export function toProductionPlanSummary(row: {
+  id: string;
+  number: string;
+  packVariant: string | null;
+  plannedQuantity: unknown;
+  plannedDate: Date | null;
+  status: string;
+  finishedProduct: Parameters<typeof toItemSummary>[0];
+  bom: Parameters<typeof toBomSummary>[0] | null;
+}): ProductionPlanSummary {
+  return {
+    id: row.id,
+    number: row.number,
+    finishedProduct: toItemSummary(row.finishedProduct),
+    packVariant: row.packVariant,
+    plannedQuantity: qty(row.plannedQuantity as never),
+    plannedDate: toDateOnly(row.plannedDate),
+    status: row.status as ProductionPlanSummary['status'],
+    // The component list comes from the BOM, not from a parallel table.
+    bom: row.bom ? toBomSummary(row.bom) : null,
+  };
 }
 
 // ---------------------------------------------------------------------------

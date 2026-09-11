@@ -9,17 +9,20 @@ export type ApiResult<T> =
   { ok: true; data: T } | { ok: false; status: number | null; error: string };
 
 /**
- * Budget for a page's data fetch.
+ * How long to wait for the API before giving up.
  *
- * 5s originally, which assumed the API and its database were on the same host.
- * A page that aggregates across tenants makes several round trips, and against
- * a database in another region each one costs a large fraction of a second —
- * so a dashboard that renders fine locally times out with "is the API
- * running?", which sends you looking at the wrong thing entirely.
+ * Raised from 5s once the database moved to a managed host in another region.
+ * The web app talks to a local API, so the hop itself is still fast — but the
+ * API's own work is not: every tenant-scoped operation costs an extra round
+ * trip to set `app.current_tenant_id`, and a page like Incoming QC issues
+ * several queries with deep includes. Against Postgres on localhost that is a
+ * few milliseconds; against Oregon it is hundreds each, and `/auth/me` alone
+ * was exceeding the old 5s budget.
  *
- * Deliberately still short enough that a genuinely unreachable API fails while
- * someone is still looking at the screen. Slow endpoints raise it themselves:
- * sign-in passes 75s to outlast a cold start.
+ * Still deliberately finite. This delay is paid on every page load when the
+ * API is genuinely down, and a page that fails in fifteen seconds is far more
+ * useful than one that hangs. If normal pages start approaching it, the answer
+ * is fewer round trips, not a bigger number.
  */
 const DEFAULT_TIMEOUT_MS = 15_000;
 

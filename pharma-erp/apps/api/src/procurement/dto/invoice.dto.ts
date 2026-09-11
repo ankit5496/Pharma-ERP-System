@@ -24,6 +24,13 @@ import {
 
 import { IsDecimalString, trim } from './common.dto';
 
+/**
+ * One invoice line.
+ *
+ * NO TAX FIELD. GST is read from the item's tax master entry; a rate accepted
+ * from the caller here would let a client set its own input-tax figure, which
+ * is both a filing risk and exactly what the brief forbids.
+ */
 export class CreatePurchaseInvoiceLineDto implements CreatePurchaseInvoiceLineRequest {
   @IsUUID()
   itemId!: string;
@@ -33,9 +40,6 @@ export class CreatePurchaseInvoiceLineDto implements CreatePurchaseInvoiceLineRe
 
   @IsDecimalString('Rate')
   rate!: string;
-
-  @IsDecimalString('Tax rate')
-  taxRatePercent!: string;
 }
 
 /**
@@ -46,12 +50,14 @@ export class CreatePurchaseInvoiceLineDto implements CreatePurchaseInvoiceLineRe
  * beside it, and the payables screen would then chase the wrong date.
  */
 export class CreatePurchaseInvoiceDto implements CreatePurchaseInvoiceRequest {
+  /**
+   * MANDATORY. The purchase order is derived from the receipt rather than
+   * accepted separately — two ids that must agree are two ids that can
+   * disagree, and an invoice pointing at a receipt from a different order is
+   * not something a three-way match should have to detect.
+   */
   @IsUUID()
-  purchaseOrderId!: string;
-
-  @IsOptional()
-  @IsUUID()
-  goodsReceiptId?: string;
+  goodsReceiptId!: string;
 
   @IsString()
   @trim()

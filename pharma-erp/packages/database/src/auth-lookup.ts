@@ -2,7 +2,17 @@ import type { PrismaClient } from '@prisma/client';
 
 import { PG_LOGIN_EMAIL_SETTING, PG_TENANT_SETTING } from '@pharma-erp/types';
 
-import { TRANSACTION_TIMEOUTS } from './tenant-scope';
+import { TRANSACTION_MAX_WAIT_MS, TRANSACTION_TIMEOUT_MS } from './tenant-scope';
+
+/**
+ * The same budget every tenant-scoped transaction gets. Sign-in needs it more
+ * than most: it runs before anything else, so a tight budget presents as
+ * "nobody can log in" (P2028) rather than as a slow query.
+ */
+const TRANSACTION_TIMEOUTS = {
+  maxWait: TRANSACTION_MAX_WAIT_MS,
+  timeout: TRANSACTION_TIMEOUT_MS,
+} as const;
 
 /**
  * An account as the sign-in path needs it — including the password hash, which

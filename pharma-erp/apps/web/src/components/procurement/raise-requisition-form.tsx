@@ -1,6 +1,6 @@
 'use client';
 
-import { unitLabel, type ItemSummary, type PartySummary } from '@pharma-erp/types';
+import { type ItemSummary, type PartySummary } from '@pharma-erp/types';
 
 import { createRequisitionAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
@@ -60,7 +60,7 @@ export function RaiseRequisitionForm({
 
           <div className="grid gap-3 sm:grid-cols-2">
             <Field
-              label={`Required quantity (${unitLabel(item.uom)})`}
+              label={`Required quantity (${item.uom})`}
               htmlFor={`qty-${item.id}`}
               required
               hint="Pre-filled with the shortfall."

@@ -4,7 +4,6 @@ import {
   QC_DECISION_LABELS,
   STOCK_LOT_STATUSES,
   STOCK_LOT_STATUS_LABELS,
-  unitLabel,
 } from '@pharma-erp/types';
 import { FilterBar } from '@/components/procurement/filter-bar';
 import { QcDecisionForm } from '@/components/procurement/qc-decision-form';
@@ -126,7 +125,7 @@ export default async function IncomingQcPage({
                     </p>
                   </Td>
                   <Td align="right">
-                    <Qty value={row.lot.quantityAvailable} uom={unitLabel(row.item.uom)} />
+                    <Qty value={row.lot.quantityAvailable} uom={row.item.uom} />
                     {row.lot.quantityAvailable !== row.lot.quantityReceived && (
                       <p className="text-[11px] text-slate-400">
                         of {row.lot.quantityReceived} received
