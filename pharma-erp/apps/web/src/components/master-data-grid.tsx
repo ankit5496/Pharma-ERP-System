@@ -112,12 +112,12 @@ function Toolbar({
 function HeadRow({ labels }: { labels: readonly string[] }) {
   return (
     <thead className="sticky top-0 z-10 bg-slate-50">
-      <tr className="border-b border-slate-200">
+      <tr>
         {labels.map((label) => (
           <th
             key={label}
             scope="col"
-            className="whitespace-nowrap px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500"
+            className="whitespace-nowrap border-b border-slate-200 px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500"
           >
             {label}
           </th>
@@ -181,11 +181,11 @@ export function Grid<Row>({
       {/* The grid scrolls in both directions inside its own box, so a wide
           register never makes the page itself scroll sideways. */}
       <div className="min-h-0 flex-1 overflow-auto overscroll-contain">
-        <table className="w-full border-collapse text-left text-sm">
+        <table className="w-full border-separate border-spacing-0 text-left text-sm">
           {/* Sticky so the column names stay readable once the register is
               longer than the box — which is the entire point of a grid. */}
           <thead className="sticky top-0 z-10 bg-slate-50">
-            <tr className="border-b border-slate-200">
+            <tr>
               {columns.map((column) => (
                 <th
                   key={column.key}
@@ -193,7 +193,7 @@ export function Grid<Row>({
                   // A pinned header cell sits at the crossing of two sticky
                   // axes, so it needs to outrank both the row it is in and
                   // the pinned body cells scrolling beneath it.
-                  className={`whitespace-nowrap px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500 ${
+                  className={`whitespace-nowrap border-b border-slate-200 px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500 ${
                     column.align === 'right' ? 'text-right' : ''
                   } ${column.pinned ? 'sticky right-0 z-20 bg-slate-50' : ''}`}
                 >
@@ -202,7 +202,7 @@ export function Grid<Row>({
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-100">
+          <tbody>
             {filtered.length === 0 ? (
               // Inside the table, spanning every column, so the header stays
               // put and the message sits under the columns it is about.
@@ -231,7 +231,7 @@ export function Grid<Row>({
                       // over the scrolling ones — and has to repeat the row's
                       // hover, or it stays white while the rest of the row
                       // highlights.
-                      className={`whitespace-nowrap px-4 py-2.5 text-slate-700 ${
+                      className={`whitespace-nowrap border-b border-slate-100 px-4 py-2.5 text-slate-700 ${
                         column.align === 'right' ? 'text-right tabular-nums' : ''
                       } ${
                         column.pinned
@@ -982,7 +982,7 @@ export function PlannedGrid({
       <div className="min-h-0 flex-1 overflow-auto">
         {/* Same table shape as a live register, so a planned one differs only
             in what it says — not in how it is built. */}
-        <table className="w-full border-collapse text-left text-sm">
+        <table className="w-full border-separate border-spacing-0 text-left text-sm">
           <HeadRow labels={columns} />
           <tbody>
             <tr>

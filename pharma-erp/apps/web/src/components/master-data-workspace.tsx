@@ -166,7 +166,7 @@ export function MasterDataWorkspace({
           ) : drawer.mode === 'edit-party' ? (
             <PartyMasterForm party={drawer.party} onSaved={closeDrawer} />
           ) : (
-            <Form onSaved={closeDrawer} />
+            <Form onSaved={closeDrawer} items={items.ok ? items.data : []} />
           )}
         </MasterDataDrawer>
       )}
@@ -187,7 +187,7 @@ type DrawerState =
  * will be discarded when it will not — and so adding the next endpoint is a
  * one-line change here rather than a message somebody forgets to update.
  */
-const SAVES = new Set<MasterDataFormKey>(['item-product', 'party']);
+const SAVES = new Set<MasterDataFormKey>(['item-product', 'party', 'bom-formulation']);
 
 /**
  * Which grid serves each register.
@@ -278,11 +278,16 @@ const PLANNED: Record<
  * register to that list without adding its form here is a compile error
  * rather than an empty drawer nobody notices.
  *
- * `onSaved` closes the drawer. The five forms that cannot save yet simply
- * ignore it — a function that takes fewer parameters than its type allows is
- * still assignable, so they need no change until they get an endpoint.
+ * Both props are passed to every form; the ones that do not need them simply
+ * ignore them — a function taking fewer parameters than its type allows is
+ * still assignable, so an unwired form needs no change until it gets an
+ * endpoint. `items` is what lets the BOM form offer pickers instead of asking
+ * someone to type an item code.
  */
-const FORMS: Record<MasterDataFormKey, (props: { onSaved: () => void }) => React.ReactNode> = {
+const FORMS: Record<
+  MasterDataFormKey,
+  (props: { onSaved: () => void; items: readonly ItemSummary[] }) => React.ReactNode
+> = {
   'item-product': ItemMasterForm,
   party: PartyMasterForm,
   'bom-formulation': BomMasterForm,

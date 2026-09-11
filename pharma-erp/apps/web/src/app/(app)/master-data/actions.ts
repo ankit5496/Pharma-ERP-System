@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache';
 
 import type {
+  BomView,
   CreateItemRequest,
   ItemSummary,
   ItemType,
@@ -239,6 +240,108 @@ export async function savePartyAction(
   return {
     ok: true,
     message: `${result.data.code} — ${result.data.name} ${partyId ? 'updated' : 'added'}.`,
+  };
+}
+
+/**
+ * Creates a formulation.
+ *
+ * Create only — there is no update endpoint, deliberately: a batch made last
+ * month was made to the recipe as it stood then, so a change is a new version
+ * and the old one survives because production orders still point at it. The
+ * API picks the version number; nothing here chooses it.
+ *
+ * Raw and packing lines are two sections on screen and one `lines` array on
+ * the wire, which is what the table holds. The split is a reading aid, not a
+ * distinction the schema makes — an item's own type already says which it is.
+ */
+export async function saveBomAction(
+  _previous: ActionResult,
+  formData: FormData,
+): Promise<ActionResult> {
+  const values: Record<string, string> = {};
+  for (const [key, value] of formData.entries()) {
+    if (typeof value === 'string') values[key] = value;
+  }
+
+  const productId = String(formData.get('productId') ?? '');
+  const outputQuantity = String(formData.get('outputQuantity') ?? '').trim();
+
+  if (!productId || !outputQuantity) {
+    return { ok: false, values, message: 'Choose a finished product and a reference batch size.' };
+  }
+
+  // Line fields are named `raw.<row>.itemId` / `pack.<row>.itemId`, so the
+  // rows are found by walking the names rather than by guessing how many
+  // there are — rows can be added and removed in any order.
+  const lines: { itemId: string; quantityPer: string }[] = [];
+
+  for (const [key, value] of formData.entries()) {
+    const match = /^(raw|pack)\.(\d+)\.itemId$/.exec(key);
+    if (!match || typeof value !== 'string' || !value) continue;
+
+    const quantityPer = String(formData.get(`${match[1]}.${match[2]}.quantityPer`) ?? '').trim();
+
+    if (!quantityPer) {
+      return {
+        ok: false,
+        values,
+        message: 'Every material line needs a quantity. Remove any line you do not want.',
+      };
+    }
+
+    lines.push({ itemId: value, quantityPer });
+  }
+
+  if (lines.length === 0) {
+    return {
+      ok: false,
+      values,
+      message: 'A formulation needs at least one material — there would be nothing to issue.',
+    };
+  }
+
+  // Caught here as well as by the API because the message can name the
+  // duplicate, and because it is the mistake this form makes easiest: two
+  // rows, same picker, different quantities.
+  const seen = new Set<string>();
+  for (const line of lines) {
+    if (seen.has(line.itemId)) {
+      return {
+        ok: false,
+        values,
+        message:
+          'A material appears on more than one line. Combine the quantities into a single line.',
+      };
+    }
+    seen.add(line.itemId);
+  }
+
+  const result = await apiFetch<BomView>('/api/v1/production/boms', {
+    method: 'POST',
+    authenticated: true,
+    json: {
+      productId,
+      outputQuantity,
+      lines,
+      // Absent from FormData when unticked, which is how a form spells false.
+      activate: formData.get('activate') !== null,
+      ...(optional(formData, 'instructions')
+        ? { instructions: optional(formData, 'instructions') }
+        : {}),
+    },
+    timeoutMs: 20_000,
+  });
+
+  if (!result.ok) return { ok: false, message: result.error, values };
+
+  revalidatePath('/master-data', 'layout');
+
+  return {
+    ok: true,
+    message: `${result.data.product.code} v${result.data.version} saved${
+      result.data.isActive ? ' and made active' : ''
+    }.`,
   };
 }
 
