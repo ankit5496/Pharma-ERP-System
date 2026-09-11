@@ -19,6 +19,7 @@ import {
   parseNonNegative,
   parsePositive,
   percent,
+  percentageDrift,
   positiveDifference,
   qty,
   sumLineAmounts,
@@ -70,7 +71,7 @@ export class InvoicesService {
     // The status filter accepts both the document status and the payment
     // status, because to a user "overdue" and "draft" are the same kind of
     // question about an invoice even though only one is a stored column.
-    const documentStatuses: readonly string[] = ['DRAFT', 'APPROVED', 'CANCELLED'];
+    const documentStatuses: readonly string[] = ['BOOKED', 'PARTIALLY_PAID', 'PAID', 'CANCELLED'];
 
     if (query.status && documentStatuses.includes(query.status)) {
       where.status = query.status as PurchaseInvoiceStatus;
@@ -123,12 +124,24 @@ export class InvoicesService {
   }
 
   /**
-   * Records a vendor invoice against a purchase order, optionally matched to
-   * the receipt it bills for.
+   * Books a vendor invoice against a goods receipt.
    *
-   * The order must have received something. Invoicing an order that has not
-   * been delivered is how a company pays for goods it never got, and the
-   * three-way match exists precisely to make that impossible by accident.
+   * Three rules from the brief converge here, and each is enforced rather
+   * than assumed:
+   *
+   *   THE RECEIPT IS MANDATORY. The order is derived from it, so an invoice
+   *   can never point at a receipt belonging to a different order.
+   *
+   *   GST IS NEVER TYPED. Each line's rate comes from the item's tax master
+   *   entry. An item with no entry is refused outright rather than silently
+   *   billed at 0% — a missing input-tax figure is a filing error, and
+   *   guessing zero is the one answer certain to be wrong.
+   *
+   *   QUANTITY AND RATE ARE MATCHED against what was received and what was
+   *   ordered, within the company's configured tolerance. Exceeding it does
+   *   not block the booking — a genuine price revision has to be recordable —
+   *   but it sets `toleranceExceeded` and records what differed, so the
+   *   exception is visible instead of disappearing into a total.
    */
   async create(dto: CreatePurchaseInvoiceDto): Promise<PurchaseInvoiceListItem> {
     const tenantId = this.tenantContext.requireTenantId();
@@ -138,53 +151,114 @@ export class InvoicesService {
       throw new BadRequestException('An invoice needs at least one line.');
     }
 
-    const order = await this.prisma.scoped.purchaseOrder.findFirst({
-      where: { id: dto.purchaseOrderId, deletedAt: null },
-      select: {
-        id: true,
-        number: true,
-        vendorId: true,
-        status: true,
-        paymentTermsDays: true,
-        vendor: { select: { name: true, paymentTermsDays: true } },
+    const receipt = await this.prisma.scoped.goodsReceipt.findFirst({
+      where: { id: dto.goodsReceiptId, deletedAt: null },
+      include: {
+        purchaseOrder: {
+          select: {
+            id: true,
+            number: true,
+            vendorId: true,
+            status: true,
+            paymentTermsDays: true,
+            vendor: { select: { name: true, paymentTermsDays: true } },
+            lines: { select: { itemId: true, quantity: true, rate: true } },
+          },
+        },
+        lines: {
+          select: {
+            itemId: true,
+            quantityReceived: true,
+            quantityRejected: true,
+            item: { select: { id: true, code: true, gstRate: true } },
+          },
+        },
       },
     });
 
-    if (!order) throw new NotFoundException('Purchase order not found.');
+    if (!receipt) throw new NotFoundException('Goods receipt not found.');
 
-    if (!['PARTIALLY_RECEIVED', 'FULLY_RECEIVED', 'CLOSED'].includes(order.status)) {
-      throw new ConflictException(
-        'Nothing has been received against this purchase order yet, so it cannot be invoiced.',
+    const order = receipt.purchaseOrder;
+
+    // What this receipt actually accepted, per item — the figure the vendor is
+    // entitled to bill for. Summed because one receipt may carry the same item
+    // on more than one line.
+    const receivedByItem = new Map<string, Prisma.Decimal>();
+
+    for (const line of receipt.lines) {
+      const accepted = positiveDifference(
+        new Prisma.Decimal(line.quantityReceived),
+        new Prisma.Decimal(line.quantityRejected),
+      );
+
+      receivedByItem.set(
+        line.itemId,
+        (receivedByItem.get(line.itemId) ?? ZERO).plus(accepted),
       );
     }
 
-    if (dto.goodsReceiptId) {
-      const receipt = await this.prisma.scoped.goodsReceipt.findFirst({
-        where: { id: dto.goodsReceiptId, deletedAt: null },
-        select: { id: true, purchaseOrderId: true, number: true },
-      });
+    const orderedRateByItem = new Map(
+      order.lines.map((line) => [line.itemId, new Prisma.Decimal(line.rate)] as const),
+    );
 
-      if (!receipt) throw new NotFoundException('Goods receipt not found.');
-
-      if (receipt.purchaseOrderId !== order.id) {
-        throw new BadRequestException(
-          `Goods receipt ${receipt.number} does not belong to purchase order ${order.number}.`,
-        );
-      }
-    }
+    const tolerance = await this.tolerancePercent();
+    const mismatches: string[] = [];
 
     const lines = await Promise.all(
       dto.lines.map(async (line) => {
         const item = await this.prisma.scoped.item.findFirst({
           where: { id: line.itemId, deletedAt: null },
-          select: { id: true, code: true },
+          select: { id: true, code: true, gstRate: true, hsnCode: true },
         });
 
         if (!item) throw new NotFoundException('Item not found.');
 
+        // GST comes off the item master, where it sits next to the HSN code.
+        // An item with no rate is refused outright rather than billed at 0%:
+        // a missing input-tax figure is a filing error, and guessing zero is
+        // the one answer certain to be wrong.
+        if (item.gstRate === null) {
+          throw new BadRequestException(
+            `${item.code} has no GST rate on the item master. Set one before invoicing it — ` +
+              'GST is read from the item, never entered on the invoice.',
+          );
+        }
+
         const quantity = parsePositive(line.quantity, `Quantity for ${item.code}`);
         const rate = parseNonNegative(line.rate, `Rate for ${item.code}`);
-        const taxRatePercent = parseNonNegative(line.taxRatePercent, `Tax rate for ${item.code}`);
+        const taxRatePercent = new Prisma.Decimal(item.gstRate);
+
+        // --- three-way match -------------------------------------------------
+        const received = receivedByItem.get(item.id);
+
+        if (received === undefined) {
+          throw new ConflictException(
+            `${item.code} is not on goods receipt ${receipt.number}, so it cannot be invoiced ` +
+              'against it.',
+          );
+        }
+
+        const quantityDrift = percentageDrift(quantity, received);
+
+        if (quantityDrift.greaterThan(tolerance)) {
+          mismatches.push(
+            `${item.code}: invoiced ${qty(quantity)} against ${qty(received)} received ` +
+              `(${percent(quantityDrift)}% over a ${percent(tolerance)}% tolerance).`,
+          );
+        }
+
+        const orderedRate = orderedRateByItem.get(item.id);
+
+        if (orderedRate !== undefined) {
+          const rateDrift = percentageDrift(rate, orderedRate);
+
+          if (rateDrift.greaterThan(tolerance)) {
+            mismatches.push(
+              `${item.code}: invoiced at ${qty(rate)} against an ordered rate of ` +
+                `${qty(orderedRate)} (${percent(rateDrift)}% over a ${percent(tolerance)}% tolerance).`,
+            );
+          }
+        }
 
         return {
           itemId: item.id,
@@ -197,17 +271,18 @@ export class InvoicesService {
     );
 
     const totals = sumLineAmounts(lines);
-
     const invoiceDate = new Date(dto.invoiceDate);
 
     if (Number.isNaN(invoiceDate.getTime())) {
       throw new BadRequestException('Enter a valid invoice date.');
     }
 
-    const paymentTermsDays = dto.paymentTermsDays ?? order.paymentTermsDays;
+    // Terms from the vendor's own agreement unless overridden, and the due
+    // date derived from them — never typed, so it cannot disagree with the
+    // terms printed beside it.
+    const paymentTermsDays =
+      dto.paymentTermsDays ?? order.paymentTermsDays ?? order.vendor.paymentTermsDays;
 
-    // Due date derived from the agreed terms rather than typed, so it cannot
-    // silently disagree with the payment terms shown next to it.
     const dueDate = new Date(invoiceDate);
     dueDate.setUTCDate(dueDate.getUTCDate() + paymentTermsDays);
 
@@ -222,14 +297,18 @@ export class InvoicesService {
             vendorInvoiceNumber: dto.vendorInvoiceNumber.trim(),
             vendorId: order.vendorId,
             purchaseOrderId: order.id,
-            goodsReceiptId: dto.goodsReceiptId ?? null,
+            goodsReceiptId: receipt.id,
             invoiceDate,
             dueDate,
             paymentTermsDays,
             taxableAmount: totals.taxableAmount,
             taxAmount: totals.taxAmount,
             totalAmount: totals.totalAmount,
-            status: 'DRAFT',
+            toleranceExceeded: mismatches.length > 0,
+            matchNotes: mismatches.length > 0 ? mismatches.join(' ') : null,
+            // US-PUR-05: an invoice is Booked on creation. Payment progress
+            // moves it from here, and nothing else does.
+            status: 'BOOKED',
             notes: dto.notes?.trim() || null,
             recordedById,
             lines: { create: lines.map((line) => ({ ...line, tenantId })) },
@@ -246,8 +325,11 @@ export class InvoicesService {
           number: created.number,
           vendorInvoiceNumber: created.vendorInvoiceNumber,
           purchaseOrder: order.number,
+          goodsReceipt: receipt.number,
           totalAmount: money(created.totalAmount),
           taxAmount: money(created.taxAmount),
+          toleranceExceeded: created.toleranceExceeded,
+          matchNotes: created.matchNotes,
         },
       });
 
@@ -263,6 +345,23 @@ export class InvoicesService {
 
       throw error;
     }
+  }
+
+  /**
+   * The company's configured three-way-match tolerance, as a percentage.
+   *
+   * Read per invoice rather than cached: it is one small column, and a cached
+   * copy would keep applying an old tolerance after somebody changed it.
+   */
+  private async tolerancePercent(): Promise<Prisma.Decimal> {
+    const tenantId = this.tenantContext.requireTenantId();
+
+    const tenant = await this.prisma.scoped.tenant.findFirst({
+      where: { id: tenantId },
+      select: { invoiceTolerancePercent: true },
+    });
+
+    return new Prisma.Decimal(tenant?.invoiceTolerancePercent ?? 0);
   }
 
   async changeStatus(id: string, target: PurchaseInvoiceStatus): Promise<PurchaseInvoiceListItem> {
@@ -347,6 +446,8 @@ export class InvoicesService {
       status: row.status,
       notes: row.notes,
       recordedBy: people.get(row.recordedById) ?? null,
+      toleranceExceeded: row.toleranceExceeded,
+      matchNotes: row.matchNotes,
       lines: row.lines.map((line) => ({
         id: line.id,
         item: toItemSummary(line.item),

@@ -53,6 +53,31 @@ export function forTenant(prisma: PrismaClient, tenantId: string) {
  * client passed to `fn` is the transaction client: queries issued on it are in
  * scope, queries issued on the outer client are NOT.
  */
+/**
+ * How long an interactive transaction may run, and how long it may wait for a
+ * connection.
+ *
+ * Prisma's defaults are 5s and 2s, which are comfortable against a database on
+ * localhost and demonstrably too tight against a managed one over the internet.
+ * Two things compound there:
+ *
+ *   1. Every transaction here spends its first round trip on `set_config`
+ *      before any real work starts — the price of tenant scoping.
+ *   2. A document write is several statements: allocate a number, insert the
+ *      header, insert the lines, update what it came from.
+ *
+ * At ~500ms per round trip to another continent, a six-statement purchase
+ * order takes over three seconds of pure latency and a goods receipt with
+ * several lines takes far more. The 5s default failed on the first purchase
+ * order raised against Render, with "Transaction already closed".
+ *
+ * 30s is not a licence to do more work inside a transaction — it is headroom
+ * for the same work over a slow link. Long-running batch work still belongs
+ * outside one.
+ */
+const TRANSACTION_TIMEOUT_MS = 30_000;
+const TRANSACTION_MAX_WAIT_MS = 10_000;
+
 export async function runInTenantTransaction<T>(
   prisma: PrismaClient,
   tenantId: string,
@@ -65,10 +90,17 @@ export async function runInTenantTransaction<T>(
 ): Promise<T> {
   assertTenantId(tenantId);
 
-  return prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT set_config(${PG_TENANT_SETTING}, ${tenantId}, true)`;
-    return fn(tx);
-  }, options);
+  return prisma.$transaction(
+    async (tx) => {
+      await tx.$executeRaw`SELECT set_config(${PG_TENANT_SETTING}, ${tenantId}, true)`;
+      return fn(tx);
+    },
+    {
+      maxWait: TRANSACTION_MAX_WAIT_MS,
+      timeout: TRANSACTION_TIMEOUT_MS,
+      ...options,
+    },
+  );
 }
 
 /**

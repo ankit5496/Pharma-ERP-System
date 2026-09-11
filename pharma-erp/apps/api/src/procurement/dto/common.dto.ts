@@ -57,3 +57,23 @@ export class ProcurementListQueryDto implements ProcurementListQuery {
   @IsISO8601()
   dateTo?: string;
 }
+
+/**
+ * Body of `POST /api/v1/procurement/stock/consume`.
+ *
+ * A reason is mandatory. A stock movement with no explanation is the one an
+ * auditor asks about, and requiring it at the point of entry is the only time
+ * anybody reliably remembers what it was for.
+ */
+export class ConsumeStockDto {
+  @IsUUID()
+  itemId!: string;
+
+  @Matches(DECIMAL_PATTERN, { message: 'Quantity must be a number with at most 4 decimal places' })
+  quantity!: string;
+
+  @IsString()
+  @trim()
+  @MaxLength(500)
+  reason!: string;
+}

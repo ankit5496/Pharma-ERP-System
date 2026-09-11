@@ -120,6 +120,32 @@ export function sumLineAmounts(
   );
 }
 
+/**
+ * How far `actual` departs from `expected`, as an absolute percentage.
+ *
+ * Used by the three-way match. Absolute because a tolerance is symmetric: an
+ * invoice 5% under what was received is as much an exception as one 5% over,
+ * and only one of those is in the buyer's favour.
+ *
+ * An expected value of zero returns 100 rather than dividing: anything billed
+ * against nothing received is a total mismatch, not an infinite one.
+ */
+export function percentageDrift(
+  actual: Prisma.Decimal,
+  expected: Prisma.Decimal,
+): Prisma.Decimal {
+  if (expected.isZero()) {
+    return actual.isZero() ? ZERO : new Prisma.Decimal(100);
+  }
+
+  return actual
+    .minus(expected)
+    .dividedBy(expected)
+    .times(100)
+    .abs()
+    .toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP);
+}
+
 /** `a - b`, never below zero. Used for shortfalls and pending quantities. */
 export function positiveDifference(a: Prisma.Decimal, b: Prisma.Decimal): Prisma.Decimal {
   const difference = a.minus(b);

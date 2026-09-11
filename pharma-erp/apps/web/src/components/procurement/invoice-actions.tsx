@@ -7,16 +7,20 @@ import { changeInvoiceStatusAction } from '@/app/(app)/workflows/procure-to-pay/
 import { ActionMessage, SubmitButton, useAction } from './form-kit';
 
 /**
- * Approve or cancel an invoice.
+ * Row actions for a purchase invoice.
  *
- * Approval is what puts the invoice on the payables ledger, so it stays a
- * deliberate action rather than something that happens on save — recording
- * what a vendor billed and agreeing to pay it are two different decisions,
- * often made by two different people.
+ * THERE IS NO APPROVE BUTTON, and its absence is deliberate. US-PUR-05 gives
+ * the invoice three states — Booked, Partially Paid, Paid — all driven by
+ * payment progress. An invoice is payable from the moment it is booked, so
+ * the only action that leads anywhere is recording what has been paid.
  *
- * The action state is held at this level: approving replaces the buttons with
- * the "on the payables ledger" note, so a message owned by the button would
- * be unmounted before it could be read.
+ * Cancel remains, because a vendor invoice can be wrong. The API refuses it
+ * once payments exist: cancelling a partly-paid invoice would orphan the money
+ * and leave the vendor ledger claiming it went somewhere it did not.
+ *
+ * The action state is held here rather than in the buttons: recording a
+ * payment moves the row to Paid and replaces them, and a message owned by a
+ * vanished button would vanish with it.
  */
 export function InvoiceActions({ invoice }: { invoice: PurchaseInvoiceListItem }) {
   const [state, action] = useAction(changeInvoiceStatusAction);
@@ -29,27 +33,16 @@ export function InvoiceActions({ invoice }: { invoice: PurchaseInvoiceListItem }
 
       {invoice.status === 'CANCELLED' ? (
         <span className="text-xs text-slate-400">Cancelled</span>
-      ) : invoice.status === 'APPROVED' ? (
-        <>
-          <span className="text-xs text-slate-500">On the payables ledger</span>
-          {invoice.outstandingAmount !== '0.00' && (
-            <a
-              href={`${PROCUREMENT_ROUTES.payments}?search=${invoice.number}`}
-              className="text-xs font-medium text-sky-800 underline decoration-sky-300 underline-offset-2"
-            >
-              Record payment →
-            </a>
-          )}
-        </>
+      ) : invoice.status === 'PAID' ? (
+        <span className="text-xs font-medium text-green-800">Settled in full</span>
       ) : (
         <>
-          <form action={action}>
-            <input type="hidden" name="id" value={invoice.id} />
-            <input type="hidden" name="status" value="APPROVED" />
-            <SubmitButton variant="primary" pendingLabel="…">
-              Approve
-            </SubmitButton>
-          </form>
+          <a
+            href={`${PROCUREMENT_ROUTES.payments}?search=${invoice.number}`}
+            className="text-xs font-medium text-sky-800 underline decoration-sky-300 underline-offset-2"
+          >
+            Record payment →
+          </a>
 
           <form action={action}>
             <input type="hidden" name="id" value={invoice.id} />

@@ -45,11 +45,9 @@ export function RequisitionActions({
         <span className="text-xs text-slate-400">No actions</span>
       ) : (
         <>
-          {status === 'DRAFT' && (
-            <StatusButton id={requisition.id} status="PENDING" label="Submit" action={statusAction} />
-          )}
-
-          {status === 'PENDING' && (
+          {/* OPEN is the only pre-approval state now — the earlier
+              draft/pending pair behaved identically and was collapsed. */}
+          {status === 'OPEN' && (
             <StatusButton
               id={requisition.id}
               status="APPROVED"

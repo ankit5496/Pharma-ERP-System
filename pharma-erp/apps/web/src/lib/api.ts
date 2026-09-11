@@ -8,7 +8,23 @@ import { env } from './env';
 export type ApiResult<T> =
   { ok: true; data: T } | { ok: false; status: number | null; error: string };
 
-const DEFAULT_TIMEOUT_MS = 5_000;
+/**
+ * How long to wait for the API before giving up.
+ *
+ * Raised from 5s once the database moved to a managed host in another region.
+ * The web app talks to a local API, so the hop itself is still fast — but the
+ * API's own work is not: every tenant-scoped operation costs an extra round
+ * trip to set `app.current_tenant_id`, and a page like Incoming QC issues
+ * several queries with deep includes. Against Postgres on localhost that is a
+ * few milliseconds; against Oregon it is hundreds each, and `/auth/me` alone
+ * was exceeding the old 5s budget.
+ *
+ * Still deliberately finite. This delay is paid on every page load when the
+ * API is genuinely down, and a page that fails in fifteen seconds is far more
+ * useful than one that hangs. If normal pages start approaching it, the answer
+ * is fewer round trips, not a bigger number.
+ */
+const DEFAULT_TIMEOUT_MS = 15_000;
 
 /**
  * How often to retry a request that never reached the API, and how long to wait

@@ -23,14 +23,13 @@ export function PurchaseOrderActions({ order }: { order: PurchaseOrderListItem }
 
   const actions: { status: string; label: string; variant: 'primary' | 'secondary' }[] = [];
 
-  if (order.status === 'DRAFT') {
-    actions.push({ status: 'ISSUED', label: 'Issue to vendor', variant: 'primary' });
-    actions.push({ status: 'CANCELLED', label: 'Cancel', variant: 'secondary' });
-  } else if (order.status === 'ISSUED' || order.status === 'PARTIALLY_RECEIVED') {
+  // Only two choices exist. An order is Open from creation, becomes Partially
+  // Received as goods arrive, and Closes itself once the ordered quantity has
+  // all been received — none of which anyone presses a button for. Closing by
+  // hand is for short-closing an order the vendor will not complete.
+  if (order.status === 'OPEN' || order.status === 'PARTIALLY_RECEIVED') {
     actions.push({ status: 'CLOSED', label: 'Close', variant: 'secondary' });
     actions.push({ status: 'CANCELLED', label: 'Cancel', variant: 'secondary' });
-  } else if (order.status === 'FULLY_RECEIVED') {
-    actions.push({ status: 'CLOSED', label: 'Close', variant: 'secondary' });
   }
 
   if (actions.length === 0 && state.status === 'idle') return null;

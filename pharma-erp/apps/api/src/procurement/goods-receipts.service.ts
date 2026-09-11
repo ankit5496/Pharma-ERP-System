@@ -11,7 +11,7 @@ import { AuditService } from '../common/audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
-import { parseNonNegative, parsePositive, positiveDifference, qty } from './decimal.util';
+import { daysUntil, parseNonNegative, parsePositive, positiveDifference, qty } from './decimal.util';
 import type { CreateGoodsReceiptDto } from './dto/goods-receipt.dto';
 import { dateRange } from './filters.util';
 import {
@@ -19,6 +19,7 @@ import {
   LOT_SELECT,
   PARTY_SELECT,
   collectIds,
+  requiresBatchTracking,
   toItemSummary,
   toPartySummary,
   toStockLotSummary,
@@ -51,11 +52,10 @@ type GrnRow = Prisma.GoodsReceiptGetPayload<{ include: typeof GRN_INCLUDE }>;
  * Two rules are enforced here and nowhere else, because this is the only place
  * material enters the system:
  *
- *   Rule 4/5 — every received line is BATCH TRACKED. For an item marked
- *   `requiresBatchTracking` the vendor's batch number and expiry date are
- *   mandatory, and the receipt is refused without them. Anonymous raw material
- *   cannot be recalled, cannot be picked FEFO, and cannot be defended in an
- *   inspection.
+ *   Rule 4/5 — every received line is BATCH TRACKED. The vendor's batch
+ *   number and expiry date are mandatory and the receipt is refused without
+ *   them. Anonymous raw material cannot be recalled, cannot be picked FEFO,
+ *   and cannot be defended in an inspection.
  *
  *   Rule 6 — a receipt NEVER produces usable stock. Every lot is created
  *   QUARANTINE and the ledger entry that accompanies it is explicitly marked
@@ -141,16 +141,16 @@ export class GoodsReceiptsService {
       where: { id: dto.purchaseOrderId, deletedAt: null },
       include: {
         vendor: { select: { id: true, name: true } },
-        lines: { include: { item: { select: { ...ITEM_SELECT, requiresBatchTracking: true } } } },
+        lines: { include: { item: { select: ITEM_SELECT } } },
       },
     });
 
     if (!order) throw new NotFoundException('Purchase order not found.');
 
-    if (!['ISSUED', 'PARTIALLY_RECEIVED'].includes(order.status)) {
+    if (!['OPEN', 'PARTIALLY_RECEIVED'].includes(order.status)) {
       throw new ConflictException(
         `Material cannot be received against a ${order.status.replace(/_/g, ' ').toLowerCase()} ` +
-          'purchase order. Issue the order first.',
+          'purchase order.',
       );
     }
 
@@ -197,10 +197,24 @@ export class GoodsReceiptsService {
         );
       }
 
-      if (orderLine.item.requiresBatchTracking) {
+      // Batch tracking is derived from the item type rather than read from a
+      // column — the shared item master has no such flag, and in a
+      // pharmaceutical plant every material that arrives must be traceable to
+      // a vendor lot for recall and for inspection.
+      if (requiresBatchTracking(orderLine.item.type)) {
         if (!line.vendorBatchNumber?.trim()) {
           throw new BadRequestException(
             `${orderLine.item.code} is batch tracked: the vendor batch number is required.`,
+          );
+        }
+
+        // US-PUR-03 makes all three mandatory. A batch number without the
+        // dates is only half an identity: recall works from the number, but
+        // shelf-life and FEFO both need the dates, and they cannot be
+        // reconstructed later from a delivery note nobody kept.
+        if (!line.manufacturingDate) {
+          throw new BadRequestException(
+            `${orderLine.item.code} is batch tracked: the manufacturing date is required.`,
           );
         }
 
@@ -218,6 +232,35 @@ export class GoodsReceiptsService {
         throw new BadRequestException(
           `${orderLine.item.code}: the expiry date must be after the manufacturing date.`,
         );
+      }
+
+      // Shelf life on arrival, against the item master's `shelfLifeMonths`.
+      //
+      // A batch arriving with two months left may pass every analytical test
+      // and still be useless: it will expire before it can be consumed, and
+      // accepting it converts the vendor's problem into stock the company
+      // writes off.
+      //
+      // The comparison is done in MONTHS via real calendar arithmetic rather
+      // than by multiplying by 30. A 24-month rule is 24 calendar months, and
+      // the approximation drifts by nearly a fortnight over that span — enough
+      // to accept a batch that should have been refused.
+      //
+      // Only applied when the item has a rule. An absent rule means no rule;
+      // it must not silently become a rule of zero.
+      if (expiryDate && orderLine.item.shelfLifeMonths !== null) {
+        const earliestAcceptableExpiry = new Date();
+        earliestAcceptableExpiry.setUTCMonth(
+          earliestAcceptableExpiry.getUTCMonth() + orderLine.item.shelfLifeMonths,
+        );
+
+        if (expiryDate < earliestAcceptableExpiry) {
+          throw new ConflictException(
+            `${orderLine.item.code}: this batch expires in ${daysUntil(expiryDate)} days, short ` +
+              `of the ${orderLine.item.shelfLifeMonths} months of shelf life required on receipt ` +
+              `(not before ${earliestAcceptableExpiry.toISOString().slice(0, 10)}).`,
+          );
+        }
       }
 
       return {
@@ -323,7 +366,10 @@ export class GoodsReceiptsService {
 
       await tx.purchaseOrder.update({
         where: { id: order.id },
-        data: { status: fullyReceived ? 'FULLY_RECEIVED' : 'PARTIALLY_RECEIVED' },
+        // US-PUR-03: once the ordered quantity has all arrived the order is
+        // Closed. 'Fully received' and 'closed' meant the same thing, and one
+        // name for one state is better than two.
+        data: { status: fullyReceived ? 'CLOSED' : 'PARTIALLY_RECEIVED' },
       });
 
       return tx.goodsReceipt.findFirstOrThrow({

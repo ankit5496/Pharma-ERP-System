@@ -1,5 +1,8 @@
 import type {
   GoodsReceiptListItem,
+  PayablesReport,
+  BomSummary,
+  ProductionPlanSummary,
   ItemStockPosition,
   ItemSummary,
   LowStockItem,
@@ -73,6 +76,22 @@ export async function fetchItems(): Promise<ApiResult<ItemSummary[]>> {
 
 export async function fetchVendors(): Promise<ApiResult<PartySummary[]>> {
   return apiFetch<PartySummary[]>(`${BASE}/parties?partyType=VENDOR`, { authenticated: true });
+}
+
+/** Formulations from the shared master data, for a plan to cite. */
+export async function fetchBoms(): Promise<ApiResult<BomSummary[]>> {
+  return apiFetch<BomSummary[]>(`${BASE}/boms`, { authenticated: true });
+}
+
+export async function fetchProductionPlans(): Promise<ApiResult<ProductionPlanSummary[]>> {
+  return apiFetch<ProductionPlanSummary[]>(`${BASE}/production-plans`, { authenticated: true });
+}
+
+/** The aged outstanding-payables report, optionally narrowed to one vendor. */
+export async function fetchPayablesReport(vendorId?: string): Promise<ApiResult<PayablesReport>> {
+  const suffix = vendorId ? `?vendorId=${encodeURIComponent(vendorId)}` : '';
+
+  return apiFetch<PayablesReport>(`${BASE}/payables/report${suffix}`, { authenticated: true });
 }
 
 export async function fetchRequisitions(
