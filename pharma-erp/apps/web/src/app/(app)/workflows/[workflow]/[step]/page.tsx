@@ -98,11 +98,6 @@ function StepPlaceholder({
         The navigation for {workflowLabel} is in place so the flow is reviewable. This step needs
         its domain tables before it can show anything real.
       </p>
-      <p className="mx-auto mt-4 max-w-md text-xs text-slate-500">
-        Records from the tables that do exist are available from the{' '}
-        <strong className="font-semibold text-slate-600">Inspect a table</strong> dropdown, top
-        right.
-      </p>
     </div>
   );
 }

@@ -1,8 +1,18 @@
-import { IsISO8601, IsIn, IsOptional, IsString, IsUUID, MaxLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsISO8601,
+  IsIn,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+} from 'class-validator';
 
 import {
+  PACKAGING_LEVELS,
   REQUISITION_STATUSES,
   type CreateRequisitionRequest,
+  type PackagingLevel,
   type RequisitionStatus,
   type UpdateRequisitionRequest,
 } from '@pharma-erp/types';
@@ -34,9 +44,10 @@ export class CreateRequisitionDto implements CreateRequisitionRequest {
   /**
    * The production run this material is for.
    *
-   * Required for a manual requisition, but optional here: the requirement is
-   * conditional on the trigger type, which this layer cannot see. The service
-   * enforces presence and rejects a cancelled or completed plan.
+   * Optional. A requisition raised to restock a material that several runs
+   * consume has no single plan to name, and demanding one would only produce
+   * an arbitrary answer. When given, the service rejects a cancelled or
+   * completed plan.
    */
   @IsOptional()
   @IsUUID()
@@ -56,6 +67,43 @@ export class CreateRequisitionDto implements CreateRequisitionRequest {
   @MaxLength(1000)
   notes?: string;
 
+  // -------------------------------------------------------------------------
+  // What the material is for, and where it sits in the pack
+  // -------------------------------------------------------------------------
+  // Every id below is validated as a UUID here and then RESOLVED THROUGH THE
+  // TENANT-SCOPED CLIENT in the service. That second step is what actually
+  // enforces isolation: a well-formed uuid belonging to another company would
+  // pass this layer and fail there, which is the correct division — this
+  // layer knows shapes, the service knows what exists.
+
+  @IsOptional()
+  @IsUUID()
+  finishedProductId?: string;
+
+  @IsOptional()
+  @IsString()
+  @trim()
+  @MaxLength(128)
+  packVariant?: string;
+
+  @IsOptional()
+  @IsUUID()
+  packagingComponentId?: string;
+
+  @IsOptional()
+  @IsIn(PACKAGING_LEVELS, {
+    message: `Packaging level must be one of: ${PACKAGING_LEVELS.join(', ')}`,
+  })
+  packagingLevel?: PackagingLevel;
+
+  @IsOptional()
+  @IsDecimalString('Quantity per unit')
+  quantityPerUnit?: string;
+
+  /** Defaults to mandatory in the service when absent. */
+  @IsOptional()
+  @IsBoolean()
+  isMandatory?: boolean;
 }
 
 export class UpdateRequisitionDto implements UpdateRequisitionRequest {

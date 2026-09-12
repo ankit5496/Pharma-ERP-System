@@ -1,8 +1,5 @@
 'use server';
 
-import { revalidatePath } from 'next/cache';
-import { PROCUREMENT_ROUTES } from '@pharma-erp/types';
-
 import type { ActionState } from '@/components/procurement/action-state';
 import { apiFetch } from '@/lib/api';
 
@@ -38,18 +35,21 @@ function opt(form: FormData, key: string): string | undefined {
 }
 
 /**
- * Revalidates every Procure-to-Pay screen.
+ * Wraps a POST/PATCH, turning the result into an ActionState.
  *
- * Deliberately all of them rather than just the current one: these documents
- * are chained, so approving a requisition changes the purchase-order screen's
- * "convert" list and the summary counts at the top of all six. Revalidating
- * only the page the user is on is how a stale count survives an action.
+ * NOTHING IS REVALIDATED HERE, and that is a fix rather than an omission.
+ * These actions used to call `revalidatePath` for all six Procure-to-Pay
+ * routes. It bought nothing — every fetch in this app is `cache: 'no-store'`
+ * and every one of these pages is `force-dynamic`, so there was no cached data
+ * to invalidate — and it cost the confirmation message: revalidating the route
+ * a form is on makes Next re-render it from the server as part of the action,
+ * which discards the action's return value. Every successful save on all six
+ * sub-tabs completed correctly and then said nothing at all.
+ *
+ * The refresh now happens on the client, in `useAction`, where
+ * `router.refresh()` re-fetches the server components while preserving React
+ * state — so the table updates and the message survives.
  */
-function revalidateProcurement(): void {
-  for (const route of Object.values(PROCUREMENT_ROUTES)) revalidatePath(route);
-}
-
-/** Wraps a POST/PATCH, turning the result into an ActionState. */
 async function submit(
   path: string,
   body: unknown,
@@ -61,128 +61,28 @@ async function submit(
     method,
     json: body,
     authenticated: true,
-    // Documents with many lines, and argon2-free but still database-bound.
-    timeoutMs: 15_000,
+    // LONGER THAN A READ, because giving up early on a write is far worse than
+    // waiting. These documents are many statements — allocate the number,
+    // insert the header, insert each line, create each batch, post each ledger
+    // entry, then recompute the order's status — and every one of them is a
+    // network round trip to the database.
+    //
+    // Booking a goods receipt against the remote database was measured at over
+    // 15 seconds, and the old 15s budget produced the worst possible outcome:
+    // the browser reported "is the API running?" while the API had in fact
+    // created the receipt. A user who believes a save failed will do it again,
+    // and the second attempt is a duplicate GRN with duplicate stock.
+    //
+    // So this is deliberately generous. A slow save is an inconvenience; a
+    // phantom failure that invites a double submission is a data problem.
+    timeoutMs: 60_000,
   });
 
   if (!result.ok) {
     return { status: 'error', message: result.error, values };
   }
 
-  revalidateProcurement();
-
   return { status: 'success', message: successMessage };
-}
-
-// ---------------------------------------------------------------------------
-// Master data
-// ---------------------------------------------------------------------------
-
-export async function createItemAction(
-  _previous: ActionState,
-  form: FormData,
-): Promise<ActionState> {
-  const values = {
-    code: str(form, 'code'),
-    name: str(form, 'name'),
-    reorderLevel: str(form, 'reorderLevel'),
-  };
-
-  return submit(
-    `${BASE}/items`,
-    {
-      code: values.code,
-      name: values.name,
-      itemType: opt(form, 'itemType') ?? 'RAW_MATERIAL',
-      uom: opt(form, 'uom') ?? 'kg',
-      reorderLevel: values.reorderLevel || '0',
-      reorderQuantity: str(form, 'reorderQuantity') || values.reorderLevel || '0',
-      shelfLifeMonths: str(form, 'shelfLifeMonths') ? Number(str(form, 'shelfLifeMonths')) : undefined,
-      // GST lives on the item master; there is no separate tax table.
-      gstRate: opt(form, 'gstRate'),
-      scheduleClassification: opt(form, 'scheduleClassification'),
-      brandName: opt(form, 'brandName'),
-      genericName: opt(form, 'genericName'),
-      storageConditions: opt(form, 'storageConditions'),
-      hsnCode: opt(form, 'hsnCode'),
-    },
-    `Item ${values.code} created.`,
-    values,
-  );
-}
-
-export async function createVendorAction(
-  _previous: ActionState,
-  form: FormData,
-): Promise<ActionState> {
-  const values = { code: str(form, 'code'), name: str(form, 'name') };
-
-  return submit(
-    `${BASE}/parties`,
-    {
-      code: values.code,
-      name: values.name,
-      partyType: 'VENDOR',
-      gstin: opt(form, 'gstin'),
-      drugLicenceNumber: opt(form, 'drugLicenceNumber'),
-      email: opt(form, 'email'),
-      phone: opt(form, 'phone'),
-      paymentTermsDays: Number(str(form, 'paymentTermsDays') || '30'),
-    },
-    `Vendor ${values.name} created.`,
-    values,
-  );
-}
-
-/**
- * Creates a production plan.
- *
- * The plan carries no component list of its own: it cites a bill of material
- * from the shared master data, and that BOM's lines are the components. A
- * revised formulation therefore cannot leave stale copies on plans already
- * raised.
- */
-export async function createProductionPlanAction(
-  _previous: ActionState,
-  form: FormData,
-): Promise<ActionState> {
-  return submit(
-    `${BASE}/production-plans`,
-    {
-      finishedProductId: str(form, 'finishedProductId'),
-      packVariant: opt(form, 'packVariant'),
-      plannedQuantity: str(form, 'plannedQuantity'),
-      plannedDate: toIsoDate(opt(form, 'plannedDate')),
-      notes: opt(form, 'notes'),
-      bomId: opt(form, 'bomId'),
-    },
-    'Production plan created.',
-  );
-}
-
-/**
- * Issues or writes off usable stock.
- *
- * The API runs the reorder check straight after, so a movement that takes an
- * item below its level raises its requisition in the same request rather than
- * waiting for someone to notice.
- */
-export async function consumeStockAction(
-  _previous: ActionState,
-  form: FormData,
-): Promise<ActionState> {
-  const values = { quantity: str(form, 'quantity'), reason: str(form, 'reason') };
-
-  return submit(
-    `${BASE}/stock/consume`,
-    {
-      itemId: str(form, 'itemId'),
-      quantity: values.quantity,
-      reason: values.reason || 'Manual stock issue',
-    },
-    'Stock issued. Any item that fell below its reorder level has been requisitioned.',
-    values,
-  );
 }
 
 /** Runs the reorder check by hand. Idempotent — safe to press twice. */
@@ -197,24 +97,77 @@ export async function runReorderCheckAction(
 // 1. Requisitions
 // ---------------------------------------------------------------------------
 
+/**
+ * Creates one purchase requisition, and nothing else.
+ *
+ * Every id forwarded below is a selection from master data that already
+ * exists. This action creates no item, vendor, product or production plan, and
+ * the API refuses any id that is not the caller's own company's.
+ *
+ * What is NOT sent is as deliberate as what is: no number, no date, no
+ * requester, no status, no trigger type. The API owns all five — the form only
+ * displays what they will be.
+ */
 export async function createRequisitionAction(
   _previous: ActionState,
   form: FormData,
 ): Promise<ActionState> {
-  const values = { requiredQuantity: str(form, 'requiredQuantity'), notes: str(form, 'notes') };
+  // Echoed back on failure so a rejected submit does not empty the form.
+  const values = {
+    itemId: str(form, 'itemId'),
+    requiredQuantity: str(form, 'requiredQuantity'),
+    packVariant: str(form, 'packVariant'),
+    quantityPerUnit: str(form, 'quantityPerUnit'),
+    notes: str(form, 'notes'),
+  };
 
   return submit(
     `${BASE}/requisitions`,
     {
-      itemId: str(form, 'itemId'),
+      itemId: values.itemId,
       requiredQuantity: values.requiredQuantity,
       preferredVendorId: opt(form, 'preferredVendorId'),
       requiredByDate: toIsoDate(opt(form, 'requiredByDate')),
       notes: opt(form, 'notes'),
       productionPlanId: opt(form, 'productionPlanId'),
+
+      finishedProductId: opt(form, 'finishedProductId'),
+      packVariant: opt(form, 'packVariant'),
+      packagingComponentId: opt(form, 'packagingComponentId'),
+      packagingLevel: opt(form, 'packagingLevel'),
+      quantityPerUnit: opt(form, 'quantityPerUnit'),
+      // A <select> yields the string "true"/"false"; the API wants a boolean.
+      // Absent means mandatory, which is what the API defaults to anyway.
+      isMandatory: opt(form, 'isMandatory') === undefined
+        ? undefined
+        : str(form, 'isMandatory') === 'true',
     },
-    'Requisition raised.',
+    'Purchase requisition created.',
     values,
+  );
+}
+
+/**
+ * Turns automatic low-stock requisition creation on or off for the company.
+ *
+ * The form posts the value it wants, not a toggle instruction, so pressing it
+ * twice quickly cannot leave the setting in whichever state the race happened
+ * to produce.
+ */
+export async function setAutoCreationAction(
+  _previous: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const enabled = str(form, 'autoRequisitionEnabled') === 'true';
+
+  return submit(
+    `${BASE}/settings`,
+    { autoRequisitionEnabled: enabled },
+    enabled
+      ? 'Auto creation is on. Low stock will raise a requisition automatically.'
+      : 'Auto creation is off. Low stock will be reported but raise nothing.',
+    undefined,
+    'PATCH',
   );
 }
 

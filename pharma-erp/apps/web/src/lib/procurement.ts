@@ -8,6 +8,7 @@ import type {
   LowStockItem,
   PartySummary,
   ProcurementListQuery,
+  ProcurementSettings,
   ProcurementSummary,
   PurchaseInvoiceListItem,
   PurchaseOrderListItem,
@@ -60,6 +61,11 @@ const BASE = '/api/v1/procurement';
 
 export async function fetchSummary(): Promise<ApiResult<ProcurementSummary>> {
   return apiFetch<ProcurementSummary>(`${BASE}/summary`, { authenticated: true });
+}
+
+/** The company's Procure-to-Pay settings — today, the Auto Creation flag. */
+export async function fetchProcurementSettings(): Promise<ApiResult<ProcurementSettings>> {
+  return apiFetch<ProcurementSettings>(`${BASE}/settings`, { authenticated: true });
 }
 
 export async function fetchLowStock(): Promise<ApiResult<LowStockItem[]>> {

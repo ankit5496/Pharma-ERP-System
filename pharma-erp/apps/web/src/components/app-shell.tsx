@@ -1,9 +1,13 @@
 import type { ReactNode } from 'react';
 
 import { logoutAction } from '@/app/(auth)/login/actions';
-import { DatasetPicker } from '@/components/dataset-picker';
 import { WorkflowNav } from '@/components/workflow-nav';
-import { READ_ONLY_ROLES, USER_ROLE_LABELS, type SessionUser } from '@pharma-erp/types';
+import {
+  READ_ONLY_ROLES,
+  USER_ROLE_LABELS,
+  canManageUsers,
+  type SessionUser,
+} from '@pharma-erp/types';
 
 /**
  * Chrome for every signed-in staff page: company header, the four workflow
@@ -21,16 +25,7 @@ import { READ_ONLY_ROLES, USER_ROLE_LABELS, type SessionUser } from '@pharma-erp
  * security boundary. RolesGuard and row-level security are, and both still
  * hold regardless of what this renders.
  */
-export function AppShell({
-  user,
-  children,
-  /** Dataset key when the record browser is open, so its dropdown shows it. */
-  activeDataset,
-}: {
-  user: SessionUser;
-  children: ReactNode;
-  activeDataset?: string;
-}) {
+export function AppShell({ user, children }: { user: SessionUser; children: ReactNode }) {
   const isReadOnly = READ_ONLY_ROLES.includes(user.role);
 
   return (
@@ -44,31 +39,31 @@ export function AppShell({
             <p className="truncate text-sm font-semibold text-slate-900">{user.tenantName}</p>
           </div>
 
-          {/* The account block, with the table picker directly beneath it.
-              `items-end` keeps both flush to the right edge on wide screens;
-              on a phone the column takes the full width and the select
-              stretches with it rather than being squeezed next to the button. */}
-          <div className="flex w-full flex-col items-stretch gap-2 sm:w-auto sm:items-end">
-            <div className="flex items-center justify-between gap-3 sm:justify-end">
-              <div className="min-w-0 text-left sm:text-right">
-                <p className="truncate text-sm font-medium text-slate-900">{user.fullName}</p>
-                <p className="truncate text-xs text-slate-500">{USER_ROLE_LABELS[user.role]}</p>
-              </div>
-              <form action={logoutAction}>
-                <button
-                  type="submit"
-                  className="whitespace-nowrap rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-                >
-                  Sign out
-                </button>
-              </form>
+          {/* The account block. A raw-table picker used to sit beneath it;
+              it was removed because browsing tables is not something staff do
+              as part of their work, and offering it beside their own name
+              invited it. The /data routes still resolve for anyone who needs
+              them. */}
+          <div className="flex items-center justify-between gap-3 sm:justify-end">
+            <div className="min-w-0 text-left sm:text-right">
+              <p className="truncate text-sm font-medium text-slate-900">{user.fullName}</p>
+              <p className="truncate text-xs text-slate-500">{USER_ROLE_LABELS[user.role]}</p>
             </div>
-
-            <DatasetPicker current={activeDataset} />
+            <form action={logoutAction}>
+              <button
+                type="submit"
+                className="whitespace-nowrap rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+              >
+                Sign out
+              </button>
+            </form>
           </div>
         </div>
 
-        <WorkflowNav />
+        {/* The User settings tab is offered only to roles that can actually
+            use it. See the note in WorkflowNav: this is a courtesy, not the
+            access control. */}
+        <WorkflowNav canManageUsers={canManageUsers(user.role)} />
       </header>
 
       {isReadOnly && (

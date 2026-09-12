@@ -2,7 +2,6 @@ import type { ReactNode } from 'react';
 import { findWorkflow } from '@pharma-erp/types';
 
 import { AppShell } from '@/components/app-shell';
-import { FlowStrip } from '@/components/procurement/flow-strip';
 import { SummaryCards } from '@/components/procurement/summary-cards';
 import { WorkflowSubnav } from '@/components/workflow-subnav';
 import { fetchSummary } from '@/lib/procurement';
@@ -30,30 +29,38 @@ export default async function ProcureToPayLayout({ children }: { children: React
   return (
     <AppShell user={user}>
       <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
-        <header className="mb-6">
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Procure-to-Pay</h1>
-          <p className="mt-1.5 max-w-3xl text-sm text-slate-600">
-            {workflow?.purpose ??
-              'Manage the complete process of procuring raw materials, from identifying low stock through vendor payment.'}
-          </p>
-        </header>
+        {/* ORDER: counts, then tabs, then the tab's own content.
 
-        {workflow && (
-          <div className="mb-6">
-            <WorkflowSubnav workflow={workflow} />
-          </div>
-        )}
+            The counts come first because they are what decides which tab to
+            open — reading "3 batches pending QC" and then choosing Incoming QC
+            is the actual sequence, so the page is laid out in that order.
 
-        <FlowStrip />
+            THEY ARE IN THE LAYOUT, WHICH IS THE POINT. A layout is rendered
+            once and kept while you move between its children, so these cards
+            neither flicker nor reload on every tab change, and no sub-tab
+            repeats them. Putting them in the pages would mean six copies that
+            drift apart and six extra fetches.
 
-        {/* A failed summary is not a reason to hide the whole workflow: the
-            sub-tab below can still load, and the cards are a convenience. */}
+            A failed summary is not a reason to hide the workflow: the tab
+            below still loads, and the cards are a convenience. */}
         {summary.ok ? (
           <SummaryCards summary={summary.data} />
         ) : (
           <p className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
             Summary counts unavailable: {summary.error}
           </p>
+        )}
+
+        {/* ONE NAVIGATION BAR. There was a flow strip here too — Low stock ->
+            Requisition -> ... -> Payment — naming the same six destinations as
+            these tabs. And above it a heading repeating the tab's own name
+            with a sentence describing the module, on every single sub-tab.
+            Neither survived: the tabs navigate and show where you are, which
+            is all a person needs on arrival. */}
+        {workflow && (
+          <div className="mb-6">
+            <WorkflowSubnav workflow={workflow} />
+          </div>
         )}
 
         {children}

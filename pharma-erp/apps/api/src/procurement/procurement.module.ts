@@ -11,6 +11,7 @@ import { PurchaseOrdersService } from './purchase-orders.service';
 import { QcService } from './qc.service';
 import { ReorderService } from './reorder.service';
 import { RequisitionsService } from './requisitions.service';
+import { SettingsService } from './settings.service';
 import { StockService } from './stock.service';
 import { SummaryService } from './summary.service';
 
@@ -32,6 +33,7 @@ import { SummaryService } from './summary.service';
     PeopleService,
     StockService,
     ReorderService,
+    SettingsService,
     MastersService,
     RequisitionsService,
     PurchaseOrdersService,

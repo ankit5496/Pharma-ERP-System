@@ -8,7 +8,7 @@ import { requireAdminSession } from '@/lib/session';
 import { CreateUserForm } from './create-user-form';
 import { UserRowActions } from './user-row-actions';
 
-export const metadata: Metadata = { title: 'Users' };
+export const metadata: Metadata = { title: 'User settings' };
 export const dynamic = 'force-dynamic';
 
 /**
@@ -26,7 +26,7 @@ export default async function UsersPage() {
     <AppShell user={currentUser}>
       <main className="mx-auto max-w-6xl px-6 py-10">
         <header className="mb-8">
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">Users</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">User settings</h1>
           <p className="mt-1.5 text-sm text-slate-600">
             Everyone at {currentUser.tenantName}. You assign roles; nobody chooses their own.
           </p>
