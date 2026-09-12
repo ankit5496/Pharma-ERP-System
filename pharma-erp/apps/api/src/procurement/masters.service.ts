@@ -71,7 +71,7 @@ export class MastersService {
           tenantId,
           code: dto.code,
           name: dto.name,
-          type: dto.itemType ?? 'RAW_MATERIAL',
+          type: dto.type ?? 'RAW_MATERIAL',
           uom: dto.uom ?? 'kg',
           reorderLevel,
           reorderQuantity: parseNonNegative(dto.reorderQuantity ?? '0', 'Reorder quantity'),

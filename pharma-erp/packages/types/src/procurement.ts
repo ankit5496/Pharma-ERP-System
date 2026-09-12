@@ -9,6 +9,8 @@
  *
  * Dates cross as ISO 8601 strings, as everywhere else in this codebase.
  */
+import type { PartyStatus } from './parties';
+
 
 // ---------------------------------------------------------------------------
 // Enumerations — mirrored from the Prisma schema
@@ -193,8 +195,14 @@ export interface ItemSummary {
   /** Null means no reorder policy is configured — different from a level of zero. */
   reorderLevel: string | null;
   reorderQuantity: string | null;
-  /** Derived, not stored: every pharmaceutical material is batch tracked. */
+  /**
+   * Stored on the item, not derived. Defaults true and no form exposes it,
+   * so every material entering the plant is traceable to a vendor lot —
+   * but a genuine exception now has somewhere to live. See
+   * 20260911160000_item_batch_tracking_and_notes.
+   */
   requiresBatchTracking: boolean;
+  notes: string | null;
 }
 
 /** One component a formulation consumes, per unit of output. */
@@ -231,7 +239,16 @@ export interface PartySummary {
   drugLicenceNumber: string | null;
   email: string | null;
   phone: string | null;
+  address: string | null;
   paymentTermsDays: number;
+
+  /** US-MD-02: a CUSTOMER may only be ACTIVE with a licence on file. */
+  status: PartyStatus;
+  drugLicenceValidTo: string | null;
+  creditLimit: string | null;
+  creditPeriodDays: number | null;
+  /** Computed by the API so every screen agrees on today. */
+  licenceExpired: boolean;
 }
 
 /**

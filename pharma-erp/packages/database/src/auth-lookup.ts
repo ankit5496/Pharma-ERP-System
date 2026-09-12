@@ -2,6 +2,18 @@ import type { PrismaClient } from '@prisma/client';
 
 import { PG_LOGIN_EMAIL_SETTING, PG_TENANT_SETTING } from '@pharma-erp/types';
 
+import { TRANSACTION_MAX_WAIT_MS, TRANSACTION_TIMEOUT_MS } from './tenant-scope';
+
+/**
+ * The same budget every tenant-scoped transaction gets. Sign-in needs it more
+ * than most: it runs before anything else, so a tight budget presents as
+ * "nobody can log in" (P2028) rather than as a slow query.
+ */
+const TRANSACTION_TIMEOUTS = {
+  maxWait: TRANSACTION_MAX_WAIT_MS,
+  timeout: TRANSACTION_TIMEOUT_MS,
+} as const;
+
 /**
  * An account as the sign-in path needs it — including the password hash, which
  * is why this type is never returned from a controller.
@@ -43,6 +55,9 @@ export async function findLoginCandidateByEmail(
 
   if (!normalised) return null;
 
+  // Explicit budgets, because this is the first transaction of every sign-in:
+  // with Prisma's 2s default this is where a cross-region database surfaces as
+  // "nobody can log in" (P2028). See TRANSACTION_TIMEOUTS.
   return prisma.$transaction(async (tx) => {
     // `true` = SET LOCAL: scoped to this transaction, and therefore to this
     // connection checkout. Parameterised via the tagged template, so the
@@ -84,7 +99,7 @@ export async function findLoginCandidateByEmail(
       tenantSlug: user.tenant.slug,
       tenantStatus: user.tenant.status,
     };
-  });
+  }, TRANSACTION_TIMEOUTS);
 }
 
 /** The subset of an account needed to authorise a request, minus credentials. */
@@ -116,6 +131,9 @@ export async function resolveIdentityByUserId(
   tenantId: string,
   userId: string,
 ): Promise<ResolvedIdentity | null> {
+  // Runs on EVERY authenticated request, so it needs the same budget as the
+  // sign-in lookup — otherwise a cross-region database logs you in and then
+  // fails every page that follows.
   return prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT set_config(${PG_TENANT_SETTING}, ${tenantId}, true)`;
 
@@ -150,5 +168,5 @@ export async function resolveIdentityByUserId(
       tenantSlug: user.tenant.slug,
       tenantStatus: user.tenant.status,
     };
-  });
+  }, TRANSACTION_TIMEOUTS);
 }

@@ -3,6 +3,13 @@ import { notFound } from 'next/navigation';
 import { findWorkflow, findWorkflowStep } from '@pharma-erp/types';
 
 import { AppShell } from '@/components/app-shell';
+import {
+  BatchRecordPanel,
+  BatchReleasePanel,
+  FormulationsPanel,
+  MaterialIssuePanel,
+  ProductionOrdersPanel,
+} from '@/components/production/panels';
 import { WorkflowSubnav } from '@/components/workflow-subnav';
 import { requireSession } from '@/lib/session';
 
@@ -48,9 +55,7 @@ export default async function WorkflowStepPage({ params }: PageProps) {
     <AppShell user={user}>
       <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
         <header className="mb-6">
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
-            {workflow.label}
-          </h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{workflow.label}</h1>
           <p className="mt-1.5 max-w-3xl text-sm text-slate-600">{workflow.purpose}</p>
         </header>
 
@@ -65,15 +70,60 @@ export default async function WorkflowStepPage({ params }: PageProps) {
           <p className="mt-1 max-w-3xl text-sm text-slate-600">{step.purpose}</p>
 
           <div className="mt-5">
-            {/* When a step gains a real screen, flip its `state` to 'ready' in
-                WORKFLOWS and render it here — the branch is the extension
-                point, and until then the panel below is the honest answer. */}
-            <StepPlaceholder workflowLabel={workflow.label} stepLabel={step.label} />
+            {/* The extension point promised in WORKFLOWS: a step whose `state`
+                is 'ready' has an entry in the registry and renders it; anything
+                else still gets the honest placeholder. */}
+            {step.state === 'ready' ? (
+              <ProductionStep workflowKey={workflow.key} stepKey={step.key} role={user.role} />
+            ) : (
+              <StepPlaceholder workflowLabel={workflow.label} stepLabel={step.label} />
+            )}
           </div>
         </section>
       </main>
     </AppShell>
   );
+}
+
+/**
+ * Which component serves a built step.
+ *
+ * A lookup rather than a chain of conditionals, keyed by the same strings as
+ * WORKFLOWS, so a step that is marked 'ready' without a screen behind it is a
+ * missing key here rather than a silently blank page. `state: 'ready'` and an
+ * entry in this table have to be changed together, and that is the point.
+ */
+const PRODUCTION_STEPS: Record<string, (props: { role: string }) => React.ReactNode> = {
+  formulations: () => <FormulationsPanel />,
+  'production-orders': () => <ProductionOrdersPanel />,
+  'material-issue': () => <MaterialIssuePanel />,
+  'batch-record': () => <BatchRecordPanel />,
+  'batch-release': ({ role }) => <BatchReleasePanel role={role} />,
+};
+
+function ProductionStep({
+  workflowKey,
+  stepKey,
+  role,
+}: {
+  workflowKey: string;
+  stepKey: string;
+  role: string;
+}) {
+  const render = workflowKey === 'production-quality' ? PRODUCTION_STEPS[stepKey] : undefined;
+
+  if (!render) {
+    // Reachable only by marking a step 'ready' without adding it above. Says
+    // so plainly rather than rendering nothing, because a blank panel looks
+    // like a data problem and this is a wiring one.
+    return (
+      <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50/60 p-6 text-sm text-amber-900">
+        This step is marked ready but has no screen registered for it.
+      </div>
+    );
+  }
+
+  return <>{render({ role })}</>;
 }
 
 /**

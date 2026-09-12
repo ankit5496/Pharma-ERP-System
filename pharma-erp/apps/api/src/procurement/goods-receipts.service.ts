@@ -19,7 +19,6 @@ import {
   LOT_SELECT,
   PARTY_SELECT,
   collectIds,
-  requiresBatchTracking,
   toItemSummary,
   toPartySummary,
   toStockLotSummary,
@@ -197,11 +196,11 @@ export class GoodsReceiptsService {
         );
       }
 
-      // Batch tracking is derived from the item type rather than read from a
-      // column — the shared item master has no such flag, and in a
-      // pharmaceutical plant every material that arrives must be traceable to
-      // a vendor lot for recall and for inspection.
-      if (requiresBatchTracking(orderLine.item.type)) {
+      // Batch tracking is read from the item. It defaults true and no form
+      // exposes it, so in practice every material that arrives must be
+      // traceable to a vendor lot for recall and for inspection — which is
+      // what a pharmaceutical plant requires.
+      if (orderLine.item.requiresBatchTracking) {
         if (!line.vendorBatchNumber?.trim()) {
           throw new BadRequestException(
             `${orderLine.item.code} is batch tracked: the vendor batch number is required.`,
