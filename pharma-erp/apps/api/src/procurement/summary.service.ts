@@ -92,7 +92,7 @@ export class SummaryService {
         label: 'Low stock items',
         count: lowStock.length,
         detail: lowStock.length > 0 ? 'Below reorder level' : 'All items above reorder level',
-        href: `${PROCUREMENT_ROUTES.requisitions}?view=low-stock`,
+        href: PROCUREMENT_ROUTES.lowStock,
         tone: lowStock.length > 0 ? 'attention' : 'neutral',
       },
       {

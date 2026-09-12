@@ -363,12 +363,26 @@ export class GoodsReceiptsService {
         new Prisma.Decimal(line.quantityReceived).greaterThanOrEqualTo(line.quantity),
       );
 
+      // Nothing has arrived on any line. Reachable when every line of this
+      // receipt was rejected outright at the gate, and the order has to stay
+      // Open — calling it partially received when the quantity received across
+      // all its receipts is still zero would be false.
+      const nothingReceived = refreshedLines.every((line) =>
+        new Prisma.Decimal(line.quantityReceived).lessThanOrEqualTo(0),
+      );
+
       await tx.purchaseOrder.update({
         where: { id: order.id },
+        // Computed from the TOTALS on the order's lines, never from this
+        // receipt alone: several receipts contribute and only the sum knows
+        // the answer.
+        //
         // US-PUR-03: once the ordered quantity has all arrived the order is
         // Closed. 'Fully received' and 'closed' meant the same thing, and one
         // name for one state is better than two.
-        data: { status: fullyReceived ? 'CLOSED' : 'PARTIALLY_RECEIVED' },
+        data: {
+          status: fullyReceived ? 'CLOSED' : nothingReceived ? 'OPEN' : 'PARTIALLY_RECEIVED',
+        },
       });
 
       return tx.goodsReceipt.findFirstOrThrow({

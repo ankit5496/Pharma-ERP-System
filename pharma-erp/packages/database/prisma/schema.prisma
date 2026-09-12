@@ -103,6 +103,15 @@ model Tenant {
   /// expects none. 2% is a conventional starting point, not a recommendation.
   invoiceTolerancePercent Decimal @default(2.00) @map("invoice_tolerance_percent") @db.Decimal(5, 2)
 
+  /// Whether the reorder check may raise requisitions by itself.
+  ///
+  /// TRUE BY DEFAULT, which is the behaviour every tenant had before the
+  /// switch existed. Turned off, the check still reports what it would have
+  /// raised — knowing an item is short is useful whether or not the system is
+  /// allowed to act on it — but creates nothing, and requisitions are raised
+  /// by hand instead.
+  autoRequisitionEnabled Boolean @default(true) @map("auto_requisition_enabled")
+
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   /// Soft delete. A tenant is never physically removed — its records are
@@ -785,6 +794,17 @@ enum RequisitionStatus {
 /// plan. The distinction is worth storing rather than inferring from whether
 /// `requestedById` is null: it decides which fields are required, and a buyer
 /// reviewing the queue treats the two differently.
+/// Where a component sits in the pack: the blister that touches the tablet,
+/// the carton around it, the shipper around that.
+///
+/// An enum rather than a master table — the three levels are a property of
+/// packaging itself, not something a company configures.
+enum PackagingLevel {
+  PRIMARY
+  SECONDARY
+  TERTIARY
+}
+
 enum RequisitionTriggerType {
   AUTO_REORDER
   MANUAL
@@ -958,7 +978,10 @@ model Item {
   bomLines        BomLine[]
   productionPlans ProductionPlan[]
 
-  requisitions       PurchaseRequisition[]
+  requisitions                 PurchaseRequisition[] @relation("RequisitionItem")
+  requisitionsAsFinishedGood   PurchaseRequisition[] @relation("RequisitionFinishedProduct")
+  requisitionsAsPackComponent  PurchaseRequisition[] @relation("RequisitionPackagingComponent")
+
   purchaseOrderLines PurchaseOrderLine[]
   goodsReceiptLines  GoodsReceiptLine[]
   stockLots          StockLot[]
@@ -1137,6 +1160,31 @@ model PurchaseRequisition {
 
   preferredVendorId String? @map("preferred_vendor_id") @db.Uuid
 
+  /// What the material is ultimately for, and where it sits in the pack.
+  ///
+  /// All of it optional, and all of it POINTING AT master data rather than
+  /// repeating it: a requisition for a raw material that serves no single
+  /// product answers none of these, and a requisition for a carton answers all
+  /// of them. Forcing a value would mean inventing one.
+  finishedProductId String? @map("finished_product_id") @db.Uuid
+
+  /// Pack presentation, e.g. "10x10 blister". Free text because there is no
+  /// pack-variant master to reference — the same as `ProductionPlan`.
+  packVariant String? @map("pack_variant") @db.VarChar(128)
+
+  /// Distinct from `itemId`: `itemId` is what is being bought, this is the
+  /// component of the finished pack it plays a part in.
+  packagingComponentId String?         @map("packaging_component_id") @db.Uuid
+  packagingLevel       PackagingLevel? @map("packaging_level")
+
+  /// The rate the buy quantity was derived from — per unit or per batch of the
+  /// finished product. Keeping it makes `requiredQuantity` auditable later.
+  quantityPerUnit Decimal? @map("quantity_per_unit") @db.Decimal(18, 4)
+
+  /// Mandatory by default: treating an unspecified component as optional
+  /// invites it to be dropped from an order.
+  isMandatory Boolean @default(true) @map("is_mandatory")
+
   /// Why this requisition exists. Decides what else is required: a MANUAL one
   /// must name a production plan, an AUTO_REORDER one must not.
   triggerType RequisitionTriggerType @default(MANUAL) @map("trigger_type")
@@ -1167,9 +1215,14 @@ model PurchaseRequisition {
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
 
   tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  item            Item            @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  item            Item            @relation("RequisitionItem", fields: [itemId], references: [id], onDelete: Restrict)
   preferredVendor Party?          @relation(fields: [preferredVendorId], references: [id], onDelete: Restrict)
   productionPlan  ProductionPlan? @relation(fields: [productionPlanId], references: [id], onDelete: Restrict)
+
+  /// Three separate references into the item master, so each is named. Prisma
+  /// cannot infer which is which once a model points at another more than once.
+  finishedProduct    Item? @relation("RequisitionFinishedProduct", fields: [finishedProductId], references: [id], onDelete: Restrict)
+  packagingComponent Item? @relation("RequisitionPackagingComponent", fields: [packagingComponentId], references: [id], onDelete: Restrict)
 
   purchaseOrderLines PurchaseOrderLine[]
 
@@ -1177,6 +1230,8 @@ model PurchaseRequisition {
   @@index([tenantId, status, deletedAt])
   @@index([tenantId, itemId])
   @@index([tenantId, triggerType, status])
+  @@index([tenantId, finishedProductId])
+  @@index([tenantId, packagingComponentId])
   @@map("purchase_requisitions")
 }
 

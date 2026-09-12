@@ -23,6 +23,7 @@ import {
   toListQuery,
   toOptions,
 } from '@/lib/procurement';
+import { requireSession } from '@/lib/session';
 
 export const metadata: Metadata = { title: 'Goods receipts' };
 export const dynamic = 'force-dynamic';
@@ -46,9 +47,16 @@ export default async function GoodsReceiptsPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const query = toListQuery(await searchParams);
+  const params = await searchParams;
+  const query = toListQuery(params);
 
-  const [receipts, receivable, vendors, items] = await Promise.all([
+  // Set when the user pressed "Create GRN" on a purchase order, so the form
+  // opens on that order instead of making them find it again in the list.
+  const preselectedOrderId =
+    typeof params.purchaseOrderId === 'string' ? params.purchaseOrderId : undefined;
+
+  const [user, receipts, receivable, vendors, items] = await Promise.all([
+    requireSession(),
     fetchGoodsReceipts(query),
     fetchReceivableOrders(),
     fetchVendors(),
@@ -60,7 +68,7 @@ export default async function GoodsReceiptsPage({
   return (
     <div className="space-y-6">
       <Panel
-        title="Book a receipt"
+        title="Create GRN"
         subtitle="Record material arriving against an issued purchase order. Each line creates a batch, in quarantine until incoming QC clears it."
       >
         <div className="p-5">
@@ -72,7 +80,11 @@ export default async function GoodsReceiptsPage({
               cannot receive material.
             </p>
           ) : (
-            <BookReceiptForm orders={receivable.data} />
+            <BookReceiptForm
+              orders={receivable.data}
+              preselectedOrderId={preselectedOrderId}
+              receivedBy={user.fullName}
+            />
           )}
         </div>
       </Panel>

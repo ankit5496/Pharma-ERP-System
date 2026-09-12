@@ -42,7 +42,7 @@ export default async function DataTablePage({ params }: PageProps) {
     dataset.source.kind === 'endpoint' ? await loadDatasetRecords(dataset) : null;
 
   return (
-    <AppShell user={user} activeDataset={dataset.key}>
+    <AppShell user={user}>
       <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
         <header className="mb-6">
           <p className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-500">

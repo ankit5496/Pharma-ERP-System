@@ -10,18 +10,47 @@ import { ActionMessage, Field, SubmitButton, useAction } from './form-kit';
 /**
  * Books a goods receipt against an open purchase order.
  *
- * The form is generated from the chosen order's outstanding lines, so a
- * receipt can only ever be booked against something actually on order. Lines
- * left blank are skipped — a delivery rarely covers a whole order, and forcing
- * a zero onto the others would post movements that never happened.
+ * NO ITEM IS ENTERED HERE. The lines are generated from the chosen order, so a
+ * receipt can only ever be booked against something actually on order, against
+ * items that already exist in the item master. Lines left blank are skipped — a
+ * delivery rarely covers a whole order, and forcing a zero onto the others
+ * would post movements that never happened.
  *
- * Batch fields are marked required for items flagged `requiresBatchTracking`.
- * The browser check is a courtesy; the API enforces the same rule against the
- * item record and refuses the receipt without it.
+ * EACH LINE SHOWS FOUR QUANTITIES, which is what makes partial receiving
+ * legible: what was ordered, what previous receipts already brought in, what
+ * is therefore still outstanding, and what is being received now. Showing only
+ * the last of those leaves the receiver doing arithmetic to answer "how much
+ * am I allowed to take".
+ *
+ * THE BATCH FIELDS ARE NOT MARKED `required` IN THE BROWSER, on purpose. A
+ * receipt usually covers some lines and not others, and an HTML `required`
+ * applies to a row whether or not anything is being received on it — so
+ * marking them would make a partial receipt impossible to submit. The API
+ * demands a batch number, manufacturing date and expiry for every line that
+ * actually carries a quantity, which is the rule that matters.
+ *
+ * The browser checks that do exist — the remaining-quantity ceiling — are a
+ * courtesy that answers without a round trip. The API checks the same things
+ * again against live figures, and that is what refuses a bad receipt.
  */
-export function BookReceiptForm({ orders }: { orders: readonly PurchaseOrderListItem[] }) {
+export function BookReceiptForm({
+  orders,
+  preselectedOrderId,
+  receivedBy,
+}: {
+  orders: readonly PurchaseOrderListItem[];
+  /** Set when the user arrived from "Create GRN" on a purchase order. */
+  preselectedOrderId?: string;
+  receivedBy: string;
+}) {
   const [state, formAction] = useAction(createGoodsReceiptAction);
-  const [orderId, setOrderId] = useState(orders[0]?.id ?? '');
+  const [orderId, setOrderId] = useState(
+    // Falls back rather than showing an empty form if the order has since been
+    // closed or fully received and is no longer in the receivable list.
+    preselectedOrderId && orders.some((o) => o.id === preselectedOrderId)
+      ? preselectedOrderId
+      : (orders[0]?.id ?? ''),
+  );
 
   const order = orders.find((candidate) => candidate.id === orderId) ?? orders[0];
 
@@ -32,6 +61,29 @@ export function BookReceiptForm({ orders }: { orders: readonly PurchaseOrderList
   return (
     <form action={formAction} className="space-y-4">
       <ActionMessage state={state} />
+
+      {/* What the system fills in, stated rather than presented as empty
+          boxes someone might think they forgot. None of it is submitted: the
+          API allocates the number, stamps the time and attributes the receipt
+          to the signed-in user. */}
+      <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs sm:grid-cols-4">
+        <div>
+          <dt className="font-medium uppercase tracking-wide text-slate-500">GRN no.</dt>
+          <dd className="mt-0.5 text-slate-800">Generated on save</dd>
+        </div>
+        <div>
+          <dt className="font-medium uppercase tracking-wide text-slate-500">Received by</dt>
+          <dd className="mt-0.5 text-slate-800">{receivedBy}</dd>
+        </div>
+        <div>
+          <dt className="font-medium uppercase tracking-wide text-slate-500">Linked PO</dt>
+          <dd className="mt-0.5 font-mono text-slate-800">{order?.number ?? '—'}</dd>
+        </div>
+        <div>
+          <dt className="font-medium uppercase tracking-wide text-slate-500">Vendor</dt>
+          <dd className="mt-0.5 text-slate-800">{order?.vendor.name ?? '—'}</dd>
+        </div>
+      </dl>
 
       <div className="grid gap-3 sm:grid-cols-3">
         <Field label="Purchase order" htmlFor="grn-order" required className="sm:col-span-2">
@@ -83,10 +135,16 @@ export function BookReceiptForm({ orders }: { orders: readonly PurchaseOrderList
                   Item
                 </th>
                 <th scope="col" className="px-3 py-2 text-right font-medium">
-                  Pending
+                  PO qty
+                </th>
+                <th scope="col" className="px-3 py-2 text-right font-medium">
+                  Already received
+                </th>
+                <th scope="col" className="px-3 py-2 text-right font-medium">
+                  Remaining
                 </th>
                 <th scope="col" className="px-3 py-2 font-medium">
-                  Received
+                  Receiving now
                 </th>
                 <th scope="col" className="px-3 py-2 font-medium">
                   Rejected at gate
@@ -125,6 +183,18 @@ export function BookReceiptForm({ orders }: { orders: readonly PurchaseOrderList
                     </td>
 
                     <td className="px-3 py-2 text-right tabular-nums text-slate-600">
+                      {line.quantity} {line.item.uom}
+                    </td>
+
+                    <td className="px-3 py-2 text-right tabular-nums text-slate-600">
+                      {line.quantityReceived === '0' ? (
+                        <span className="text-slate-300">—</span>
+                      ) : (
+                        `${line.quantityReceived} ${line.item.uom}`
+                      )}
+                    </td>
+
+                    <td className="px-3 py-2 text-right tabular-nums font-semibold text-slate-900">
                       {line.quantityPending} {line.item.uom}
                     </td>
 
@@ -132,11 +202,19 @@ export function BookReceiptForm({ orders }: { orders: readonly PurchaseOrderList
                       <label className="sr-only" htmlFor={`recv-${line.id}`}>
                         Quantity received for {line.item.name}
                       </label>
+                      {/* `max` is the remaining quantity, so the browser
+                          refuses an over-receipt before a round trip. The API
+                          checks the same thing against the live figure, which
+                          is what counts when two people receive at once. */}
                       <input
                         id={`recv-${line.id}`}
                         name={`quantityReceived_${line.id}`}
-                        inputMode="decimal"
+                        type="number"
+                        step="any"
+                        min="0"
+                        max={line.quantityPending}
                         placeholder="0"
+                        title={`At most ${line.quantityPending} ${line.item.uom} remain on this line.`}
                         className="field-sm w-24"
                       />
                     </td>
@@ -211,7 +289,7 @@ export function BookReceiptForm({ orders }: { orders: readonly PurchaseOrderList
       )}
 
       <div className="flex flex-wrap items-center gap-3">
-        <SubmitButton pendingLabel="Booking…">Book receipt</SubmitButton>
+        <SubmitButton pendingLabel="Creating…">Create GRN</SubmitButton>
         <p className="text-xs text-slate-500">
           Batch number and expiry are required for batch-tracked items. Received material goes to
           quarantine and cannot be used until incoming QC accepts it.

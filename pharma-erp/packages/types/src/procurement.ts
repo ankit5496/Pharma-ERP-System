@@ -68,6 +68,16 @@ export const REQUISITION_TRIGGER_LABELS: Record<RequisitionTriggerType, string> 
   MANUAL: 'Manual',
 };
 
+/** Where a packaging component sits: blister, carton, shipper. */
+export const PACKAGING_LEVELS = ['PRIMARY', 'SECONDARY', 'TERTIARY'] as const;
+export type PackagingLevel = (typeof PACKAGING_LEVELS)[number];
+
+export const PACKAGING_LEVEL_LABELS: Record<PackagingLevel, string> = {
+  PRIMARY: 'Primary',
+  SECONDARY: 'Secondary',
+  TERTIARY: 'Tertiary',
+};
+
 export const PRODUCTION_PLAN_STATUSES = [
   'DRAFT',
   'PLANNED',
@@ -271,9 +281,24 @@ export interface RequisitionListItem {
   shortfallAtRequest: string;
   requiredQuantity: string;
   triggerType: RequisitionTriggerType;
-  /** Present for MANUAL requisitions; the run the material is for. */
+  /** The run the material is for, when one was cited. */
   productionPlan: ProductionPlanSummary | null;
   preferredVendor: { id: string; name: string } | null;
+
+  /**
+   * What the material is for, and where it sits in the pack.
+   *
+   * All optional. A requisition for a bulk raw material answers none of these;
+   * one for a carton answers all of them. The two item references are the
+   * item master itself, not copies of it.
+   */
+  finishedProduct: ItemSummary | null;
+  packVariant: string | null;
+  packagingComponent: ItemSummary | null;
+  packagingLevel: PackagingLevel | null;
+  /** Per unit or batch of the finished product — the rate, not the buy figure. */
+  quantityPerUnit: string | null;
+  isMandatory: boolean;
   /** Null when the system raised it — an auto-reorder has no author. */
   requestedBy: string | null;
   approvedBy: string | null;
@@ -286,15 +311,53 @@ export interface RequisitionListItem {
   createdAt: string;
 }
 
+/**
+ * The manual requisition form's payload.
+ *
+ * `itemId` is the only required field. Everything else is either defaulted
+ * from the item master or genuinely optional — and every id here is resolved
+ * against existing master data by the API, which creates none of it.
+ *
+ * Note what is ABSENT: no `number`, no `status`, no `triggerType`, no
+ * `requestedById`, no stock figures. Those are the system's to set, and
+ * accepting them from a client would let a requisition claim a shortage that
+ * never existed or claim the system raised it.
+ */
 export interface CreateRequisitionRequest {
   itemId: string;
   /** Defaults to the item's reorder quantity when omitted. */
   requiredQuantity?: string;
-  /** Required by the API when the trigger is MANUAL. */
   productionPlanId?: string;
   preferredVendorId?: string;
   requiredByDate?: string;
   notes?: string;
+
+  finishedProductId?: string;
+  packVariant?: string;
+  packagingComponentId?: string;
+  packagingLevel?: PackagingLevel;
+  quantityPerUnit?: string;
+  isMandatory?: boolean;
+}
+
+/**
+ * Company-level Procure-to-Pay settings.
+ *
+ * One flag today. Returned as an object rather than a bare boolean so adding
+ * the second one does not break the endpoint's shape.
+ */
+export interface ProcurementSettings {
+  /**
+   * Whether the reorder check may raise requisitions by itself.
+   *
+   * Off, low stock is still detected and reported — it just does not create
+   * anything, and requisitions are raised by hand instead.
+   */
+  autoRequisitionEnabled: boolean;
+}
+
+export interface UpdateProcurementSettingsRequest {
+  autoRequisitionEnabled: boolean;
 }
 
 export interface UpdateRequisitionRequest {
@@ -306,10 +369,19 @@ export interface UpdateRequisitionRequest {
 
 /** Result of running the reorder check. */
 export interface ReorderCheckResult {
-  /** Requisitions the system raised on this run. */
+  /** Requisitions the system raised on this run. Empty when auto creation is off. */
   created: RequisitionListItem[];
-  /** Items below their level that already had one open, so were skipped. */
+  /**
+   * Items below their level that were not acted on, and why — already had one
+   * open, no reorder quantity configured, or auto creation switched off.
+   */
   skipped: { itemCode: string; itemName: string; reason: string }[];
+  /**
+   * Whether the company allows automatic creation. Reported back so the caller
+   * can say "nothing was raised because the switch is off" rather than leaving
+   * an empty result looking like a failure.
+   */
+  autoCreationEnabled: boolean;
   checkedAt: string;
 }
 
@@ -752,6 +824,7 @@ export interface ProcurementListQuery {
 
 /** Routes for the Procure-to-Pay sub-tabs, shared so links cannot drift. */
 export const PROCUREMENT_ROUTES = {
+  lowStock: '/workflows/procure-to-pay/low-stock',
   requisitions: '/workflows/procure-to-pay/requisitions',
   purchaseOrders: '/workflows/procure-to-pay/purchase-orders',
   goodsReceipts: '/workflows/procure-to-pay/goods-receipts',

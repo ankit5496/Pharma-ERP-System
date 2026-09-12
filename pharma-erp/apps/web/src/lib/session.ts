@@ -1,5 +1,6 @@
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
+import { cache } from 'react';
 import {
   AUTH_ROUTES,
   SESSION_COOKIE_NAME,
@@ -27,10 +28,19 @@ export async function getSessionToken(): Promise<string | null> {
   return store.get(SESSION_COOKIE_NAME)?.value ?? null;
 }
 
-/** Fetches the current user from the API, or null when not signed in. */
-export async function getSession(): Promise<ApiResult<SessionUser>> {
+/**
+ * Fetches the current user from the API, or null when not signed in.
+ *
+ * WRAPPED IN `cache()`, which deduplicates it for the duration of ONE server
+ * render. A layout and the page inside it both call `requireSession`, and
+ * without this that is two `/auth/me` calls per navigation — two API requests,
+ * two database round trips, and two connections held out of a pool that every
+ * other query on the page is also drawing from. It is not a cross-request
+ * cache: each new request still authenticates for itself.
+ */
+export const getSession = cache(async function getSession(): Promise<ApiResult<SessionUser>> {
   return apiFetch<SessionUser>('/api/v1/auth/me', { authenticated: true });
-}
+});
 
 /**
  * Session for a page that requires a fully signed-in user.

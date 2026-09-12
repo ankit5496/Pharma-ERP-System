@@ -27,6 +27,8 @@ import { StockService } from './stock.service';
 
 const REQUISITION_INCLUDE = {
   item: { select: ITEM_SELECT },
+  finishedProduct: { select: ITEM_SELECT },
+  packagingComponent: { select: ITEM_SELECT },
   preferredVendor: { select: { id: true, name: true } },
   productionPlan: { include: PRODUCTION_PLAN_INCLUDE },
   purchaseOrderLines: {
@@ -122,13 +124,21 @@ export class RequisitionsService {
   }
 
   /**
-   * Raises a requisition by hand — always MANUAL, always against a production
-   * plan.
+   * Raises a requisition by hand — always MANUAL, always OPEN, always
+   * attributed to the signed-in user.
    *
-   * The plan requirement is conditional on the trigger type and therefore
-   * lives here rather than in the DTO: a class-validator rule cannot say
-   * "required when this other field has this value" without a custom
-   * validator that would then need the same reasoning written twice.
+   * IT CREATES EXACTLY ONE ROW. Every other value the form collects is an id
+   * resolved against master data that already exists: the item, the finished
+   * product, the packaging component, the production plan, the vendor. None of
+   * them is created here, and each is looked up through `prisma.scoped` so a
+   * well-formed id belonging to another company resolves to nothing and is
+   * refused — isolation enforced in the service, not assumed from the UI.
+   *
+   * THE PRODUCTION PLAN IS OPTIONAL. It was once mandatory for a manual
+   * requisition. That is wrong in the ordinary case: a buyer restocking a
+   * material that a dozen runs consume has no single plan to name, and forcing
+   * the field only produced an arbitrary one. When a plan IS given it is still
+   * validated, and a cancelled or completed plan is still refused.
    */
   async create(dto: CreateRequisitionDto): Promise<RequisitionListItem> {
     const tenantId = this.tenantContext.requireTenantId();
@@ -153,17 +163,28 @@ export class RequisitionsService {
       );
     }
 
-    if (!dto.productionPlanId) {
-      throw new BadRequestException(
-        'A manually raised requisition must name the production plan it is for.',
-      );
+    if (dto.productionPlanId) {
+      await this.requireProductionPlan(dto.productionPlanId);
     }
-
-    await this.requireProductionPlan(dto.productionPlanId);
 
     if (dto.preferredVendorId) {
       await this.requireVendor(dto.preferredVendorId);
     }
+
+    // Both resolved through the tenant-scoped client, which is what stops a
+    // requisition citing another company's item master.
+    if (dto.finishedProductId) {
+      await this.requireItem(dto.finishedProductId, 'Finished product');
+    }
+
+    if (dto.packagingComponentId) {
+      await this.requireItem(dto.packagingComponentId, 'Packaging component');
+    }
+
+    const quantityPerUnit =
+      dto.quantityPerUnit === undefined || dto.quantityPerUnit === ''
+        ? null
+        : parsePositive(dto.quantityPerUnit, 'Quantity per unit');
 
     const stockAtRequest = await this.stock.usableStockForItem(dto.itemId);
 
@@ -179,12 +200,22 @@ export class RequisitionsService {
           reorderLevelAtRequest: item.reorderLevel ?? 0,
           requiredQuantity,
           triggerType: 'MANUAL',
-          productionPlanId: dto.productionPlanId,
+          productionPlanId: dto.productionPlanId ?? null,
           preferredVendorId: dto.preferredVendorId ?? null,
           requestedById,
           requiredByDate: dto.requiredByDate ? new Date(dto.requiredByDate) : null,
           status: 'OPEN',
           notes: dto.notes ?? null,
+
+          finishedProductId: dto.finishedProductId ?? null,
+          packVariant: dto.packVariant || null,
+          packagingComponentId: dto.packagingComponentId ?? null,
+          packagingLevel: dto.packagingLevel ?? null,
+          quantityPerUnit,
+          // Mandatory unless explicitly said otherwise: treating an
+          // unspecified component as optional invites it to be left off an
+          // order.
+          isMandatory: dto.isMandatory ?? true,
         },
         include: REQUISITION_INCLUDE,
       });
@@ -350,6 +381,22 @@ export class RequisitionsService {
     return row;
   }
 
+  /**
+   * Resolves an item id against the caller's own item master.
+   *
+   * Scoped, so an id that exists but belongs to another company comes back
+   * empty and is reported as not found — the same 404 either way, because
+   * distinguishing them would confirm the row exists somewhere.
+   */
+  private async requireItem(itemId: string, label: string): Promise<void> {
+    const item = await this.prisma.scoped.item.findFirst({
+      where: { id: itemId, deletedAt: null },
+      select: { id: true },
+    });
+
+    if (!item) throw new NotFoundException(`${label} not found.`);
+  }
+
   private async requireVendor(vendorId: string): Promise<void> {
     const vendor = await this.prisma.scoped.party.findFirst({
       where: { id: vendorId, deletedAt: null, partyType: 'VENDOR' },
@@ -386,6 +433,12 @@ export class RequisitionsService {
       triggerType: row.triggerType,
       productionPlan: row.productionPlan ? toProductionPlanSummary(row.productionPlan) : null,
       preferredVendor: row.preferredVendor,
+      finishedProduct: row.finishedProduct ? toItemSummary(row.finishedProduct) : null,
+      packVariant: row.packVariant,
+      packagingComponent: row.packagingComponent ? toItemSummary(row.packagingComponent) : null,
+      packagingLevel: row.packagingLevel,
+      quantityPerUnit: row.quantityPerUnit === null ? null : qty(row.quantityPerUnit),
+      isMandatory: row.isMandatory,
       // Null for an auto-reorder: the system raised it and the trail says so.
       requestedBy: row.requestedById ? (people.get(row.requestedById) ?? null) : null,
       approvedBy: row.approvedById ? (people.get(row.approvedById) ?? null) : null,
