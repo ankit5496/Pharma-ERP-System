@@ -1,4 +1,6 @@
-import type { ValidationPipeOptions } from '@nestjs/common';
+import { BadRequestException, type ValidationPipeOptions } from '@nestjs/common';
+
+import { toReadableMessages } from './validation-message';
 
 /**
  * Options for the global ValidationPipe.
@@ -45,4 +47,19 @@ export const VALIDATION_PIPE_OPTIONS: ValidationPipeOptions = {
    * shape out of it.
    */
   validationError: { target: false, value: false },
+
+  /**
+   * Rewrites the property names class-validator puts at the front of its
+   * default messages into the labels the forms use.
+   *
+   * Without this, a rejected form shows "hsnCode should not be empty. gstRate
+   * must be a number string." beside author-written sentences that begin with a
+   * capital — reported by QA as field names starting with a mix of capital and
+   * small letters, on every form, because this pipe is global.
+   *
+   * Here rather than in each DTO for the same reason the bug was everywhere:
+   * one pipe produces every validation message in the product. See
+   * ./validation-message for what it does and does not touch.
+   */
+  exceptionFactory: (errors) => new BadRequestException(toReadableMessages(errors)),
 };

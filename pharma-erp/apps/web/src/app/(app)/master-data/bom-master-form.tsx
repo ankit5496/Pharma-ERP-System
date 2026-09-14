@@ -60,6 +60,23 @@ export function BomMasterForm({
   const [productId, setProductId] = useState('');
   const [lineItems, setLineItems] = useState<Record<string, string>>({});
 
+  // Re-seed the pickers from what was submitted when a save is refused: React
+  // 19 resets the form, and a <select> does not re-read defaultValue on that
+  // reset the way an <input> does. See SelectField.
+  useEffect(() => {
+    const values = state.values;
+    if (!values) return;
+
+    setProductId(values.productId ?? '');
+
+    const next: Record<string, string> = {};
+    for (const [key, value] of Object.entries(values)) {
+      const match = /^(raw|pack)\.(\d+)\.itemId$/.exec(key);
+      if (match) next[`${match[1]}.${match[2]}`] = value;
+    }
+    setLineItems(next);
+  }, [state]);
+
   useEffect(() => {
     if (!state.ok) return;
 
@@ -101,7 +118,7 @@ export function BomMasterForm({
             label="Finished product"
             required
             options={toOptions(products)}
-            defaultValue={typed('productId')}
+            value={productId}
             placeholder="Choose a finished good…"
             onChange={setProductId}
             wide
@@ -158,7 +175,7 @@ export function BomMasterForm({
                 compact
                 required
                 options={rawOptions}
-                defaultValue={typed(`raw.${id}.itemId`)}
+                value={lineItems[`raw.${id}`] ?? ''}
                 placeholder="Choose a material…"
                 onChange={(value) => setLineItems((map) => ({ ...map, [`raw.${id}`]: value }))}
               />
@@ -207,7 +224,7 @@ export function BomMasterForm({
                     label="Material"
                     compact
                     options={packOptions}
-                    defaultValue={typed(`pack.${id}.itemId`)}
+                    value={lineItems[`pack.${id}`] ?? ''}
                     placeholder="Choose a material…"
                     onChange={(value) => setLineItems((map) => ({ ...map, [`pack.${id}`]: value }))}
                   />

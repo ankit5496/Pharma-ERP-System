@@ -38,6 +38,94 @@ export function isCustomerParty(type: PartyType): boolean {
   return type === 'CUSTOMER';
 }
 
+/**
+ * Dial codes offered beside the phone field.
+ *
+ * A phone number is stored in E.164 — "+919876543210" — and the country code
+ * is CHOSEN rather than typed. Two reasons: a bare "9876543210" is not a
+ * dialable number and gives the validator no country to check the length
+ * against, and a typed "+91" invites "0091", "91-", and "(+91)".
+ *
+ * Not an exhaustive list of the world's dial codes, and deliberately so: a
+ * two-hundred-entry dropdown is worse to use than a short one covering where
+ * this company actually trades. Adding a row is a one-line change.
+ */
+export const COUNTRY_DIAL_CODES = [
+  { dial: '+91', iso: 'IN', country: 'India' },
+  { dial: '+971', iso: 'AE', country: 'United Arab Emirates' },
+  { dial: '+1', iso: 'US', country: 'United States / Canada' },
+  { dial: '+44', iso: 'GB', country: 'United Kingdom' },
+  { dial: '+65', iso: 'SG', country: 'Singapore' },
+  { dial: '+61', iso: 'AU', country: 'Australia' },
+  { dial: '+49', iso: 'DE', country: 'Germany' },
+  { dial: '+33', iso: 'FR', country: 'France' },
+  { dial: '+880', iso: 'BD', country: 'Bangladesh' },
+  { dial: '+94', iso: 'LK', country: 'Sri Lanka' },
+  { dial: '+977', iso: 'NP', country: 'Nepal' },
+  { dial: '+234', iso: 'NG', country: 'Nigeria' },
+  { dial: '+254', iso: 'KE', country: 'Kenya' },
+  { dial: '+27', iso: 'ZA', country: 'South Africa' },
+] as const;
+
+/**
+ * "IN +91" — what the dropdown shows.
+ *
+ * The ISO code rather than a flag emoji, and rather than the full country
+ * name. Flag emoji were tried and are not an option on Windows: Chrome there
+ * has no flag glyphs, so it falls back to drawing the two regional-indicator
+ * letters the emoji is built from — "KE Kenya (+254)" rendered as "κε Kenya
+ * (+254)", which looks like a rendering fault rather than a flag.
+ *
+ * The full country name is left out because a native `<select>` shows the same
+ * text in the closed control as in the open list, and the closed control is
+ * where it has to fit beside the number. The ISO code carries the same
+ * information in two characters.
+ */
+export function dialCodeLabel(entry: (typeof COUNTRY_DIAL_CODES)[number]): string {
+  return `${entry.iso} ${entry.dial}`;
+}
+
+export const DEFAULT_DIAL_CODE = '+91';
+
+/**
+ * Splits a stored E.164 number back into the dial code and the national part,
+ * so an edit form can put each in its own control.
+ *
+ * Longest dial code first, because "+1" is a prefix of neither "+91" nor
+ * "+971" but "+9" would be — matching short-first would file a Dubai number
+ * under India.
+ */
+export function splitPhoneNumber(phone: string | null | undefined): {
+  dial: string;
+  national: string;
+} {
+  if (!phone) return { dial: DEFAULT_DIAL_CODE, national: '' };
+
+  const compact = phone.replace(/[^\d+]/g, '');
+
+  const match = [...COUNTRY_DIAL_CODES]
+    .sort((a, b) => b.dial.length - a.dial.length)
+    .find((entry) => compact.startsWith(entry.dial));
+
+  if (!match) return { dial: DEFAULT_DIAL_CODE, national: compact.replace(/^\+/, '') };
+
+  return { dial: match.dial, national: compact.slice(match.dial.length) };
+}
+
+/**
+ * Joins a chosen dial code and a typed national number into E.164.
+ *
+ * Returns null for a blank national number: a party with no phone is normal,
+ * and storing a lone "+91" would be storing a country rather than a number.
+ */
+export function joinPhoneNumber(dial: string, national: string): string | null {
+  const digits = national.replace(/\D/g, '');
+
+  if (!digits) return null;
+
+  return `${dial}${digits}`;
+}
+
 
 /**
  * What the create endpoint accepts.

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 
 import {
+  LICENCE_VISIBLE_TO,
   READ_ONLY_ROLES,
   ROLE_MODULES,
   USER_ROLE_LABELS,
@@ -8,11 +9,15 @@ import {
   type ActivityItem,
   type CompanyStats,
   type DashboardSection,
+  type LicenceAlert,
+  type PackagingShortageAlert,
   type StatWidget,
   type TenantDashboard,
   type UserRole,
 } from '@pharma-erp/types';
 
+import { LicencesService } from '../licences/licences.service';
+import { PackagingService } from '../packaging/packaging.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
@@ -73,6 +78,8 @@ export class DashboardService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
+    private readonly licences: LicencesService,
+    private readonly packaging: PackagingService,
   ) {}
 
   /**
@@ -108,9 +115,11 @@ export class DashboardService {
 
     const canSeeCompanyStats = role === 'ADMIN' || role === 'MANAGEMENT';
 
-    const [companyStats, recentActivity] = await Promise.all([
+    const [companyStats, recentActivity, licenceAlert, packagingShortages] = await Promise.all([
       canSeeCompanyStats ? this.companyStats(tenant?.createdAt ?? new Date()) : undefined,
       this.recentActivity(role),
+      this.licenceAlert(role),
+      this.packagingShortages(role),
     ]);
 
     return {
@@ -129,7 +138,51 @@ export class DashboardService {
       readOnly: READ_ONLY_ROLES.includes(role),
       recentActivity,
       ...(companyStats ? { companyStats } : {}),
+      ...(licenceAlert ? { licenceAlert } : {}),
+      ...(packagingShortages ? { packagingShortages } : {}),
     };
+  }
+
+  /**
+   * Planned batches that will not pack cleanly — US-MD-06's fourth criterion:
+   * "a packaging shortage must be visible on the Production/Purchase dashboard
+   * before the batch is due for packing".
+   *
+   * Offered to whoever can open EITHER module, read from the same ROLE_MODULES
+   * table the navigation uses. Purchase as well as Production because the
+   * person who can actually fix a packaging shortage is the buyer — telling
+   * only the packing line would be telling the people who cannot act on it.
+   *
+   * Returns undefined for a role with neither module, so the field is absent
+   * rather than an empty alert claiming all is well.
+   */
+  private async packagingShortages(role: UserRole): Promise<PackagingShortageAlert | undefined> {
+    const allowed = new Set(ROLE_MODULES[role]);
+
+    if (!allowed.has('production') && !allowed.has('purchase')) return undefined;
+
+    return this.packaging.shortageSweep();
+  }
+
+  /**
+   * The renewal warning — US-MD-04.
+   *
+   * Returns undefined rather than an empty alert for a role that may not see
+   * licences, so the field is ABSENT from the payload. That is the criterion's
+   * "only visible to Admin and Quality/Compliance" honoured at the point of
+   * serialisation: a Store Officer's dashboard never carries the records at
+   * all, rather than carrying them and trusting the page to hide them.
+   *
+   * An allowed role with nothing expiring gets an alert with an empty list.
+   * That is a different statement — "you may see this, and all is well" — and
+   * the page needs it to say so.
+   */
+  private async licenceAlert(role: UserRole): Promise<LicenceAlert | undefined> {
+    if (!LICENCE_VISIBLE_TO.includes(role as (typeof LICENCE_VISIBLE_TO)[number])) return undefined;
+
+    const { alertLeadDays, licences } = await this.licences.expiring();
+
+    return { leadDays: alertLeadDays, licences };
   }
 
   /** A role-appropriate framing, so the page does not greet everyone identically. */

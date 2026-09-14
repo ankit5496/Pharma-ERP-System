@@ -103,6 +103,16 @@ model Tenant {
   /// expects none. 2% is a conventional starting point, not a recommendation.
   invoiceTolerancePercent Decimal @default(2.00) @map("invoice_tolerance_percent") @db.Decimal(5, 2)
 
+  /// How many days before a licence expires the dashboard starts warning about
+  /// it (US-MD-04).
+  ///
+  /// A column rather than a constant because the criterion says "configurable",
+  /// and because the right number is a commercial decision like the tolerance
+  /// above: a state FDA that takes three months to renew a manufacturing
+  /// licence needs more warning than a GST registration renewed online in a
+  /// day. 60 is the specified default, not a recommendation.
+  licenceAlertLeadDays Int @default(60) @map("licence_alert_lead_days")
+
   /// Whether the reorder check may raise requisitions by itself.
   ///
   /// TRUE BY DEFAULT, which is the behaviour every tenant had before the
@@ -122,8 +132,17 @@ model Tenant {
   auditLogs AuditLog[]
 
   // Master data, shared by both flows.
-  items   Item[]
-  parties Party[]
+  items    Item[]
+  parties  Party[]
+  licences Licence[]
+
+  // Job-work: manufacturing under a principal's brand.
+  jobWorkAgreements      JobWorkAgreement[]
+  jobWorkProductMappings JobWorkProductMapping[]
+
+  // Packaging: what each pack presentation consumes.
+  packagingRequirements     PackagingRequirement[]
+  packagingRequirementLines PackagingRequirementLine[]
 
   // Procure-to-Pay. Every one of these tables carries `tenantId` with a real
   // foreign key, so a row cannot reference a company that does not exist. The
@@ -773,6 +792,67 @@ enum ScheduleClassification {
   G
 }
 
+/// What a component's stated quantity is counted against (US-MD-06).
+///
+/// PER_PACK scales with the number of packs a batch yields — cartons, foil,
+/// labels. PER_BATCH does NOT scale: one batch record insert is one whether the
+/// batch is ten thousand tablets or a million.
+enum PackagingQuantityBasis {
+  PER_PACK
+  PER_BATCH
+}
+
+/// Whether packing may proceed without this component (US-MD-06).
+///
+/// The field that does the real work in the shortage check. Short of a carton,
+/// the line stops; short of an outer shipper, it can usually run and be shipped
+/// later. Recording which is which is what lets the system block one and merely
+/// warn on the other.
+enum PackagingComponentRequirement {
+  MANDATORY
+  OPTIONAL
+}
+
+/// How a job-work principal is billed (US-MD-05).
+///
+/// The most consequential field on an agreement: it decides whose material is
+/// consumed and what the invoice is raised on. Under OWN_PROCUREMENT we buy the
+/// materials and bill the finished goods; under PURE_CONVERSION the principal
+/// supplies the materials and we bill only the conversion.
+///
+/// Mandatory on the agreement, and — once the Production module carries it —
+/// frozen on any order that has left PLANNED. See the note on
+/// JobWorkAgreement.billingModel.
+enum BillingModel {
+  OWN_PROCUREMENT
+  PURE_CONVERSION
+}
+
+/// What a conversion charge is charged per.
+///
+/// Stored beside the rate because a rate without a basis is a number nobody can
+/// interpret six months later — "₹4.50" is meaningless until you know whether
+/// that is per pack or per thousand units.
+enum ConversionRateBasis {
+  PER_BATCH
+  PER_1000_UNITS
+  PER_PACK
+  PER_KG
+}
+
+/// The statutory permissions a manufacturer holds, each with its own issuing
+/// authority and renewal cycle (US-MD-04).
+///
+/// Kept deliberately short — these three are what the register was specified
+/// with. Adding a value is a one-line migration, and inventing categories
+/// nobody asked for would put empty dropdown entries in front of whoever files
+/// the paperwork.
+enum LicenceType {
+  MANUFACTURING
+  GST_REGISTRATION
+  NARCOTICS
+}
+
 
 /// Lifecycle of a purchase requisition.
 ///
@@ -799,6 +879,14 @@ enum RequisitionStatus {
 ///
 /// An enum rather than a master table — the three levels are a property of
 /// packaging itself, not something a company configures.
+///
+/// The distinction is regulatory as much as practical: primary packaging
+/// touches the medicine and is part of the product's stability data, so
+/// substituting it is a change control. A shipper is not.
+///
+/// Shared by two models that arrived independently — PurchaseRequisition
+/// (Procure-to-Pay) and PackagingRequirementLine (US-MD-06). One definition,
+/// because they mean the same thing and the database has one type.
 enum PackagingLevel {
   PRIMARY
   SECONDARY
@@ -978,9 +1066,14 @@ model Item {
   bomLines        BomLine[]
   productionPlans ProductionPlan[]
 
-  requisitions                 PurchaseRequisition[] @relation("RequisitionItem")
-  requisitionsAsFinishedGood   PurchaseRequisition[] @relation("RequisitionFinishedProduct")
-  requisitionsAsPackComponent  PurchaseRequisition[] @relation("RequisitionPackagingComponent")
+  /// As the finished good being packed, and as a component consumed by a pack.
+  /// Two relations to one model, so both need names.
+  packagingRequirements     PackagingRequirement[]     @relation("PackagingRequirementProduct")
+  packagingRequirementLines PackagingRequirementLine[] @relation("PackagingRequirementComponent")
+
+  requisitions                PurchaseRequisition[] @relation("RequisitionItem")
+  requisitionsAsFinishedGood  PurchaseRequisition[] @relation("RequisitionFinishedProduct")
+  requisitionsAsPackComponent PurchaseRequisition[] @relation("RequisitionPackagingComponent")
 
   purchaseOrderLines PurchaseOrderLine[]
   goodsReceiptLines  GoodsReceiptLine[]
@@ -1039,6 +1132,8 @@ model Bom {
   lines           BomLine[]
   productionPlans ProductionPlan[]
   productionOrders ProductionOrder[]
+  /// The principals whose brands this formulation is made under.
+  jobWorkMappings  JobWorkProductMapping[]
 
   @@unique([tenantId, productId, version])
   @@index([tenantId, deletedAt])
@@ -1104,11 +1199,290 @@ model Party {
   purchaseOrders           PurchaseOrder[]
   goodsReceipts            GoodsReceipt[]
   purchaseInvoices         PurchaseInvoice[]
+  /// Set only on a JOB_WORK_PRINCIPAL; see JobWorkAgreement.principalId.
+  jobWorkAgreements        JobWorkAgreement[]
 
   @@unique([tenantId, code])
   @@index([tenantId, partyType, deletedAt])
   @@index([tenantId, drugLicenceValidTo])
   @@map("parties")
+}
+
+// -----------------------------------------------------------------------------
+// Licence — the company's own statutory permissions (US-MD-04)
+// -----------------------------------------------------------------------------
+
+/// One licence held by this company, with the date it lapses.
+///
+/// Not to be confused with `Party.drugLicenceNumber`, which is somebody else's
+/// licence recorded on their party record. This table is the company's own
+/// paperwork: the manufacturing licence that makes production lawful at all.
+///
+/// The expiry date is the entire point. An expired manufacturing licence does
+/// not stop the line by itself, so the system has to be the thing that notices,
+/// and it can only notice a date it has been told — hence
+/// `Tenant.licenceAlertLeadDays` and the dashboard section that reads it.
+///
+/// VISIBILITY: Admin and Quality Officer only, enforced by `@Roles(...)` on the
+/// licences controller rather than by row-level security. RLS here isolates one
+/// tenant from another; it knows nothing about application roles, and the two
+/// concerns are kept in the layers that can actually express them.
+model Licence {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  licenceType LicenceType @map("licence_type")
+
+  /// As printed on the certificate, e.g. "25/MH/2021/000456". Quoted on
+  /// invoices and batch records, so it is stored exactly as issued.
+  licenceNumber String @map("licence_number") @db.VarChar(64)
+
+  /// Who issued it — "Food and Drug Administration, Maharashtra". Needed
+  /// because renewal goes back to the same office.
+  issuingAuthority String @map("issuing_authority") @db.VarChar(255)
+
+  /// Dates, not timestamps: a licence is valid for a day in the issuing
+  /// authority's calendar, and storing an instant would make validity depend on
+  /// the reader's timezone.
+  issuedOn   DateTime? @map("issued_on") @db.Date
+  expiryDate DateTime  @map("expiry_date") @db.Date
+
+  notes String? @db.VarChar(1000)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  /// Soft delete. A licence that covered a batch made last year is part of that
+  /// batch's compliance record and survives being retired from the register.
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+
+  /// One live record per licence number of a given type. Renewals replace the
+  /// expiry date on the existing row rather than accumulating near-duplicates
+  /// nobody can tell apart.
+  @@unique([tenantId, licenceType, licenceNumber])
+  /// Drives the expiry sweep: whose licence lapses next.
+  @@index([tenantId, expiryDate, deletedAt])
+  @@map("licences")
+}
+
+// -----------------------------------------------------------------------------
+// Job-work — manufacturing under somebody else's brand (US-MD-05)
+// -----------------------------------------------------------------------------
+
+/// The commercial terms under which this company manufactures for a principal.
+///
+/// A principal is a brand owner you manufacture for: the same physical product
+/// leaves the line carrying THEIR brand name and THEIR pack design, not yours.
+/// The mappings below are what keep those two identities attached to one
+/// formulation without duplicating it.
+model JobWorkAgreement {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// The brand owner, from the Party register. Constrained to a party of type
+  /// JOB_WORK_PRINCIPAL by the service rather than by SQL: a CHECK cannot read
+  /// another table, and a trigger that did would fire on every write to
+  /// `parties` as well.
+  principalId String @map("principal_id") @db.Uuid
+
+  /// The parties' own reference for the contract, e.g. "JW-2026-018". Optional
+  /// because a verbal arrangement still has to be recordable, but unique per
+  /// company when given — two agreements under one reference is how the wrong
+  /// terms get quoted.
+  agreementReference String? @map("agreement_reference") @db.VarChar(64)
+
+  /// US-MD-05: "The billing model is a mandatory field on the agreement."
+  /// NOT NULL is that criterion, in the only place that can guarantee it.
+  ///
+  /// The criterion's second half — "cannot be changed on an order that is
+  /// already in production" — is NOT enforced yet, because production orders
+  /// do not carry an agreement. When the Production module is built, a work
+  /// order raised under an agreement must COPY this value at creation (the way
+  /// ProductionOrder.bomId is already pinned) and refuse to change it once the
+  /// order leaves PLANNED. Renegotiating terms next month must not silently
+  /// rewrite what last month's batch was billed on.
+  billingModel BillingModel @map("billing_model")
+
+  /// Charged on conversion and packing, not on the value of the goods. Held
+  /// with its basis; see the CHECK that keeps the two together.
+  conversionChargeRate Decimal?             @map("conversion_charge_rate") @db.Decimal(12, 2)
+  conversionRateBasis  ConversionRateBasis? @map("conversion_rate_basis")
+
+  /// Dates, not timestamps: a contract runs for calendar days, and storing an
+  /// instant would make "in force today" depend on the reader's timezone.
+  validFrom DateTime? @map("valid_from") @db.Date
+  validTo   DateTime? @map("valid_to") @db.Date
+
+  notes String? @db.VarChar(1000)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  /// Soft delete. An agreement that governed a batch made last year is part of
+  /// that batch's commercial record.
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  principal Party  @relation(fields: [principalId], references: [id], onDelete: Restrict)
+
+  mappings JobWorkProductMapping[]
+
+  @@index([tenantId, principalId, deletedAt])
+  @@index([tenantId, validTo])
+  @@map("job_work_agreements")
+}
+
+/// One of our formulations, as the principal knows it (US-MD-05).
+///
+/// The criterion: "The product-brand mapping must link one or more of the
+/// company's BOMs to the principal's specific brand name and pack design."
+///
+/// The link is to a BOM rather than to an Item on purpose. A BOM is a specific
+/// version of a specific formulation, and what the principal is buying is that
+/// recipe — not merely the product code, which survives a reformulation.
+///
+/// "One or more" is enforced by the service inside the creating transaction,
+/// not in SQL: a CHECK constraint cannot count rows in another table, and the
+/// same rule already lives in the service for BOM lines.
+model JobWorkProductMapping {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  agreementId String @map("agreement_id") @db.Uuid
+  bomId       String @map("bom_id") @db.Uuid
+
+  /// What the carton says. This is the name the product is sold under, and it
+  /// is the principal's property, not ours.
+  principalBrandName String @map("principal_brand_name") @db.VarChar(255)
+
+  /// The artwork reference the pack is printed to, e.g. "ART-DOLO-500-10x10".
+  /// Optional: the mapping is still useful before artwork is finalised.
+  packDesignRef String? @map("pack_design_ref") @db.VarChar(64)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant    Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  agreement JobWorkAgreement @relation(fields: [agreementId], references: [id], onDelete: Cascade)
+  bom       Bom              @relation(fields: [bomId], references: [id], onDelete: Restrict)
+
+  /// One line per formulation per agreement. The same recipe billed two ways
+  /// in one contract is a contradiction, not a case to support.
+  @@unique([agreementId, bomId])
+  @@index([tenantId, bomId])
+  @@map("job_work_product_mappings")
+}
+
+// -----------------------------------------------------------------------------
+// Packaging requirements — what a pack consumes (US-MD-06)
+// -----------------------------------------------------------------------------
+
+/// The component list for one product in one pack presentation.
+///
+/// Held per PACK VARIANT, not per product: the same tablet in a 10x10 blister
+/// carton and in a 500-count jar needs a completely different component list,
+/// and folding them into one record makes every shortage check ambiguous.
+///
+/// This is the packaging counterpart of Bom — Bom says what the product is made
+/// OF, this says what it is packed IN. The two are deliberately separate
+/// records: a formulation change is a regulatory event, a carton artwork change
+/// usually is not, and versioning them together would drag one through the
+/// other's approval.
+///
+/// US-MD-06's first criterion — "a finished product cannot go into a Work Order
+/// until it has at least one active Packaging Requirement Master entry" — reads
+/// `isActive` here, and is enforced in ProductionService.createProductionOrder
+/// beside the identical active-BOM check that US-MD-03 put there.
+model PackagingRequirement {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// The finished good being packed. An Item of type FINISHED_GOOD, checked by
+  /// the service — a CHECK constraint cannot read another table.
+  productId String @map("product_id") @db.Uuid
+
+  /// The presentation, e.g. "10 x 10 blister carton". Matched against
+  /// ProductionPlan.packVariant when the shortage sweep runs.
+  packVariant String @map("pack_variant") @db.VarChar(128)
+
+  /// How many units of the product one pack holds — 100 for a 10x10 carton.
+  ///
+  /// Not in the original field list, and required: without it a PER_PACK
+  /// quantity cannot be scaled to a batch at all. A batch of 100,000 tablets
+  /// needs 1,000 cartons only if something records that a carton holds 100.
+  unitsPerPack Decimal @map("units_per_pack") @db.Decimal(14, 3)
+
+  /// US-MD-06's gate. Deactivating is how a superseded pack stops blocking
+  /// work orders without destroying the record of how it used to be packed.
+  isActive Boolean @default(true) @map("is_active")
+
+  notes String? @db.VarChar(1000)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  /// Soft delete. The specification a batch was packed to is part of that
+  /// batch's record.
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant  Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  product Item   @relation("PackagingRequirementProduct", fields: [productId], references: [id], onDelete: Restrict)
+
+  lines PackagingRequirementLine[]
+
+  /// Drives the AC1 gate and the shortage sweep: has this product an active
+  /// pack spec, and which one matches the plan's variant.
+  ///
+  /// Named explicitly because Prisma's generated name for four columns is
+  /// truncated to something different from what the migration created, and the
+  /// migration is already applied on the hosted database with its checksum
+  /// recorded — editing it there would fail the next deploy. The schema states
+  /// the name that exists.
+  @@index([tenantId, productId, isActive, deletedAt], map: "packaging_requirements_tenant_id_product_id_is_active_idx")
+  @@map("packaging_requirements")
+}
+
+/// One component a pack consumes.
+///
+/// No `deletedAt` and no no-hard-delete trigger: a line belongs to its pack
+/// specification and cascades from it, exactly as BomLine does. Blocking DELETE
+/// here would block editing the specification.
+model PackagingRequirementLine {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  requirementId String @map("requirement_id") @db.Uuid
+
+  /// The packing material. An Item of type PACKING_MATERIAL — checked by the
+  /// service, so a raw material cannot be listed as a carton.
+  itemId String @map("item_id") @db.Uuid
+
+  level PackagingLevel
+
+  /// Counted against `quantityBasis`. Decimal(14,3) to match BomLine, because
+  /// these quantities are scaled by the same arithmetic and a narrower type
+  /// here would round differently from the formulation beside it.
+  quantityPer   Decimal                @map("quantity_per") @db.Decimal(14, 3)
+  quantityBasis PackagingQuantityBasis @map("quantity_basis")
+
+  /// Whether a shortage blocks packing or merely warns.
+  requirement PackagingComponentRequirement @default(MANDATORY)
+
+  notes String? @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant      Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  packaging   PackagingRequirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  item        Item                 @relation("PackagingRequirementComponent", fields: [itemId], references: [id], onDelete: Restrict)
+
+  /// One line per component per specification. The same carton listed twice
+  /// with different quantities is a contradiction, not a case to support.
+  @@unique([requirementId, itemId])
+  /// Answers the reverse question the shortage sweep asks: which pack specs
+  /// consume this component?
+  @@index([tenantId, itemId])
+  @@map("packaging_requirement_lines")
 }
 
 /// Per-tenant document numbering (PR-2026-0001, PO-2026-0001, ...).

@@ -1,5 +1,14 @@
 import type { Metadata } from 'next';
-import type { StatWidget, TenantDashboard } from '@pharma-erp/types';
+import Link from 'next/link';
+import {
+  LICENCE_TYPE_LABELS,
+  masterDataHref,
+  PACKAGING_RISK_LABELS,
+  type LicenceAlert,
+  type PackagingShortageAlert,
+  type StatWidget,
+  type TenantDashboard,
+} from '@pharma-erp/types';
 
 import { AppShell } from '@/components/app-shell';
 import { apiFetch } from '@/lib/api';
@@ -49,6 +58,19 @@ function DashboardContent({ data }: { data: TenantDashboard }) {
           {data.company.timezone}
         </p>
       </header>
+
+      {/* Above everything else on purpose. An expired manufacturing licence is
+          a stop-work condition, not a statistic, and a warning further down the
+          page is a warning somebody scrolls past. Present only for the roles
+          allowed to see licence records — US-MD-04. */}
+      {data.licenceAlert && <LicenceAlertPanel alert={data.licenceAlert} />}
+
+      {/* US-MD-06: a packaging shortage must be visible BEFORE the batch is due
+          for packing. Directly under the licence warning and above everything
+          else, because both are things that stop work rather than describe it. */}
+      {data.packagingShortages && data.packagingShortages.plans.length > 0 && (
+        <PackagingShortagePanel alert={data.packagingShortages} />
+      )}
 
       {/* The identity panel: who you are, what company, what you can do. Stated
           explicitly because in a multi-tenant system acting in the wrong company
@@ -151,6 +173,239 @@ function DashboardContent({ data }: { data: TenantDashboard }) {
         )}
       </section>
     </>
+  );
+}
+
+/**
+ * The licence renewal warning — US-MD-04's "dashboard alert".
+ *
+ * Three states, and each says something different:
+ *
+ *   nothing expiring — a quiet line confirming the check ran. Silence would be
+ *       indistinguishable from the feature being broken, which is the failure
+ *       mode that matters for a compliance alert.
+ *   expiring — amber, with the days remaining.
+ *   already expired — red, listed first, and phrased as a fact rather than a
+ *       countdown. Production on a lapsed licence is not a scheduling problem.
+ *
+ * `leadDays` is shown because it explains WHY a licence is on the list, and
+ * because someone surprised by the cutoff can then go and change it.
+ */
+function LicenceAlertPanel({ alert }: { alert: LicenceAlert }) {
+  const expired = alert.licences.filter((licence) => licence.status === 'EXPIRED');
+  const expiring = alert.licences.filter((licence) => licence.status === 'EXPIRING');
+
+  if (alert.licences.length === 0) {
+    return (
+      <section
+        aria-labelledby="licence-alert"
+        className="mb-8 rounded-lg border border-slate-200 bg-white px-6 py-4 shadow-sm"
+      >
+        <h2 id="licence-alert" className="text-sm font-semibold text-slate-900">
+          Licences
+        </h2>
+        <p className="mt-1 text-sm text-slate-600">
+          Nothing expires within {alert.leadDays} days.{' '}
+          <Link
+            href={masterDataHref('licence-compliance')}
+            className="font-medium text-slate-900 underline underline-offset-2 hover:text-slate-700"
+          >
+            Open the register
+          </Link>
+        </p>
+      </section>
+    );
+  }
+
+  const critical = expired.length > 0;
+
+  return (
+    <section
+      aria-labelledby="licence-alert"
+      className={`mb-8 rounded-lg border shadow-sm ${
+        critical ? 'border-red-300 bg-red-50' : 'border-amber-300 bg-amber-50'
+      }`}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3 px-6 py-4">
+        <div>
+          <h2
+            id="licence-alert"
+            className={`text-sm font-semibold ${critical ? 'text-red-900' : 'text-amber-900'}`}
+          >
+            {critical
+              ? `${expired.length} ${expired.length === 1 ? 'licence has' : 'licences have'} expired`
+              : `${expiring.length} ${expiring.length === 1 ? 'licence expires' : 'licences expire'} soon`}
+          </h2>
+          <p className={`mt-1 text-sm ${critical ? 'text-red-800' : 'text-amber-800'}`}>
+            {critical && expiring.length > 0 && `${expiring.length} more within `}
+            {!critical && 'Within '}
+            {(critical && expiring.length > 0) || !critical ? `${alert.leadDays} days. ` : ''}
+            Renewing means changing the expiry date on the existing record.
+          </p>
+        </div>
+
+        <Link
+          href={masterDataHref('licence-compliance')}
+          className={`whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition ${
+            critical ? 'bg-red-700 hover:bg-red-800' : 'bg-amber-700 hover:bg-amber-800'
+          }`}
+        >
+          Open the register
+        </Link>
+      </div>
+
+      <ul
+        className={`divide-y border-t ${
+          critical ? 'divide-red-200 border-red-200' : 'divide-amber-200 border-amber-200'
+        }`}
+      >
+        {/* Expired first: they are the ones that have already stopped being a
+            deadline and started being a problem. */}
+        {[...expired, ...expiring].map((licence) => (
+          <li
+            key={licence.id}
+            className="flex flex-wrap items-baseline justify-between gap-2 px-6 py-2.5 text-sm"
+          >
+            <span className="font-medium text-slate-900">
+              {LICENCE_TYPE_LABELS[licence.licenceType]}{' '}
+              <span className="font-mono text-xs text-slate-600">{licence.licenceNumber}</span>
+            </span>
+            <span
+              className={
+                licence.status === 'EXPIRED'
+                  ? 'text-xs font-semibold text-red-800'
+                  : 'text-xs font-semibold text-amber-900'
+              }
+            >
+              {licence.status === 'EXPIRED'
+                ? `expired ${licence.expiryDate}`
+                : `${licence.daysUntilExpiry} ${
+                    licence.daysUntilExpiry === 1 ? 'day' : 'days'
+                  } left · ${licence.expiryDate}`}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * Planned batches that will not pack cleanly — US-MD-06's fourth criterion.
+ *
+ * Rendered only when there is something to say. Unlike the licence panel, there
+ * is no quiet "all clear" line: a company with no open plans would get one
+ * every day, and a panel that is always present is one nobody reads.
+ *
+ * Each row leads with the days remaining, because that is the number that
+ * decides whether this is today's problem or next month's. The short
+ * components are named underneath — a buyer cannot act on "packaging short",
+ * only on "400 cartons".
+ */
+function PackagingShortagePanel({ alert }: { alert: PackagingShortageAlert }) {
+  const critical = alert.blockedCount > 0;
+
+  return (
+    <section
+      aria-labelledby="packaging-shortages"
+      className={`mb-8 rounded-lg border shadow-sm ${
+        critical ? 'border-red-300 bg-red-50' : 'border-amber-300 bg-amber-50'
+      }`}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3 px-6 py-4">
+        <div>
+          <h2
+            id="packaging-shortages"
+            className={`text-sm font-semibold ${critical ? 'text-red-900' : 'text-amber-900'}`}
+          >
+            {critical
+              ? `${alert.blockedCount} planned ${
+                  alert.blockedCount === 1 ? 'batch cannot' : 'batches cannot'
+                } be packed`
+              : `${alert.plans.length} planned ${
+                  alert.plans.length === 1 ? 'batch is' : 'batches are'
+                } partly short of packaging`}
+          </h2>
+          <p className={`mt-1 text-sm ${critical ? 'text-red-800' : 'text-amber-800'}`}>
+            Found before the batch is due, not on the packing line.
+          </p>
+        </div>
+
+        <Link
+          href={masterDataHref('packaging-requirement')}
+          className={`whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition ${
+            critical ? 'bg-red-700 hover:bg-red-800' : 'bg-amber-700 hover:bg-amber-800'
+          }`}
+        >
+          Pack specifications
+        </Link>
+      </div>
+
+      <ul
+        className={`divide-y border-t ${
+          critical ? 'divide-red-200 border-red-200' : 'divide-amber-200 border-amber-200'
+        }`}
+      >
+        {alert.plans.map((plan) => (
+          <li key={plan.planId} className="px-6 py-3">
+            <div className="flex flex-wrap items-baseline justify-between gap-2">
+              <span className="text-sm font-medium text-slate-900">
+                {plan.productCode} <span className="font-normal">{plan.productName}</span>
+                {plan.packVariant && (
+                  <span className="ml-1.5 text-xs text-slate-600">· {plan.packVariant}</span>
+                )}
+                <span className="ml-1.5 font-mono text-[11px] text-slate-500">
+                  {plan.planNumber}
+                </span>
+              </span>
+              <span
+                className={`text-xs font-semibold ${
+                  plan.risk === 'SHORT_OPTIONAL' ? 'text-amber-900' : 'text-red-800'
+                }`}
+              >
+                {PACKAGING_RISK_LABELS[plan.risk]}
+                {plan.daysUntilPacking === null
+                  ? ' · no date set'
+                  : plan.daysUntilPacking < 0
+                    ? ` · due ${Math.abs(plan.daysUntilPacking)}d ago`
+                    : ` · due in ${plan.daysUntilPacking}d`}
+              </span>
+            </div>
+
+            {plan.shortComponents.length > 0 ? (
+              <ul className="mt-1.5 flex flex-col gap-0.5">
+                {plan.shortComponents.map((component) => (
+                  <li
+                    key={component.itemCode}
+                    className="flex flex-wrap items-baseline gap-1.5 text-xs text-slate-700"
+                  >
+                    <span className="font-mono text-[11px] text-slate-600">
+                      {component.itemCode}
+                    </span>
+                    <span className="font-semibold tabular-nums">
+                      short {component.quantityShort} {component.uom}
+                    </span>
+                    <span className="text-slate-500">
+                      (need {component.quantityRequired}, have {component.quantityAvailable})
+                    </span>
+                    {component.requirement === 'MANDATORY' && (
+                      <span className="font-semibold uppercase tracking-wide text-red-700">
+                        blocks
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-1.5 text-xs text-slate-700">
+                This product has no active pack specification, so no work order can be raised for
+                it.
+              </p>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

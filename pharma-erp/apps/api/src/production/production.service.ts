@@ -13,6 +13,7 @@ import type {
   ProductionOrderSummary,
 } from '@pharma-erp/types';
 
+import { PackagingService } from '../packaging/packaging.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
@@ -37,6 +38,8 @@ export class ProductionService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
+    /** US-MD-06's work-order gate; see createProductionOrder. */
+    private readonly packaging: PackagingService,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -457,6 +460,24 @@ export class ProductionService {
     if (bom.lines.length === 0) {
       throw new BadRequestException(
         `Formulation version ${bom.version} has no materials, so nothing could be issued.`,
+      );
+    }
+
+    // US-MD-06: "A finished product cannot go into a Work Order until it has at
+    // least one active Packaging Requirement Master entry."
+    //
+    // Deliberately beside the active-BOM check above, which is US-MD-03's
+    // identical rule: a product needs both a recipe and a pack before anyone
+    // starts making it. Asked as a question of PackagingService so this method
+    // does not need to know how packaging records are shaped.
+    //
+    // Checked BEFORE the transaction opens — refusing costs one read, and there
+    // is no reason to hold a connection to find out the answer is no.
+    if (!(await this.packaging.hasActiveRequirement(dto.productId))) {
+      throw new BadRequestException(
+        'That product has no active packaging requirement. Add one under Packaging Requirement ' +
+          'before raising a work order — the batch would reach the packing line with no pack ' +
+          'specification to work to.',
       );
     }
 
