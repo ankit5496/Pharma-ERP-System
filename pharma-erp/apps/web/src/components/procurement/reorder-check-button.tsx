@@ -14,6 +14,10 @@ import { ActionMessage, SubmitButton, useAction } from './form-kit';
  * Idempotent: an item that already has an open or approved requisition is
  * skipped, so pressing it twice raises nothing the second time. That property
  * is what makes it safe to expose as a button at all.
+ *
+ * It respects Auto Creation. With the switch off the API raises nothing and
+ * says so, and the caller passes a pending count of zero, so the button reads
+ * as a check rather than promising to create something it will not.
  */
 export function ReorderCheckButton({ pendingCount }: { pendingCount: number }) {
   const [state, action] = useAction(runReorderCheckAction);

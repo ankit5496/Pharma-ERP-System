@@ -8,11 +8,14 @@ import { TenantContextService } from '../tenant/tenant-context.service';
 
 import { ZERO, qty } from './decimal.util';
 import { NumberingService } from './numbering.service';
+import { SettingsService } from './settings.service';
 
 /** What one pass of the reorder check did. */
 export interface ReorderOutcome {
   createdIds: string[];
   skipped: { itemCode: string; itemName: string; reason: string }[];
+  /** False when the company has automatic creation switched off. */
+  autoCreationEnabled: boolean;
 }
 
 /**
@@ -35,6 +38,14 @@ export interface ReorderOutcome {
  * APPROVED requisition is skipped, so running the check twice in a row creates
  * nothing the second time. Without that, every stock movement below the level
  * would raise another duplicate.
+ *
+ * AUTO CREATION CAN BE SWITCHED OFF, per company. When it is, this still runs
+ * and still reports every item it would have raised — knowing a material is
+ * short is useful whether or not the system may act on it — but it writes
+ * nothing, and requisitions are raised by hand on the form instead. The check
+ * is made HERE rather than at the controller so that every path into the
+ * reorder logic honours it, including the one that fires automatically after a
+ * stock movement.
  */
 @Injectable()
 export class ReorderService {
@@ -45,6 +56,7 @@ export class ReorderService {
     private readonly tenantContext: TenantContextService,
     private readonly audit: AuditService,
     private readonly numbering: NumberingService,
+    private readonly settings: SettingsService,
   ) {}
 
   /**
@@ -57,6 +69,7 @@ export class ReorderService {
    */
   async run(): Promise<ReorderOutcome> {
     const tenantId = this.tenantContext.requireTenantId();
+    const autoCreationEnabled = await this.settings.autoCreationEnabled();
 
     const outcome = await this.prisma.transaction(async (tx) => {
       const items = await tx.item.findMany({
@@ -71,7 +84,7 @@ export class ReorderService {
         orderBy: { code: 'asc' },
       });
 
-      if (items.length === 0) return { createdIds: [], skipped: [] };
+      if (items.length === 0) return { createdIds: [] as string[], skipped: [] };
 
       const itemIds = items.map((item) => item.id);
 
@@ -115,6 +128,11 @@ export class ReorderService {
 
         const existing = openByItem.get(item.id);
 
+        // THE DUPLICATE GUARD. An item whose previous requisition is still
+        // unresolved — OPEN or APPROVED — is reported, not raised again.
+        // Without this, an item that stays below its level would collect a new
+        // requisition on every stock movement, and the buyer would be chasing
+        // a queue of identical documents for one shortage.
         if (existing) {
           skipped.push({
             itemCode: item.code,
@@ -134,6 +152,21 @@ export class ReorderService {
             itemCode: item.code,
             itemName: item.name,
             reason: 'Below reorder level but no reorder quantity is configured.',
+          });
+          continue;
+        }
+
+        // Switched off: report what would have been raised and move on. This
+        // sits AFTER the duplicate and reorder-quantity checks on purpose, so
+        // the report reads the same whichever way the switch is set — the only
+        // difference is that nothing is written.
+        if (!autoCreationEnabled) {
+          skipped.push({
+            itemCode: item.code,
+            itemName: item.name,
+            reason:
+              `Below reorder level by ${qty(level.minus(available))}, but automatic ` +
+              'creation is switched off. Raise a requisition on the form.',
           });
           continue;
         }
@@ -185,6 +218,6 @@ export class ReorderService {
       });
     }
 
-    return outcome;
+    return { ...outcome, autoCreationEnabled };
   }
 }

@@ -113,6 +113,15 @@ model Tenant {
   /// day. 60 is the specified default, not a recommendation.
   licenceAlertLeadDays Int @default(60) @map("licence_alert_lead_days")
 
+  /// Whether the reorder check may raise requisitions by itself.
+  ///
+  /// TRUE BY DEFAULT, which is the behaviour every tenant had before the
+  /// switch existed. Turned off, the check still reports what it would have
+  /// raised — knowing an item is short is useful whether or not the system is
+  /// allowed to act on it — but creates nothing, and requisitions are raised
+  /// by hand instead.
+  autoRequisitionEnabled Boolean @default(true) @map("auto_requisition_enabled")
+
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   /// Soft delete. A tenant is never physically removed — its records are
@@ -783,17 +792,6 @@ enum ScheduleClassification {
   G
 }
 
-/// Where a packaging component sits relative to the product (US-MD-06).
-///
-/// The distinction is regulatory as much as practical: primary packaging
-/// touches the medicine and is part of the product's stability data, so
-/// substituting it is a change control. A shipper is not.
-enum PackagingLevel {
-  PRIMARY
-  SECONDARY
-  TERTIARY
-}
-
 /// What a component's stated quantity is counted against (US-MD-06).
 ///
 /// PER_PACK scales with the number of packs a batch yields — cartons, foil,
@@ -876,6 +874,25 @@ enum RequisitionStatus {
 /// plan. The distinction is worth storing rather than inferring from whether
 /// `requestedById` is null: it decides which fields are required, and a buyer
 /// reviewing the queue treats the two differently.
+/// Where a component sits in the pack: the blister that touches the tablet,
+/// the carton around it, the shipper around that.
+///
+/// An enum rather than a master table — the three levels are a property of
+/// packaging itself, not something a company configures.
+///
+/// The distinction is regulatory as much as practical: primary packaging
+/// touches the medicine and is part of the product's stability data, so
+/// substituting it is a change control. A shipper is not.
+///
+/// Shared by two models that arrived independently — PurchaseRequisition
+/// (Procure-to-Pay) and PackagingRequirementLine (US-MD-06). One definition,
+/// because they mean the same thing and the database has one type.
+enum PackagingLevel {
+  PRIMARY
+  SECONDARY
+  TERTIARY
+}
+
 enum RequisitionTriggerType {
   AUTO_REORDER
   MANUAL
@@ -1054,7 +1071,10 @@ model Item {
   packagingRequirements     PackagingRequirement[]     @relation("PackagingRequirementProduct")
   packagingRequirementLines PackagingRequirementLine[] @relation("PackagingRequirementComponent")
 
-  requisitions       PurchaseRequisition[]
+  requisitions                PurchaseRequisition[] @relation("RequisitionItem")
+  requisitionsAsFinishedGood  PurchaseRequisition[] @relation("RequisitionFinishedProduct")
+  requisitionsAsPackComponent PurchaseRequisition[] @relation("RequisitionPackagingComponent")
+
   purchaseOrderLines PurchaseOrderLine[]
   goodsReceiptLines  GoodsReceiptLine[]
   stockLots          StockLot[]
@@ -1411,7 +1431,13 @@ model PackagingRequirement {
 
   /// Drives the AC1 gate and the shortage sweep: has this product an active
   /// pack spec, and which one matches the plan's variant.
-  @@index([tenantId, productId, isActive, deletedAt])
+  ///
+  /// Named explicitly because Prisma's generated name for four columns is
+  /// truncated to something different from what the migration created, and the
+  /// migration is already applied on the hosted database with its checksum
+  /// recorded — editing it there would fail the next deploy. The schema states
+  /// the name that exists.
+  @@index([tenantId, productId, isActive, deletedAt], map: "packaging_requirements_tenant_id_product_id_is_active_idx")
   @@map("packaging_requirements")
 }
 
@@ -1508,6 +1534,31 @@ model PurchaseRequisition {
 
   preferredVendorId String? @map("preferred_vendor_id") @db.Uuid
 
+  /// What the material is ultimately for, and where it sits in the pack.
+  ///
+  /// All of it optional, and all of it POINTING AT master data rather than
+  /// repeating it: a requisition for a raw material that serves no single
+  /// product answers none of these, and a requisition for a carton answers all
+  /// of them. Forcing a value would mean inventing one.
+  finishedProductId String? @map("finished_product_id") @db.Uuid
+
+  /// Pack presentation, e.g. "10x10 blister". Free text because there is no
+  /// pack-variant master to reference — the same as `ProductionPlan`.
+  packVariant String? @map("pack_variant") @db.VarChar(128)
+
+  /// Distinct from `itemId`: `itemId` is what is being bought, this is the
+  /// component of the finished pack it plays a part in.
+  packagingComponentId String?         @map("packaging_component_id") @db.Uuid
+  packagingLevel       PackagingLevel? @map("packaging_level")
+
+  /// The rate the buy quantity was derived from — per unit or per batch of the
+  /// finished product. Keeping it makes `requiredQuantity` auditable later.
+  quantityPerUnit Decimal? @map("quantity_per_unit") @db.Decimal(18, 4)
+
+  /// Mandatory by default: treating an unspecified component as optional
+  /// invites it to be dropped from an order.
+  isMandatory Boolean @default(true) @map("is_mandatory")
+
   /// Why this requisition exists. Decides what else is required: a MANUAL one
   /// must name a production plan, an AUTO_REORDER one must not.
   triggerType RequisitionTriggerType @default(MANUAL) @map("trigger_type")
@@ -1538,9 +1589,14 @@ model PurchaseRequisition {
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
 
   tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  item            Item            @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  item            Item            @relation("RequisitionItem", fields: [itemId], references: [id], onDelete: Restrict)
   preferredVendor Party?          @relation(fields: [preferredVendorId], references: [id], onDelete: Restrict)
   productionPlan  ProductionPlan? @relation(fields: [productionPlanId], references: [id], onDelete: Restrict)
+
+  /// Three separate references into the item master, so each is named. Prisma
+  /// cannot infer which is which once a model points at another more than once.
+  finishedProduct    Item? @relation("RequisitionFinishedProduct", fields: [finishedProductId], references: [id], onDelete: Restrict)
+  packagingComponent Item? @relation("RequisitionPackagingComponent", fields: [packagingComponentId], references: [id], onDelete: Restrict)
 
   purchaseOrderLines PurchaseOrderLine[]
 
@@ -1548,6 +1604,8 @@ model PurchaseRequisition {
   @@index([tenantId, status, deletedAt])
   @@index([tenantId, itemId])
   @@index([tenantId, triggerType, status])
+  @@index([tenantId, finishedProductId])
+  @@index([tenantId, packagingComponentId])
   @@map("purchase_requisitions")
 }
 

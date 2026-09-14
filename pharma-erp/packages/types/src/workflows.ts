@@ -64,10 +64,21 @@ export const WORKFLOWS: readonly Workflow[] = [
       'Manage the complete process of procuring raw materials, from identifying low stock through vendor payment.',
     steps: [
       {
+        // FIRST, because it is where the work starts. Nothing in this workflow
+        // happens until something runs short, and a buyer opening the module
+        // wants to see what needs buying before seeing what has been asked
+        // for. It was a strip inside the requisitions screen; a shortage list
+        // is worth its own table.
+        key: 'low-stock',
+        label: 'Low stock',
+        purpose:
+          'Items whose usable stock has fallen below their reorder level, and what is already on order for them.',
+        state: 'ready',
+      },
+      {
         key: 'requisitions',
         label: 'Purchase requisitions',
-        purpose:
-          'Raw materials below their reorder level, and the requisitions raised to restock them.',
+        purpose: 'Requests to buy, raised by hand or automatically when stock runs low.',
         state: 'ready',
       },
       {

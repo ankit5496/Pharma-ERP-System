@@ -1,38 +1,47 @@
 'use client';
 
-import type { PurchaseOrderListItem } from '@pharma-erp/types';
+import {
+  PROCUREMENT_ROUTES,
+  PURCHASE_ORDER_STATUS_LABELS,
+  type PurchaseOrderListItem,
+  type PurchaseOrderStatus,
+} from '@pharma-erp/types';
 
 import { changePurchaseOrderStatusAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
 import { ActionMessage, SubmitButton, useAction } from './form-kit';
 
 /**
- * Status actions for a purchase order.
+ * Status control and next action for a purchase order.
  *
- * PARTIALLY_RECEIVED and FULLY_RECEIVED are never offered as buttons: they are
- * consequences of booking a GRN, not decisions anyone makes. Showing them
- * would invite someone to mark an order received when nothing arrived.
+ * THE DROPDOWN OFFERS ONLY WHAT THE ORDER CAN ACTUALLY BECOME. The API's state
+ * machine allows Open -> Closed/Cancelled and Partially Received ->
+ * Closed/Cancelled, and nothing at all out of a closed or cancelled order. The
+ * list is built from that same rule, so the control cannot offer a change the
+ * server will refuse. The server still validates: this list is a convenience,
+ * not the enforcement.
  *
- * The action state is held here rather than in each button, because a
- * successful status change removes the button that caused it — issuing an
- * order replaces "Issue to vendor" with "Close" — and a message owned by the
- * vanished button would vanish with it.
+ * PARTIALLY RECEIVED IS NOT SELECTABLE, deliberately, and neither is returning
+ * to Open. Those are CONSEQUENCES of booking a GRN — the receipt service
+ * recomputes them from the total quantity received across every receipt on the
+ * order. Offering them here would let someone mark an order received when
+ * nothing arrived, and the next GRN would overwrite the claim anyway. The
+ * current status is shown in the dropdown so it reads as a status field, but
+ * choosing it again does nothing.
+ *
+ * Closing by hand is for short-closing an order the vendor will not complete.
  */
 export function PurchaseOrderActions({ order }: { order: PurchaseOrderListItem }) {
   const [state, action] = useAction(changePurchaseOrderStatusAction);
 
-  const actions: { status: string; label: string; variant: 'primary' | 'secondary' }[] = [];
+  // Mirrors ALLOWED_TRANSITIONS in purchase-orders.service.ts.
+  const selectable: PurchaseOrderStatus[] =
+    order.status === 'OPEN' || order.status === 'PARTIALLY_RECEIVED'
+      ? ['CLOSED', 'CANCELLED']
+      : [];
 
-  // Only two choices exist. An order is Open from creation, becomes Partially
-  // Received as goods arrive, and Closes itself once the ordered quantity has
-  // all been received — none of which anyone presses a button for. Closing by
-  // hand is for short-closing an order the vendor will not complete.
-  if (order.status === 'OPEN' || order.status === 'PARTIALLY_RECEIVED') {
-    actions.push({ status: 'CLOSED', label: 'Close', variant: 'secondary' });
-    actions.push({ status: 'CANCELLED', label: 'Cancel', variant: 'secondary' });
-  }
-
-  if (actions.length === 0 && state.status === 'idle') return null;
+  const receivable = order.status === 'OPEN' || order.status === 'PARTIALLY_RECEIVED';
+  const outstanding = order.lines.some((line) => line.quantityPending !== '0');
 
   return (
     <div className="flex flex-col items-end gap-2">
@@ -40,17 +49,46 @@ export function PurchaseOrderActions({ order }: { order: PurchaseOrderListItem }
         <ActionMessage state={state} />
       </div>
 
-      <div className="flex flex-wrap justify-end gap-2">
-        {actions.map((entry) => (
-          <form key={entry.status} action={action}>
-            <input type="hidden" name="id" value={order.id} />
-            <input type="hidden" name="status" value={entry.status} />
-            <SubmitButton variant={entry.variant} pendingLabel="…">
-              {entry.label}
-            </SubmitButton>
-          </form>
-        ))}
-      </div>
+      {/* The next step in the workflow, offered where the order is rather than
+          leaving the user to find the GRN tab and re-pick the order there. */}
+      {receivable && outstanding && (
+        <a
+          href={`${PROCUREMENT_ROUTES.goodsReceipts}?purchaseOrderId=${order.id}`}
+          className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-slate-800"
+        >
+          Create GRN
+        </a>
+      )}
+
+      {selectable.length > 0 && (
+        <form action={action} className="flex items-center gap-2">
+          <label className="sr-only" htmlFor={`po-status-${order.id}`}>
+            Status for {order.number}
+          </label>
+
+          <input type="hidden" name="id" value={order.id} />
+
+          <select
+            id={`po-status-${order.id}`}
+            name="status"
+            defaultValue={order.status}
+            className="field-sm"
+          >
+            {/* The current value first, as a no-op, so the control reads as
+                "this order's status" rather than "pick a destructive action". */}
+            <option value={order.status}>{PURCHASE_ORDER_STATUS_LABELS[order.status]}</option>
+            {selectable.map((status) => (
+              <option key={status} value={status}>
+                {PURCHASE_ORDER_STATUS_LABELS[status]}
+              </option>
+            ))}
+          </select>
+
+          <SubmitButton variant="secondary" pendingLabel="…">
+            Update
+          </SubmitButton>
+        </form>
+      )}
     </div>
   );
 }

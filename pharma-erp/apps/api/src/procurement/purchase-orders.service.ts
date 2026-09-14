@@ -295,6 +295,18 @@ export class PurchaseOrdersService {
   async changeStatus(id: string, target: PurchaseOrderStatus): Promise<PurchaseOrderListItem> {
     const before = await this.requireOrder(id);
 
+    // Selecting the status an order already has is a no-op, not an error.
+    // The UI presents this as a status dropdown showing the current value, so
+    // pressing Update without changing the selection is an ordinary thing to
+    // do — and "an open order cannot become open" would be a confusing way to
+    // answer it. Nothing is written and nothing is audited, because nothing
+    // changed.
+    if (before.status === target) {
+      const unchanged = await this.people.load(collectIds(before.createdById));
+
+      return this.toListItem(before, unchanged);
+    }
+
     if (!ALLOWED_TRANSITIONS[before.status].includes(target)) {
       throw new ConflictException(
         `A ${label(before.status)} purchase order cannot become ${label(target)}.`,

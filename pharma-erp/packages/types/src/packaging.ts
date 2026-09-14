@@ -10,17 +10,18 @@
  * are the numbers a shortage is computed from.
  */
 
-import type { ItemSummary } from './procurement';
-
-/** Where a component sits relative to the product. */
-export const PACKAGING_LEVELS = ['PRIMARY', 'SECONDARY', 'TERTIARY'] as const;
-export type PackagingLevel = (typeof PACKAGING_LEVELS)[number];
-
-export const PACKAGING_LEVEL_LABELS: Record<PackagingLevel, string> = {
-  PRIMARY: 'Primary',
-  SECONDARY: 'Secondary',
-  TERTIARY: 'Tertiary',
-};
+/**
+ * PACKAGING_LEVELS, PackagingLevel and PACKAGING_LEVEL_LABELS are declared in
+ * ./procurement and imported here rather than restated.
+ *
+ * They arrived twice, independently: Procure-to-Pay needed a packaging level on
+ * a purchase requisition, and US-MD-06 needed one on a pack specification. Same
+ * three values, same meaning, one Postgres enum — so one declaration, owned by
+ * the module that had it first. Re-exporting them here would make
+ * `export *` from the index ambiguous, which is exactly the build error the
+ * duplicate produced.
+ */
+import type { ItemSummary, PackagingLevel } from './procurement';
 
 /** The long form, where the distinction has to be explained rather than named. */
 export const PACKAGING_LEVEL_DESCRIPTIONS: Record<PackagingLevel, string> = {

@@ -20,11 +20,26 @@ export type ApiResult<T> =
  * was exceeding the old 5s budget.
  *
  * Still deliberately finite. This delay is paid on every page load when the
- * API is genuinely down, and a page that fails in fifteen seconds is far more
- * useful than one that hangs. If normal pages start approaching it, the answer
- * is fewer round trips, not a bigger number.
+ * API is genuinely down, and a page that fails in thirty seconds is far more
+ * useful than one that hangs.
+ *
+ * MEASURED, so the number is not a guess. From a development machine in India
+ * against the database in Oregon:
+ *
+ *   plain query to Postgres      281 ms
+ *   one tenant-scoped operation  1241 ms   <- four round trips, not one
+ *
+ * The multiplier is the cost of correctness: `BEGIN`, `set_config`, the query
+ * itself, `COMMIT`. A list endpoint that reads rows and then resolves the user
+ * names on them cannot avoid doing that twice in sequence, so five seconds for
+ * one screen is arithmetic rather than a defect, and 15s was being exceeded.
+ *
+ * THIS IS A DEVELOPMENT-ONLY COST. Deployed on Render alongside the database,
+ * the same round trip is under a millisecond and the same page is fast. Raising
+ * this further would be treating the symptom; if it is ever hit in production,
+ * the cause is real and the answer is fewer round trips, not a bigger number.
  */
-const DEFAULT_TIMEOUT_MS = 15_000;
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 /**
  * Statuses that mean "nothing is serving this yet" rather than "the API said

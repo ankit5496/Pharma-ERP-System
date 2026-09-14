@@ -22,6 +22,7 @@ import type {
   LowStockItem,
   PartySummary,
   PartyType,
+  ProcurementSettings,
   ProcurementSummary,
   PurchaseInvoiceListItem,
   PurchaseOrderListItem,
@@ -56,6 +57,7 @@ import {
   CreateRequisitionDto,
   UpdateRequisitionDto,
 } from './dto/requisition.dto';
+import { UpdateProcurementSettingsDto } from './dto/settings.dto';
 import { GoodsReceiptsService } from './goods-receipts.service';
 import { InvoicesService } from './invoices.service';
 import { MastersService } from './masters.service';
@@ -64,6 +66,7 @@ import { PurchaseOrdersService } from './purchase-orders.service';
 import { QcService } from './qc.service';
 import { ReorderService } from './reorder.service';
 import { RequisitionsService } from './requisitions.service';
+import { SettingsService } from './settings.service';
 import { StockService } from './stock.service';
 import { SummaryService } from './summary.service';
 
@@ -102,6 +105,7 @@ export class ProcurementController {
     private readonly invoices: InvoicesService,
     private readonly payments: PaymentsService,
     private readonly reorder: ReorderService,
+    private readonly settings: SettingsService,
     private readonly tenantContext: TenantContextService,
   ) {}
 
@@ -207,7 +211,13 @@ export class ProcurementController {
     return this.runReorderCheck();
   }
 
-  /** Runs the reorder check on demand. Idempotent. */
+  /**
+   * Runs the reorder check on demand. Idempotent.
+   *
+   * Raises nothing when the company has automatic creation switched off — the
+   * result says so, so the caller can distinguish "nothing was short" from
+   * "the system is not allowed to raise these".
+   */
   @Post('reorder-check')
   @SkipAudit('The requisitions it raises are audited individually.')
   @HttpCode(HttpStatus.CREATED)
@@ -218,7 +228,38 @@ export class ProcurementController {
       outcome.createdIds.map((id) => this.requisitions.findOne(id)),
     );
 
-    return { created, skipped: outcome.skipped, checkedAt: new Date().toISOString() };
+    return {
+      created,
+      skipped: outcome.skipped,
+      autoCreationEnabled: outcome.autoCreationEnabled,
+      checkedAt: new Date().toISOString(),
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Settings
+  // -------------------------------------------------------------------------
+
+  /** The company's Procure-to-Pay settings. Scoped to the caller's tenant. */
+  @Get('settings')
+  @SkipAudit('Read-only.')
+  async getSettings(): Promise<ProcurementSettings> {
+    return this.settings.get();
+  }
+
+  /**
+   * Turns automatic requisition creation on or off for the company.
+   *
+   * Audited by the service rather than the interceptor, because the trail
+   * needs the before and after values and `Tenant` is not one of this module's
+   * resources.
+   */
+  @Patch('settings')
+  @SkipAudit('Recorded by the service, with both values.')
+  async updateSettings(
+    @Body() dto: UpdateProcurementSettingsDto,
+  ): Promise<ProcurementSettings> {
+    return this.settings.update(dto.autoRequisitionEnabled);
   }
 
   // -------------------------------------------------------------------------
