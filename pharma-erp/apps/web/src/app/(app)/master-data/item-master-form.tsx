@@ -1,6 +1,6 @@
 'use client';
 
-import { useActionState, useEffect } from 'react';
+import { useActionState, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   GST_RATES,
@@ -62,6 +62,26 @@ export function ItemMasterForm({
   );
   const router = useRouter();
 
+  // Controlled dropdowns. React 19 resets an uncontrolled form once its action
+  // resolves, and a <select> does not pick up a changed defaultValue on that
+  // reset the way an <input> does — so a rejected save came back with the text
+  // preserved and every dropdown blank. See SelectField.
+  const [category, setCategory] = useState<string>(item?.type ?? '');
+  const [schedule, setSchedule] = useState<string>(item?.scheduleClassification ?? 'NONE');
+  const [uom, setUom] = useState<string>(item?.uom ?? '');
+  const [gstRate, setGstRate] = useState<string>(
+    item?.gstRate === null || item?.gstRate === undefined ? '' : String(item.gstRate),
+  );
+
+  useEffect(() => {
+    const values = state.values;
+    if (!values) return;
+    setCategory(values.category ?? '');
+    setSchedule(values.scheduleClassification ?? 'NONE');
+    setUom(values.uom ?? '');
+    setGstRate(values.gstRate ?? '');
+  }, [state]);
+
   useEffect(() => {
     if (!state.ok) return;
 
@@ -106,7 +126,8 @@ export function ItemMasterForm({
             label="Category"
             required
             options={CATEGORY_OPTIONS}
-            defaultValue={typed('category', item?.type)}
+            value={category}
+            onChange={setCategory}
             placeholder="Choose a category…"
           />
           <TextField
@@ -129,7 +150,8 @@ export function ItemMasterForm({
             name="scheduleClassification"
             label="Schedule classification"
             options={SCHEDULE_OPTIONS}
-            defaultValue={typed('scheduleClassification', item?.scheduleClassification) ?? 'NONE'}
+            value={schedule}
+            onChange={setSchedule}
             placeholder="Choose a schedule…"
             hint="Decides what the sale of this item legally requires."
           />
@@ -138,7 +160,8 @@ export function ItemMasterForm({
             label="Unit of measure"
             required
             options={UOM_OPTIONS}
-            defaultValue={typed('uom', item?.uom)}
+            value={uom}
+            onChange={setUom}
           />
         </FormGrid>
       </FormSection>
@@ -163,7 +186,8 @@ export function ItemMasterForm({
             label="GST rate"
             required
             options={GST_RATE_OPTIONS}
-            defaultValue={typed('gstRate', item?.gstRate)}
+            value={gstRate}
+            onChange={setGstRate}
             placeholder="Choose a rate…"
           />
           <TextField

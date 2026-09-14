@@ -81,10 +81,15 @@ export function TextField({
    * copyable.
    */
   readOnly?: boolean;
-  type?: 'text' | 'number' | 'date';
+  /**
+   * `email` and `tel` are here for the keyboard and the browser's own
+   * autofill, not for validation: the form carries `noValidate`, so the
+   * server's answer is the only one that counts.
+   */
+  type?: 'text' | 'number' | 'date' | 'email' | 'tel';
   placeholder?: string;
   pattern?: string;
-  inputMode?: 'text' | 'numeric' | 'decimal';
+  inputMode?: 'text' | 'numeric' | 'decimal' | 'tel' | 'email';
   maxLength?: number;
   min?: string;
   step?: string;
@@ -122,16 +127,35 @@ export function TextField({
   );
 }
 
+/**
+ * A dropdown, uncontrolled by default and controlled when `value` is given.
+ *
+ * WHY THE CONTROLLED MODE EXISTS. React 19 resets an uncontrolled form once its
+ * action resolves. A text input picks its new `defaultValue` up from the
+ * re-render, so a rejected save re-renders what was typed. A `<select>` does
+ * NOT: React applies `defaultValue` by marking an option `defaultSelected` at
+ * mount, and does not re-apply it afterwards — so the reset returns the select
+ * to the option it had on FIRST mount, which is the placeholder.
+ *
+ * The visible symptom is a form that comes back after a failed save with every
+ * text field preserved and every dropdown blank, which is worse than losing
+ * both: it looks like the dropdowns were never filled in.
+ *
+ * Pass `value` + `onChange` from state to hold a dropdown across a refusal.
+ */
 export function SelectField({
   options,
   placeholder = 'Choose…',
   defaultValue,
+  value,
   onChange,
   ...shell
 }: FieldShell & {
   options: readonly { value: string; label: string }[];
   placeholder?: string;
   defaultValue?: string;
+  /** Controlled value. When given, `onChange` must be given too. */
+  value?: string;
   onChange?: (value: string) => void;
 }) {
   return (
@@ -140,7 +164,7 @@ export function SelectField({
         id={shell.name}
         name={shell.name}
         required={shell.required}
-        defaultValue={defaultValue ?? ''}
+        {...(value === undefined ? { defaultValue: defaultValue ?? '' } : { value })}
         onChange={onChange ? (event) => onChange(event.target.value) : undefined}
         className={shell.compact ? 'field-sm mt-1 w-full' : 'field mt-1.5'}
       >
@@ -153,6 +177,78 @@ export function SelectField({
           </option>
         ))}
       </select>
+    </Shell>
+  );
+}
+
+/**
+ * A phone number: the country code and the national number as ONE control.
+ *
+ * Two separate form fields were the first attempt and read as two unrelated
+ * questions — "Country code" sitting above "Contact number" looks like a field
+ * somebody forgot to fill in. They are one value, so they share one label, one
+ * border and one focus ring; the seam between them is a divider, not a gap.
+ *
+ * A native `<select>` rather than a custom dropdown. It gives keyboard
+ * behaviour, type-ahead and screen-reader support for nothing, and the only
+ * thing it costs is that the flag has to be an emoji rather than an SVG.
+ *
+ * The two inputs submit separately — `<name>Dial` and `<name>National` — and
+ * the server action joins them into E.164. Joining on the server rather than in
+ * a hidden input means a request made without this form still has to supply a
+ * country code.
+ */
+export function PhoneField({
+  dialOptions,
+  dialValue,
+  onDialChange,
+  defaultNational,
+  placeholder,
+  ...shell
+}: FieldShell & {
+  /** `label` is what the control shows; `title` is the full country on hover. */
+  dialOptions: readonly { value: string; label: string; title?: string }[];
+  dialValue: string;
+  onDialChange: (value: string) => void;
+  defaultNational?: string;
+  placeholder?: string;
+}) {
+  return (
+    <Shell {...shell}>
+      {/* focus-within puts the ring on the group, so tabbing between the two
+          halves does not make the control look like it is jumping. */}
+      <div className="mt-1.5 flex rounded-md border border-slate-300 bg-white shadow-sm transition focus-within:border-slate-900 focus-within:ring-2 focus-within:ring-slate-900/15">
+        <select
+          id={`${shell.name}Dial`}
+          name={`${shell.name}Dial`}
+          value={dialValue}
+          onChange={(event) => onDialChange(event.target.value)}
+          aria-label="Country code"
+          // Sized to "IN +91" rather than a country name, so the number beside
+          // it keeps the width. Its own right border is the divider; no outer
+          // ring, because the group already has one.
+          className="w-[6rem] shrink-0 rounded-l-md border-r border-slate-300 bg-slate-50 px-2 py-2 text-sm tabular-nums text-slate-900 focus:outline-none"
+        >
+          {dialOptions.map((option) => (
+            // `title` gives the full country name on hover, which is the only
+            // place a native select has room for it.
+            <option key={option.value} value={option.value} title={option.title}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <input
+          id={shell.name}
+          name={`${shell.name}National`}
+          type="tel"
+          inputMode="tel"
+          maxLength={20}
+          placeholder={placeholder}
+          defaultValue={defaultNational}
+          autoComplete="off"
+          className="w-full min-w-0 rounded-r-md px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none"
+        />
+      </div>
     </Shell>
   );
 }

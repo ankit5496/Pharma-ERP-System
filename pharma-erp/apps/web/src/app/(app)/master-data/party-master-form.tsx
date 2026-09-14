@@ -3,8 +3,11 @@
 import { useActionState, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
+  COUNTRY_DIAL_CODES,
+  dialCodeLabel,
   PARTY_STATUS_LABELS,
   PARTY_TYPE_LABELS,
+  splitPhoneNumber,
   type PartyStatus,
   type PartySummary,
   type PartyType,
@@ -15,6 +18,7 @@ import {
   FormError,
   FormGrid,
   FormSection,
+  PhoneField,
   SelectField,
   SubmitActions,
   TextAreaField,
@@ -45,6 +49,12 @@ const STATUS_OPTIONS = (Object.keys(PARTY_STATUS_LABELS) as PartyStatus[]).map((
   label: PARTY_STATUS_LABELS[key],
 }));
 
+const DIAL_OPTIONS = COUNTRY_DIAL_CODES.map((entry) => ({
+  value: entry.dial,
+  label: dialCodeLabel(entry),
+  title: entry.country,
+}));
+
 const INITIAL: ActionResult = { ok: false };
 
 export function PartyMasterForm({
@@ -63,8 +73,25 @@ export function PartyMasterForm({
   const [partyType, setPartyType] = useState<string>(party?.partyType ?? '');
   const [status, setStatus] = useState<string>(party?.status ?? 'ACTIVE');
 
+  // A stored number is E.164; the form shows it as a country and a national
+  // part, so an edit does not make somebody retype the code.
+  const storedPhone = splitPhoneNumber(party?.phone);
+  const [phoneDial, setPhoneDial] = useState<string>(storedPhone.dial);
+
   const isCustomer = partyType === 'CUSTOMER';
   const needsLicence = isCustomer && status === 'ACTIVE';
+
+  // The two dropdowns were already held in state for the conditional section;
+  // they are now CONTROLLED by it, and re-seeded when a save is refused —
+  // React 19 resets the form and a <select> does not re-read defaultValue.
+  useEffect(() => {
+    const values = state.values;
+    if (!values) return;
+    setPartyType(values.partyType ?? '');
+    setStatus(values.status ?? 'ACTIVE');
+    setPhoneDial(values.phoneDial || storedPhone.dial);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state]);
 
   useEffect(() => {
     if (!state.ok) return;
@@ -101,7 +128,7 @@ export function PartyMasterForm({
             label="Party type"
             required
             options={TYPE_OPTIONS}
-            defaultValue={typed('partyType', party?.partyType)}
+            value={partyType}
             placeholder="Supplier, customer, or principal…"
             onChange={setPartyType}
             hint="Decides which of the sections below apply."
@@ -119,7 +146,7 @@ export function PartyMasterForm({
             label="Status"
             required
             options={STATUS_OPTIONS}
-            defaultValue={typed('status', party?.status) ?? 'ACTIVE'}
+            value={status}
             onChange={setStatus}
             hint={
               needsLicence
@@ -138,14 +165,24 @@ export function PartyMasterForm({
           <TextField
             name="email"
             label="Email"
+            type="email"
             maxLength={320}
             defaultValue={typed('email', party?.email)}
+            hint="Checked for a real address — a note to yourself belongs in the address box."
           />
-          <TextField
+          {/* The country code is CHOSEN, not typed. A bare "9876543210" gives
+              the validator no country to check the length against, and a typed
+              "+91" invites "0091", "91-" and "(+91)". One control, because it
+              is one value: the two halves are joined into E.164 on save. */}
+          <PhoneField
             name="phone"
             label="Contact number"
-            maxLength={32}
-            defaultValue={typed('phone', party?.phone)}
+            dialOptions={DIAL_OPTIONS}
+            dialValue={phoneDial}
+            onDialChange={setPhoneDial}
+            defaultNational={typed('phoneNational', storedPhone.national)}
+            placeholder="98765 43210"
+            hint="Checked against the country chosen beside it — a number that could not be dialled is refused."
           />
           <TextAreaField
             name="address"

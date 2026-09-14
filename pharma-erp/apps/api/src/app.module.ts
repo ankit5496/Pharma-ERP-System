@@ -10,6 +10,9 @@ import { AuditModule } from './common/audit/audit.module';
 import { validateEnv } from './config/env.validation';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { HealthModule } from './health/health.module';
+import { JobWorkModule } from './job-work/job-work.module';
+import { LicencesModule } from './licences/licences.module';
+import { PackagingModule } from './packaging/packaging.module';
 import { PartiesModule } from './parties/parties.module';
 import { PlatformModule } from './platform/platform.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -40,6 +43,9 @@ import { UsersModule } from './users/users.module';
     PlatformModule,
     ProcurementModule,
     PartiesModule,
+    LicencesModule,
+    JobWorkModule,
+    PackagingModule,
     ProductionModule,
   ],
   providers: [
