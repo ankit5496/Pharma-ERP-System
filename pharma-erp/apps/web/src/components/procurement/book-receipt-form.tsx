@@ -97,7 +97,8 @@ export function BookReceiptForm({
           >
             {orders.map((candidate) => (
               <option key={candidate.id} value={candidate.id}>
-                {candidate.number} — {candidate.vendor.name}
+                {candidate.number} — {candidate.vendor.name} (
+                {candidate.lines.filter((l) => l.quantityPending !== '0').length} line(s) pending)
               </option>
             ))}
           </select>

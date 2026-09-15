@@ -168,3 +168,72 @@ export function daysUntil(date: Date, now: Date = new Date()): number {
 
   return Math.round((target - today) / MS_PER_DAY);
 }
+
+// ---------------------------------------------------------------------------
+// Purchase order fulfilment
+// ---------------------------------------------------------------------------
+
+/** The three quantities a purchase order line carries. */
+export interface FulfilmentQuantities {
+  quantity: Prisma.Decimal | string | number;
+  quantityReceived: Prisma.Decimal | string | number;
+  quantityCancelled: Prisma.Decimal | string | number;
+}
+
+/**
+ * What may still be received on a line: ordered, less what arrived, less what
+ * was short-closed. Floored at zero.
+ *
+ * ONE DEFINITION, used by the order service to report it, the receipt service
+ * to cap what may be booked, and both to decide an order's status. Three
+ * copies of this arithmetic is how a form offers to receive a quantity the
+ * API then refuses.
+ */
+export function pendingOn(line: FulfilmentQuantities): Prisma.Decimal {
+  return positiveDifference(
+    new Prisma.Decimal(line.quantity),
+    new Prisma.Decimal(line.quantityReceived).plus(new Prisma.Decimal(line.quantityCancelled)),
+  );
+}
+
+/**
+ * A purchase order's status, derived from its lines rather than from whichever
+ * receipt happened last.
+ *
+ *   nothing outstanding             -> CLOSED
+ *   something received, more due    -> PARTIALLY_RECEIVED
+ *   nothing received yet            -> unchanged (OPEN or APPROVED)
+ *
+ * CLOSED MEANS FINISHED, whether every unit arrived or the balance was short
+ * closed. The two are still distinguishable where it matters — a short-closed
+ * order carries a cancelled quantity on its lines and a fully received one
+ * does not — but the order itself gets one word for "done".
+ *
+ * `current` is returned untouched when nothing has been received, which is what
+ * protects APPROVED. Approval is the one status a person sets, and a receipt
+ * that brings in nothing (every line rejected at the gate) must not silently
+ * un-approve the order.
+ *
+ * CANCELLED is never produced here: abandoning an order is a decision, not a
+ * consequence of receiving.
+ */
+export function fulfilmentStatus(
+  lines: readonly FulfilmentQuantities[],
+  current: 'OPEN' | 'APPROVED' | 'PARTIALLY_RECEIVED' | 'CLOSED' | 'CANCELLED',
+): 'OPEN' | 'APPROVED' | 'PARTIALLY_RECEIVED' | 'CLOSED' {
+  if (current === 'CANCELLED') return 'CLOSED';
+
+  const anythingPending = lines.some((line) => pendingOn(line).greaterThan(0));
+
+  if (!anythingPending) return 'CLOSED';
+
+  const anythingReceived = lines.some((line) =>
+    new Prisma.Decimal(line.quantityReceived).greaterThan(0),
+  );
+
+  if (anythingReceived) return 'PARTIALLY_RECEIVED';
+
+  // Nothing in yet: whatever the order was before — Open, or Approved and
+  // waiting for the vendor — is still true.
+  return current === 'PARTIALLY_RECEIVED' || current === 'CLOSED' ? 'OPEN' : current;
+}

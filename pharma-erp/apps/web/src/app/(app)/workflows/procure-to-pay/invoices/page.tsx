@@ -67,7 +67,20 @@ export default async function InvoicesPage({
       value: status,
       label: PURCHASE_INVOICE_STATUS_LABELS[status],
     })),
-    ...PAYMENT_STATUSES.map((status) => ({
+
+    // ONLY THE PAYMENT STATUSES THAT ARE NOT ALSO DOCUMENT STATUSES. The two
+    // vocabularies overlap on PAID and PARTIALLY_PAID, and offering both
+    // spellings produced two options with the SAME value — a duplicate React
+    // key, and two menu entries that did exactly the same thing. They could not
+    // even differ in behaviour: the API checks the stored column first, so
+    // "Payment: Paid" was unreachable.
+    //
+    // What survives is what the stored column cannot answer: UNPAID, and
+    // OVERDUE — which is derived per request, because a stored overdue flag
+    // would be wrong every midnight until something rewrote it.
+    ...PAYMENT_STATUSES.filter(
+      (status) => !(PURCHASE_INVOICE_STATUSES as readonly string[]).includes(status),
+    ).map((status) => ({
       value: status,
       label: `Payment: ${PAYMENT_STATUS_LABELS[status]}`,
     })),

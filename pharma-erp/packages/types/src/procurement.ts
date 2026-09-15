@@ -88,7 +88,15 @@ export const PRODUCTION_PLAN_STATUSES = [
 export type ProductionPlanStatus = (typeof PRODUCTION_PLAN_STATUSES)[number];
 
 
-export const PURCHASE_ORDER_STATUSES = ['OPEN', 'PARTIALLY_RECEIVED', 'CLOSED', 'CANCELLED'] as const;
+export const PURCHASE_ORDER_STATUSES = [
+  'OPEN',
+  /** Authorised to send to the vendor. The one status a person sets. */
+  'APPROVED',
+  'PARTIALLY_RECEIVED',
+  /** Finished: fully received, or short closed with the balance cancelled. */
+  'CLOSED',
+  'CANCELLED',
+] as const;
 export type PurchaseOrderStatus = (typeof PURCHASE_ORDER_STATUSES)[number];
 
 export const QC_DECISIONS = ['ACCEPTED', 'REJECTED', 'ON_HOLD'] as const;
@@ -129,6 +137,7 @@ export const REQUISITION_STATUS_LABELS: Record<RequisitionStatus, string> = {
 
 export const PURCHASE_ORDER_STATUS_LABELS: Record<PurchaseOrderStatus, string> = {
   OPEN: 'Open',
+  APPROVED: 'Approved',
   PARTIALLY_RECEIVED: 'Partially received',
   CLOSED: 'Closed',
   CANCELLED: 'Cancelled',
@@ -434,7 +443,15 @@ export interface PurchaseOrderLineItem {
   taxAmount: string;
   totalAmount: string;
   quantityReceived: string;
-  /** `quantity - quantityReceived`, floored at zero. */
+  /** Short-closed: given up on, neither received nor still expected. */
+  quantityCancelled: string;
+  /**
+   * What may still be received: `quantity - quantityReceived -
+   * quantityCancelled`, floored at zero. This is the figure the goods-receipt
+   * form caps entry at, and the one that decides whether the order is still
+   * receivable at all — a short-closed line reaches zero without anyone
+   * pretending the shortfall arrived.
+   */
   quantityPending: string;
 }
 

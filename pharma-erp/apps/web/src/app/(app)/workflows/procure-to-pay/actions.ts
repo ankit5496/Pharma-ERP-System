@@ -1,5 +1,10 @@
 'use server';
 
+import {
+  PURCHASE_ORDER_STATUS_LABELS,
+  type PurchaseOrderStatus,
+} from '@pharma-erp/types';
+
 import type { ActionState } from '@/components/procurement/action-state';
 import { apiFetch } from '@/lib/api';
 
@@ -216,10 +221,15 @@ export async function changePurchaseOrderStatusAction(
   const id = str(form, 'id');
   const status = str(form, 'status');
 
+  // The shared label, not the raw enum: lower-casing PARTIALLY_RECEIVED gave
+  // 'Purchase order partially_received.' — the underscore visible to the user.
+  // 'ISSUED' was also special-cased here long after that status was removed.
+  const label = PURCHASE_ORDER_STATUS_LABELS[status as PurchaseOrderStatus] ?? status;
+
   return submit(
     `${BASE}/purchase-orders/${id}/status`,
     { status },
-    status === 'ISSUED' ? 'Purchase order issued to the vendor.' : `Purchase order ${status.toLowerCase()}.`,
+    `Purchase order marked ${label.toLowerCase()}.`,
   );
 }
 

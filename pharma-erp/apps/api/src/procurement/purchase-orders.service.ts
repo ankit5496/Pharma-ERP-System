@@ -17,8 +17,8 @@ import {
   money,
   parseNonNegative,
   parsePositive,
+  pendingOn,
   percent,
-  positiveDifference,
   qty,
   sumLineAmounts,
 } from './decimal.util';
@@ -55,19 +55,50 @@ const PO_INCLUDE = {
 type PurchaseOrderRow = Prisma.PurchaseOrderGetPayload<{ include: typeof PO_INCLUDE }>;
 
 /**
- * Statuses a purchase order may move between.
+ * Statuses a purchase order may be moved to BY HAND.
  *
- * PARTIALLY_RECEIVED and FULLY_RECEIVED are absent from every list: they are
- * not chosen by anyone, they are computed by the GRN service from what has
- * actually been received. Letting a user set them by hand would let an order
- * claim to be received when nothing arrived.
+ * PARTIALLY_RECEIVED IS ABSENT FROM EVERY LIST. It is a fact about what turned
+ * up, computed from the line quantities by `fulfilmentStatus` on every receipt;
+ * setting it would be a claim about stock that the next GRN overwrites anyway.
+ *
+ * CLOSING IS ALLOWED AT ANY TIME, including with material still outstanding,
+ * and that is safe now for a reason worth stating: receivability follows the
+ * PENDING QUANTITY, not the status. An order closed early keeps its pending
+ * quantity, stays in the goods-receipt picker, and accepts the balance if it
+ * ever arrives — at which point the receipt recomputes the status from the
+ * lines. Closing early is therefore a judgement about expectation, not a door
+ * that locks; the original defect was that it locked.
+ *
+ * Cancelled is the one genuinely terminal state. It says the order should not
+ * have existed, and no material may be received against it at all.
  */
 const ALLOWED_TRANSITIONS: Record<PurchaseOrderStatus, readonly PurchaseOrderStatus[]> = {
-  OPEN: ['CLOSED', 'CANCELLED'],
+  OPEN: ['APPROVED', 'CLOSED', 'CANCELLED'],
+  APPROVED: ['OPEN', 'CLOSED', 'CANCELLED'],
   PARTIALLY_RECEIVED: ['CLOSED', 'CANCELLED'],
+  // Terminal as a DECISION, not as a barrier. Closing no longer hides an order
+  // from goods receipt — receivability follows the pending quantity — so an
+  // order closed early still accepts the balance if it turns up, and the next
+  // receipt recomputes the status from what is actually on the lines.
   CLOSED: [],
   CANCELLED: [],
 };
+
+/**
+ * Statuses from which material may still be booked in.
+ *
+ * Everything except CANCELLED, because RECEIVABILITY IS DECIDED BY THE PENDING
+ * QUANTITY, not by the label. CLOSED is in the list deliberately: an order
+ * closed by hand under the old rules still has material owed on it, and hiding
+ * it was the defect this replaced. A properly short-closed order drops out on
+ * its own, because its pending quantity is genuinely zero.
+ */
+const RECEIVABLE_STATUSES: readonly PurchaseOrderStatus[] = [
+  'OPEN',
+  'APPROVED',
+  'PARTIALLY_RECEIVED',
+  'CLOSED',
+];
 
 @Injectable()
 export class PurchaseOrdersService {
@@ -334,17 +365,37 @@ export class PurchaseOrdersService {
     return this.toListItem(after, people);
   }
 
-  /** Orders open for receiving, for the GRN form's picker. */
+  /**
+   * Orders with material still to come, for the GRN form's picker.
+   *
+   * SELECTED BY PENDING QUANTITY, NOT BY STATUS. An order is receivable
+   * because something is still owed on it, not because its label says so —
+   * which is what stops an order that was closed by hand from taking its
+   * outstanding quantity with it. A short-closed order disappears from here
+   * for the right reason: its pending quantity is genuinely zero.
+   *
+   * Only CANCELLED is excluded outright. Abandoning an order says no material
+   * is expected at all, and receiving against it would contradict the decision
+   * rather than record one.
+   *
+   * The pending test cannot be expressed in a Prisma `where` — it compares
+   * three columns of the same row — so the filter is applied after the query.
+   * The status pre-filter keeps that set small.
+   */
   async receivable(): Promise<PurchaseOrderListItem[]> {
     const rows = await this.prisma.scoped.purchaseOrder.findMany({
-      where: { deletedAt: null, status: { in: ['OPEN', 'PARTIALLY_RECEIVED'] } },
+      where: { deletedAt: null, status: { in: [...RECEIVABLE_STATUSES] } },
       include: PO_INCLUDE,
       orderBy: [{ poDate: 'asc' }],
     });
 
-    const people = await this.people.load(collectIds(...rows.map((row) => row.createdById)));
+    const withPending = rows.filter((row) =>
+      row.lines.some((line) => pendingOn(line).greaterThan(0)),
+    );
 
-    return rows.map((row) => this.toListItem(row, people));
+    const people = await this.people.load(collectIds(...withPending.map((row) => row.createdById)));
+
+    return withPending.map((row) => this.toListItem(row, people));
   }
 
   /** Orders that may be invoiced: anything received, wholly or in part. */
@@ -442,6 +493,7 @@ export class PurchaseOrdersService {
       lines: row.lines.map((line): PurchaseOrderLineItem => {
         const quantity = new Prisma.Decimal(line.quantity);
         const received = new Prisma.Decimal(line.quantityReceived);
+        const cancelled = new Prisma.Decimal(line.quantityCancelled);
 
         return {
           id: line.id,
@@ -454,7 +506,8 @@ export class PurchaseOrdersService {
           taxAmount: money(line.taxAmount),
           totalAmount: money(line.totalAmount),
           quantityReceived: qty(received),
-          quantityPending: qty(positiveDifference(quantity, received)),
+          quantityCancelled: qty(cancelled),
+          quantityPending: qty(pendingOn(line)),
         };
       }),
       goodsReceipts: row.goodsReceipts.map((grn) => ({
