@@ -1,6 +1,9 @@
 import type { PrismaClient } from '@prisma/client';
 
-import { PG_LOGIN_EMAIL_SETTING, PG_TENANT_SETTING } from '@pharma-erp/types';
+// PG_TENANT_SETTING is no longer needed here: the per-request identity lookup
+// sets the tenant inside public.resolve_identity, alongside the RLS helper
+// functions that read it. The login lookup below still sets its own.
+import { PG_LOGIN_EMAIL_SETTING } from '@pharma-erp/types';
 
 import { TRANSACTION_MAX_WAIT_MS, TRANSACTION_TIMEOUT_MS } from './tenant-scope';
 
@@ -117,56 +120,73 @@ export interface ResolvedIdentity {
 }
 
 /**
+ * The shape `public.resolve_identity` returns, in database naming.
+ *
+ * Declared rather than inferred: `$queryRaw` cannot know the shape of a
+ * function's result set, and an unchecked `any` here would let a column rename
+ * in the migration surface as `undefined` on an authorisation decision.
+ */
+interface IdentityRow {
+  user_id: string;
+  tenant_id: string;
+  email: string;
+  full_name: string;
+  role: string;
+  status: string;
+  must_change_password: boolean;
+  tenant_name: string;
+  tenant_slug: string;
+  tenant_status: string;
+}
+
+/**
  * Re-reads the account named by a verified token, on every request.
  *
  * This is what makes revocation immediate: disabling a user or changing their
  * role takes effect on their next request, rather than whenever their token
- * happens to expire. The cost is one indexed primary-key lookup.
+ * happens to expire.
  *
- * Unlike the login lookup, the tenant is already known — it comes from the
- * token — so this runs fully tenant-scoped and needs no policy exception.
+ * ONE ROUND TRIP, deliberately. It used to be an interactive transaction —
+ * BEGIN, set the tenant, SELECT, COMMIT — which is four network round trips
+ * before the request's own work starts. That is free on a local database and
+ * measured at 1.2-1.9 seconds against the hosted one in Oregon, on every single
+ * authenticated request. `public.resolve_identity` does the same two steps
+ * inside one statement, so the cost is one.
+ *
+ * Nothing is given up for it. The function is SECURITY INVOKER, so row-level
+ * security still evaluates as the runtime role; the tenant predicate is still
+ * stated explicitly; and because a lone statement is its own implicit
+ * transaction, the tenant setting is scoped to this call and cannot leak onto
+ * the next request that borrows the same pooled connection — which the explicit
+ * transaction only achieved by remembering to pass `is_local`.
+ *
+ * See 20260914130000_resolve_identity_in_one_round_trip.
  */
 export async function resolveIdentityByUserId(
   prisma: PrismaClient,
   tenantId: string,
   userId: string,
 ): Promise<ResolvedIdentity | null> {
-  // Runs on EVERY authenticated request, so it needs the same budget as the
-  // sign-in lookup — otherwise a cross-region database logs you in and then
-  // fails every page that follows.
-  return prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT set_config(${PG_TENANT_SETTING}, ${tenantId}, true)`;
+  const rows = await prisma.$queryRaw<IdentityRow[]>`
+    SELECT * FROM public.resolve_identity(${tenantId}::uuid, ${userId}::uuid)
+  `;
 
-    const user = await tx.user.findFirst({
-      // tenantId is redundant given the primary key, but stating it means a
-      // token naming another tenant's user id cannot resolve even if the RLS
-      // policy were ever loosened.
-      where: { id: userId, tenantId, deletedAt: null },
-      select: {
-        id: true,
-        tenantId: true,
-        email: true,
-        fullName: true,
-        role: true,
-        status: true,
-        mustChangePassword: true,
-        tenant: { select: { name: true, slug: true, status: true, deletedAt: true } },
-      },
-    });
+  const row = rows[0];
 
-    if (!user || user.tenant.deletedAt !== null) return null;
+  // No row means a validly-signed token for an account that has since been
+  // deleted, or whose company has been. The caller turns that into a 401.
+  if (!row) return null;
 
-    return {
-      userId: user.id,
-      tenantId: user.tenantId,
-      email: user.email,
-      fullName: user.fullName,
-      role: user.role,
-      status: user.status,
-      mustChangePassword: user.mustChangePassword,
-      tenantName: user.tenant.name,
-      tenantSlug: user.tenant.slug,
-      tenantStatus: user.tenant.status,
-    };
-  }, TRANSACTION_TIMEOUTS);
+  return {
+    userId: row.user_id,
+    tenantId: row.tenant_id,
+    email: row.email,
+    fullName: row.full_name,
+    role: row.role,
+    status: row.status,
+    mustChangePassword: row.must_change_password,
+    tenantName: row.tenant_name,
+    tenantSlug: row.tenant_slug,
+    tenantStatus: row.tenant_status,
+  };
 }

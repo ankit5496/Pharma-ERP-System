@@ -2,7 +2,6 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { findWorkflow, findWorkflowStep } from '@pharma-erp/types';
 
-import { AppShell } from '@/components/app-shell';
 import {
   BatchRecordPanel,
   BatchReleasePanel,
@@ -10,8 +9,6 @@ import {
   MaterialIssuePanel,
   ProductionOrdersPanel,
 } from '@/components/production/panels';
-import { WorkflowSubnav } from '@/components/workflow-subnav';
-import { requireSession } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
@@ -42,46 +39,33 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 export default async function WorkflowStepPage({ params }: PageProps) {
   const { workflow: workflowKey, step: stepKey } = await params;
 
-  // Session first: an unknown step should not be a way to find out whether
-  // someone is signed in.
-  const user = await requireSession();
-
+  // No session call here. The layout above establishes it, and a layout for a
+  // dynamic segment is not re-rendered when only the segment BELOW it changes —
+  // so moving between steps costs nothing extra. Reaching this page at all
+  // means the layout has already admitted the request.
   const workflow = findWorkflow(workflowKey);
   const step = workflow && findWorkflowStep(workflow, stepKey);
 
   if (!workflow || !step) notFound();
 
   return (
-    <AppShell user={user}>
-      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
-        <header className="mb-6">
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{workflow.label}</h1>
-          <p className="mt-1.5 max-w-3xl text-sm text-slate-600">{workflow.purpose}</p>
-        </header>
+    <section aria-labelledby="step-heading">
+      <h2 id="step-heading" className="text-lg font-semibold text-slate-900">
+        {step.label}
+      </h2>
+      <p className="mt-1 max-w-3xl text-sm text-slate-600">{step.purpose}</p>
 
-        <div className="mb-8">
-          <WorkflowSubnav workflow={workflow} />
-        </div>
-
-        <section aria-labelledby="step-heading">
-          <h2 id="step-heading" className="text-lg font-semibold text-slate-900">
-            {step.label}
-          </h2>
-          <p className="mt-1 max-w-3xl text-sm text-slate-600">{step.purpose}</p>
-
-          <div className="mt-5">
-            {/* The extension point promised in WORKFLOWS: a step whose `state`
-                is 'ready' has an entry in the registry and renders it; anything
-                else still gets the honest placeholder. */}
-            {step.state === 'ready' ? (
-              <ProductionStep workflowKey={workflow.key} stepKey={step.key} role={user.role} />
-            ) : (
-              <StepPlaceholder workflowLabel={workflow.label} stepLabel={step.label} />
-            )}
-          </div>
-        </section>
-      </main>
-    </AppShell>
+      <div className="mt-5">
+        {/* The extension point promised in WORKFLOWS: a step whose `state`
+            is 'ready' has an entry in the registry and renders it; anything
+            else still gets the honest placeholder. */}
+        {step.state === 'ready' ? (
+          <ProductionStep workflowKey={workflow.key} stepKey={step.key} />
+        ) : (
+          <StepPlaceholder workflowLabel={workflow.label} stepLabel={step.label} />
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -93,23 +77,15 @@ export default async function WorkflowStepPage({ params }: PageProps) {
  * missing key here rather than a silently blank page. `state: 'ready'` and an
  * entry in this table have to be changed together, and that is the point.
  */
-const PRODUCTION_STEPS: Record<string, (props: { role: string }) => React.ReactNode> = {
+const PRODUCTION_STEPS: Record<string, () => React.ReactNode> = {
   formulations: () => <FormulationsPanel />,
   'production-orders': () => <ProductionOrdersPanel />,
   'material-issue': () => <MaterialIssuePanel />,
   'batch-record': () => <BatchRecordPanel />,
-  'batch-release': ({ role }) => <BatchReleasePanel role={role} />,
+  'batch-release': () => <BatchReleasePanel />,
 };
 
-function ProductionStep({
-  workflowKey,
-  stepKey,
-  role,
-}: {
-  workflowKey: string;
-  stepKey: string;
-  role: string;
-}) {
+function ProductionStep({ workflowKey, stepKey }: { workflowKey: string; stepKey: string }) {
   const render = workflowKey === 'production-quality' ? PRODUCTION_STEPS[stepKey] : undefined;
 
   if (!render) {
@@ -123,7 +99,7 @@ function ProductionStep({
     );
   }
 
-  return <>{render({ role })}</>;
+  return <>{render()}</>;
 }
 
 /**

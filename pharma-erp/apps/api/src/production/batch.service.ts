@@ -167,24 +167,83 @@ export class BatchService {
       throw new BadRequestException('A batch cannot be packed before it was manufactured.');
     }
 
+    // US-PROD-04: "Finished pack quantities must logically tie back to the bulk
+    // batch."
+    //
+    // Packed PLUS rejected, against what the batch actually yielded. Checking
+    // packed alone would always pass — losses would simply go unrecorded, and
+    // the reconciliation the criterion asks for is precisely the one that
+    // notices them.
+    //
+    // Against actualQuantity, not plannedQuantity: a batch that yielded less
+    // than planned cannot pack more than it made, whatever the work order said.
+    // A batch with no recorded yield is not packable at all — there is nothing
+    // to tie back to.
+    if (batch.actualQuantity === null) {
+      throw new BadRequestException(
+        'This batch has no recorded yield, so there is nothing to reconcile a packed quantity ' +
+          'against. Record the manufacturing output first.',
+      );
+    }
+
+    const packed = new Prisma.Decimal(dto.packedQuantity);
+    const rejected = new Prisma.Decimal(dto.rejectedQuantity ?? 0);
+    const accounted = packed.add(rejected);
+
+    if (accounted.greaterThan(batch.actualQuantity)) {
+      throw new BadRequestException(
+        `Packed (${packed.toString()}) plus rejected (${rejected.toString()}) is ` +
+          `${accounted.toString()}, but batch ${batch.batchNumber} only yielded ` +
+          `${batch.actualQuantity.toString()}. A pack cannot contain more than was made — ` +
+          'check the counts, or correct the yield on the manufacturing record.',
+      );
+    }
+
     await this.prisma.transaction(async (tx) => {
-      await tx.batchPackingRecord.upsert({
+      const record = await tx.batchPackingRecord.upsert({
         where: { batchId },
         create: {
           tenantId,
           batchId,
-          packedQuantity: new Prisma.Decimal(dto.packedQuantity),
+          packedQuantity: packed,
+          rejectedQuantity: rejected,
+          packVariant: dto.packVariant?.trim() || null,
           packedOn,
           recordedById: userId,
           notes: dto.notes ?? null,
         },
         update: {
-          packedQuantity: new Prisma.Decimal(dto.packedQuantity),
+          packedQuantity: packed,
+          rejectedQuantity: rejected,
+          packVariant: dto.packVariant?.trim() || null,
           packedOn,
           recordedById: userId,
           notes: dto.notes ?? null,
         },
+        select: { id: true },
       });
+
+      // US-PROD-04: what the pack actually consumed.
+      //
+      // REPLACES the set rather than merging, for the same reason an amended
+      // formulation does: re-recording packing restates what was used, and a
+      // merge would make removing a component impossible.
+      if (dto.consumptions !== undefined) {
+        await tx.batchPackagingConsumption.deleteMany({ where: { packingRecordId: record.id } });
+
+        if (dto.consumptions.length > 0) {
+          await tx.batchPackagingConsumption.createMany({
+            data: dto.consumptions.map((consumption) => ({
+              tenantId,
+              packingRecordId: record.id,
+              itemId: consumption.itemId,
+              quantityConsumed: new Prisma.Decimal(consumption.quantityConsumed),
+              lotId: consumption.lotId ?? null,
+              notes: consumption.notes?.trim() || null,
+            })),
+          });
+        }
+      }
 
       await tx.productionOrder.update({
         where: { id: batch.productionOrderId },
@@ -264,10 +323,21 @@ export class BatchService {
         });
       }
 
-      await tx.productionOrder.update({
-        where: { id: batch.productionOrderId },
-        data: { status: 'CLOSED', closedAt: new Date() },
-      });
+      // US-PROD-05: "The Work Order cannot be closed until the batch has
+      // received a Released status from the Quality Gate."
+      //
+      // This update used to sit outside the branch, so BLOCKING a batch closed
+      // its work order as tidily as releasing one — the order ended in exactly
+      // the state that says the job is done, for a batch that may not be sold.
+      // A blocked batch leaves the order open, which is the honest state: the
+      // work is finished, the outcome is not, and somebody has to decide what
+      // happens to it.
+      if (request.decision === 'RELEASED') {
+        await tx.productionOrder.update({
+          where: { id: batch.productionOrderId },
+          data: { status: 'CLOSED', closedAt: new Date() },
+        });
+      }
     });
 
     return this.findOne(batchId);
@@ -396,19 +466,47 @@ export class BatchService {
    * the same reasoning as work-order numbering.
    */
   private async nextBatchNumber(tx: Prisma.TransactionClient, manufacturedOn: Date) {
-    const year = String(manufacturedOn.getUTCFullYear()).slice(2);
-    const month = String(manufacturedOn.getUTCMonth() + 1).padStart(2, '0');
-    const prefix = `B-${year}${month}-`;
+    const tenantId = this.tenantContext.requireTenantId();
 
-    const latest = await tx.batch.findFirst({
-      where: { batchNumber: { startsWith: prefix } },
-      orderBy: { batchNumber: 'desc' },
-      select: { batchNumber: true },
+    // US-PROD-03: "the company's configured numbering convention". The prefix
+    // is the company's; the rest of the shape is fixed, because a free-form
+    // format string is a way to configure two companies into the same number
+    // and the other half of the criterion is that it is strictly unique.
+    const tenant = await tx.tenant.findFirstOrThrow({
+      where: { id: tenantId },
+      select: { batchNumberPrefix: true },
     });
 
-    const previous = latest ? Number.parseInt(latest.batchNumber.slice(prefix.length), 10) : 0;
+    const fullYear = manufacturedOn.getUTCFullYear();
+    const year = String(fullYear).slice(2);
+    const month = String(manufacturedOn.getUTCMonth() + 1).padStart(2, '0');
 
-    return `${prefix}${String(previous + 1).padStart(3, '0')}`;
+    // One atomic statement, the same way purchase documents are numbered.
+    //
+    // This replaced a read-then-write: find the highest existing number,
+    // parse it, add one. Two batches recorded in the same second both read the
+    // same highest number and both computed the same next one — the unique
+    // index then rejected the loser, so the failure mode was a save that
+    // refused for no reason the person could see. An increment inside the
+    // transaction has no such window.
+    //
+    // Counted per MONTH, not per year, because the number carries the month:
+    // a year-scoped counter would make B-2610-001 impossible once October
+    // arrived.
+    const sequence = await tx.documentSequence.upsert({
+      where: {
+        tenantId_docType_year: { tenantId, docType: `BATCH-${year}${month}`, year: fullYear },
+      },
+      create: { tenantId, docType: `BATCH-${year}${month}`, year: fullYear, nextValue: 2 },
+      update: { nextValue: { increment: 1 } },
+      select: { nextValue: true },
+    });
+
+    // `create` sets nextValue to 2 and this batch takes 1; `update` returns the
+    // already-incremented value, so the number just used is one less.
+    const value = sequence.nextValue - 1;
+
+    return `${tenant.batchNumberPrefix.trim()}-${year}${month}-${String(value).padStart(3, '0')}`;
   }
 }
 

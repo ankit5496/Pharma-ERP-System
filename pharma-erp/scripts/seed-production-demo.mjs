@@ -1,10 +1,17 @@
 /**
  * Seeds a runnable Production & Quality Gate example for one company.
  *
- * Creates the master data a batch needs — items, stock lots and a formulation
- * — and stops there. It deliberately does NOT create a work order, issue
+ * Creates the master data a batch needs — items, stock and a formulation —
+ * and stops there. It deliberately does NOT create a work order, issue
  * material or release a batch: those are the steps the workflow exists to
  * demonstrate, and pre-running them would leave nothing to see.
+ *
+ * The stock is seeded as `stock_lots`, which is the one stock table: the lots
+ * Procure-to-Pay receives are the lots production consumes. A stock lot exists
+ * only against a goods-receipt line, so the seeder builds the chain a real lot
+ * arrives through — vendor, purchase order, goods receipt, lot — rather than
+ * inventing stock that no receipt explains. That constraint is the point: it
+ * is what makes "which supplier lot went into this batch" answerable.
  *
  * The lots are dated to make FEFO visible rather than merely correct:
  *
@@ -25,7 +32,35 @@
  * Connects on MIGRATION_DATABASE_URL, like the other provisioning scripts —
  * these are cross-tenant writes made deliberately, from outside a request.
  */
+import { createHash } from 'node:crypto';
+
 import { createProvisioningClient } from '@pharma-erp/database';
+
+/**
+ * A stable UUID for a demo row, derived from what the row IS.
+ *
+ * Goods-receipt lines and stock lots have no natural key to upsert on — a
+ * receipt line is identified by its receipt and position, both of which this
+ * script invents. Deriving the id from the tenant and the lot number instead
+ * makes re-running the seeder update the same rows, which is what keeps the
+ * demo replayable: a second run restores stock the first run's batch consumed.
+ *
+ * Version 5 shape, because `assertTenantId` and the UUID column both expect a
+ * well-formed one; a hash with the version and variant nibbles left alone is
+ * not a UUID, it is 16 bytes that usually pass.
+ */
+function demoId(key) {
+  const bytes = Buffer.from(
+    createHash('sha1').update(`pharma-erp:production-demo:${key}`).digest().subarray(0, 16),
+  );
+
+  bytes[6] = (bytes[6] & 0x0f) | 0x50;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+  const hex = bytes.toString('hex');
+
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 function parseArgs(argv) {
   const args = {};
@@ -137,6 +172,26 @@ const LOTS = [
   { item: 'PM-CARTON', lot: 'CTN-2501-B', months: 36, qty: '12000.000', status: 'USABLE' },
 ];
 
+/**
+ * What the demo vendor charges, per unit of issue.
+ *
+ * Nominal but not arbitrary: a purchase order line needs a rate, and a rate of
+ * zero would make the order's totals meaningless and the GST columns untestable.
+ * These are plausible Indian bulk figures in rupees, and nothing in production
+ * reads them — they exist so the receipt the stock arrived on is a real
+ * document rather than a placeholder.
+ */
+const RATES = {
+  'RM-PARA-API': '420.0000',
+  'RM-STARCH': '65.0000',
+  'RM-MG-ST': '180.0000',
+  'RM-PVP-K30': '640.0000',
+  'PM-BLISTER': '38.0000',
+  'PM-CARTON': '4.5000',
+};
+
+const PURCHASE_TAX_PERCENT = 12;
+
 /** Quantities per 100,000 tablets — a realistic 100 kg-ish granulation batch. */
 const BOM_OUTPUT_QUANTITY = '100000.000';
 
@@ -187,25 +242,191 @@ try {
     itemsByCode.set(item.code, saved);
   }
 
-  // Stock lots --------------------------------------------------------------
+  // Who the documents are attributed to --------------------------------------
+  // A purchase order and a goods receipt both record a person. Any active user
+  // of the company will do for a demo; the seeder is not trying to model who
+  // actually buys things.
+  const actor = await prisma.user.findFirst({
+    where: { tenantId, deletedAt: null },
+    orderBy: { createdAt: 'asc' },
+    select: { id: true },
+  });
+
+  if (!actor) {
+    fail(
+      `"${tenant.name}" has no users, so there is nobody to attribute the demo purchase order ` +
+        'to. Invite one first.',
+    );
+  }
+
+  // The vendor ---------------------------------------------------------------
+  const vendor = await prisma.party.upsert({
+    where: { tenantId_code: { tenantId, code: 'V-DEMO-01' } },
+    create: {
+      tenantId,
+      code: 'V-DEMO-01',
+      name: 'Meridian Fine Chemicals Pvt Ltd',
+      partyType: 'VENDOR',
+      gstin: '27AAFCM1234R1ZQ',
+      drugLicenceNumber: 'MH-MFG-20B-4417',
+      email: 'despatch@meridianfine.example',
+      phone: '+912240998100',
+      address: 'Plot 14, MIDC Taloja, Raigad, Maharashtra 410208',
+      paymentTermsDays: 45,
+    },
+    update: { name: 'Meridian Fine Chemicals Pvt Ltd', partyType: 'VENDOR' },
+  });
+
+  // The purchase order -------------------------------------------------------
+  // One line per material, carrying the total of that material's lots. Several
+  // lots against one order line is the ordinary case: a vendor ships one order
+  // in whatever batches they have.
+  const quantityByItem = new Map();
+
+  for (const lot of LOTS) {
+    quantityByItem.set(lot.item, (quantityByItem.get(lot.item) ?? 0) + Number(lot.qty));
+  }
+
+  const orderLines = [...quantityByItem].map(([code, quantity]) => {
+    const rate = Number(RATES[code]);
+    const taxable = quantity * rate;
+    const tax = (taxable * PURCHASE_TAX_PERCENT) / 100;
+
+    return {
+      id: demoId(`${tenantId}:po-line:${code}`),
+      code,
+      quantity: quantity.toFixed(3),
+      rate: RATES[code],
+      taxableAmount: taxable.toFixed(2),
+      taxAmount: tax.toFixed(2),
+      totalAmount: (taxable + tax).toFixed(2),
+    };
+  });
+
+  const orderTotals = orderLines.reduce(
+    (running, line) => ({
+      taxable: running.taxable + Number(line.taxableAmount),
+      tax: running.tax + Number(line.taxAmount),
+      total: running.total + Number(line.totalAmount),
+    }),
+    { taxable: 0, tax: 0, total: 0 },
+  );
+
+  const order = await prisma.purchaseOrder.upsert({
+    where: { tenantId_number: { tenantId, number: 'PO-DEMO-0001' } },
+    create: {
+      tenantId,
+      number: 'PO-DEMO-0001',
+      vendorId: vendor.id,
+      poDate: monthsFromNow(-2),
+      expectedDeliveryDate: monthsFromNow(-1),
+      paymentTermsDays: 45,
+      // CLOSED because everything on it has been received below. An order
+      // still OPEN against stock that is already on the shelf would make the
+      // pending-receipts view wrong.
+      status: 'CLOSED',
+      notes:
+        'Demo order. Created by the production seeder to explain where the demo stock came from.',
+      taxableAmount: orderTotals.taxable.toFixed(2),
+      taxAmount: orderTotals.tax.toFixed(2),
+      totalAmount: orderTotals.total.toFixed(2),
+      createdById: actor.id,
+      issuedAt: monthsFromNow(-2),
+    },
+    update: {
+      status: 'CLOSED',
+      taxableAmount: orderTotals.taxable.toFixed(2),
+      taxAmount: orderTotals.tax.toFixed(2),
+      totalAmount: orderTotals.total.toFixed(2),
+    },
+  });
+
+  for (const line of orderLines) {
+    const item = itemsByCode.get(line.code);
+
+    await prisma.purchaseOrderLine.upsert({
+      where: { id: line.id },
+      create: {
+        id: line.id,
+        tenantId,
+        purchaseOrderId: order.id,
+        itemId: item.id,
+        quantity: line.quantity,
+        rate: line.rate,
+        taxRatePercent: PURCHASE_TAX_PERCENT,
+        taxableAmount: line.taxableAmount,
+        taxAmount: line.taxAmount,
+        totalAmount: line.totalAmount,
+        quantityReceived: line.quantity,
+      },
+      update: { quantity: line.quantity, quantityReceived: line.quantity },
+    });
+  }
+
+  // The goods receipt --------------------------------------------------------
+  const receipt = await prisma.goodsReceipt.upsert({
+    where: { tenantId_number: { tenantId, number: 'GRN-DEMO-0001' } },
+    create: {
+      tenantId,
+      number: 'GRN-DEMO-0001',
+      purchaseOrderId: order.id,
+      vendorId: vendor.id,
+      receiptDate: monthsFromNow(-1),
+      vendorDocumentNumber: 'MFC/DN/2026/0881',
+      receivedById: actor.id,
+      remarks: 'Demo receipt. The stock the production workflow issues against arrives here.',
+    },
+    update: { purchaseOrderId: order.id, vendorId: vendor.id },
+  });
+
+  // Stock --------------------------------------------------------------------
   // `quantityAvailable` is reset to the received quantity on every run, so
   // re-seeding restores consumed stock and the demo can be replayed.
+  //
+  // The status is set here rather than left at the QUARANTINE default: incoming
+  // QC is what normally moves a lot to USABLE, and the demo needs stock that is
+  // already issuable — plus one quarantined and one rejected lot that FEFO must
+  // visibly decline to pick.
   for (const lot of LOTS) {
     const item = itemsByCode.get(lot.item);
+    const receiptLineId = demoId(`${tenantId}:grn-line:${lot.lot}`);
+    const orderLineId = demoId(`${tenantId}:po-line:${lot.item}`);
 
-    await prisma.materialLot.upsert({
-      where: {
-        tenantId_itemId_lotNumber: { tenantId, itemId: item.id, lotNumber: lot.lot },
-      },
+    await prisma.goodsReceiptLine.upsert({
+      where: { id: receiptLineId },
       create: {
+        id: receiptLineId,
         tenantId,
+        goodsReceiptId: receipt.id,
+        purchaseOrderLineId: orderLineId,
         itemId: item.id,
-        lotNumber: lot.lot,
+        vendorBatchNumber: lot.lot,
+        manufacturingDate: monthsFromNow(-2),
         expiryDate: monthsFromNow(lot.months),
-        receivedOn: monthsFromNow(-1),
+        quantityReceived: lot.qty,
+        storageLocation: 'Raw material store, rack A',
+      },
+      update: {
+        expiryDate: monthsFromNow(lot.months),
+        quantityReceived: lot.qty,
+      },
+    });
+
+    await prisma.stockLot.upsert({
+      where: { id: demoId(`${tenantId}:stock-lot:${lot.lot}`) },
+      create: {
+        id: demoId(`${tenantId}:stock-lot:${lot.lot}`),
+        tenantId,
+        lotNumber: lot.lot,
+        itemId: item.id,
+        goodsReceiptLineId: receiptLineId,
+        vendorBatchNumber: lot.lot,
+        manufacturingDate: monthsFromNow(-2),
+        expiryDate: monthsFromNow(lot.months),
         quantityReceived: lot.qty,
         quantityAvailable: lot.qty,
         status: lot.status,
+        storageLocation: 'Raw material store, rack A',
       },
       update: {
         expiryDate: monthsFromNow(lot.months),
@@ -254,6 +475,7 @@ try {
   console.log(line);
   console.log(`  Items        : ${ITEMS.length}`);
   console.log(`  Stock lots   : ${LOTS.length}  (2 unpickable on purpose: quarantine, rejected)`);
+  console.log(`  Received on  : PO-DEMO-0001 → GRN-DEMO-0001, from ${vendor.name}`);
   console.log(`  Formulation  : FG-PARA-500 v1, per ${BOM_OUTPUT_QUANTITY} tablets`);
   console.log(line);
   console.log(`
