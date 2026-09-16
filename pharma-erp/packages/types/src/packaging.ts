@@ -49,13 +49,11 @@ export const PACKAGING_QUANTITY_BASIS_LABELS: Record<PackagingQuantityBasis, str
 export const PACKAGING_COMPONENT_REQUIREMENTS = ['MANDATORY', 'OPTIONAL'] as const;
 export type PackagingComponentRequirement = (typeof PACKAGING_COMPONENT_REQUIREMENTS)[number];
 
-export const PACKAGING_COMPONENT_REQUIREMENT_LABELS: Record<
-  PackagingComponentRequirement,
-  string
-> = {
-  MANDATORY: 'Mandatory',
-  OPTIONAL: 'Optional',
-};
+export const PACKAGING_COMPONENT_REQUIREMENT_LABELS: Record<PackagingComponentRequirement, string> =
+  {
+    MANDATORY: 'Mandatory',
+    OPTIONAL: 'Optional',
+  };
 
 export const PACKAGING_COMPONENT_REQUIREMENT_DESCRIPTIONS: Record<
   PackagingComponentRequirement,

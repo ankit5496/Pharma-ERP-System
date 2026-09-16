@@ -11,12 +11,16 @@
  */
 import type { PartyStatus } from './parties';
 
-
 // ---------------------------------------------------------------------------
 // Enumerations — mirrored from the Prisma schema
 // ---------------------------------------------------------------------------
 
-export const ITEM_TYPES = ['RAW_MATERIAL', 'PACKING_MATERIAL', 'SEMI_FINISHED', 'FINISHED_GOOD'] as const;
+export const ITEM_TYPES = [
+  'RAW_MATERIAL',
+  'PACKING_MATERIAL',
+  'SEMI_FINISHED',
+  'FINISHED_GOOD',
+] as const;
 export type ItemType = (typeof ITEM_TYPES)[number];
 
 /**
@@ -51,12 +55,7 @@ export const ITEM_TYPE_LABELS: Record<ItemType, string> = {
 export const PARTY_TYPES = ['VENDOR', 'CUSTOMER', 'JOB_WORK_PRINCIPAL'] as const;
 export type PartyType = (typeof PARTY_TYPES)[number];
 
-export const REQUISITION_STATUSES = [
-  'OPEN',
-  'APPROVED',
-  'CONVERTED_TO_PO',
-  'CANCELLED',
-] as const;
+export const REQUISITION_STATUSES = ['OPEN', 'APPROVED', 'CONVERTED_TO_PO', 'CANCELLED'] as const;
 export type RequisitionStatus = (typeof REQUISITION_STATUSES)[number];
 
 /** Why a requisition exists: raised by the reorder check, or by a person. */
@@ -87,8 +86,12 @@ export const PRODUCTION_PLAN_STATUSES = [
 ] as const;
 export type ProductionPlanStatus = (typeof PRODUCTION_PLAN_STATUSES)[number];
 
-
-export const PURCHASE_ORDER_STATUSES = ['OPEN', 'PARTIALLY_RECEIVED', 'CLOSED', 'CANCELLED'] as const;
+export const PURCHASE_ORDER_STATUSES = [
+  'OPEN',
+  'PARTIALLY_RECEIVED',
+  'CLOSED',
+  'CANCELLED',
+] as const;
 export type PurchaseOrderStatus = (typeof PURCHASE_ORDER_STATUSES)[number];
 
 export const QC_DECISIONS = ['ACCEPTED', 'REJECTED', 'ON_HOLD'] as const;
@@ -249,6 +252,12 @@ export interface PartySummary {
   creditPeriodDays: number | null;
   /** Computed by the API so every screen agrees on today. */
   licenceExpired: boolean;
+  /**
+   * How many documents are on file. A count, not the documents themselves —
+   * the register renders one line per party and the bytes live in the database,
+   * so listing them here would pull every customer's paperwork to draw a link.
+   */
+  documentCount: number;
 }
 
 /**
@@ -547,6 +556,60 @@ export interface CreateGoodsReceiptRequest {
 // 4. Stock lots and incoming QC
 // ---------------------------------------------------------------------------
 
+/**
+ * Whether a lot may still be used, as the inventory view reports it.
+ *
+ * DERIVED, never stored — the same reasoning as PAYMENT_STATUSES' OVERDUE. A
+ * lot that expires tonight is usable now and expired tomorrow, and nothing
+ * happens in between: a stored flag would be wrong from midnight until
+ * something rewrote it, and "something rewrote it" is a job nobody runs at
+ * midnight. The API computes it per request from the expiry date.
+ */
+export const INVENTORY_STATUSES = ['USABLE', 'EXPIRED'] as const;
+export type InventoryStatus = (typeof INVENTORY_STATUSES)[number];
+
+export const INVENTORY_STATUS_LABELS: Record<InventoryStatus, string> = {
+  USABLE: 'Usable',
+  EXPIRED: 'Expired',
+};
+
+/**
+ * One lot of an item, as the Item register's Inventory view shows it.
+ *
+ * ONLY LOTS INCOMING QC ACCEPTED. A goods receipt creates a lot in QUARANTINE
+ * and QC is what releases it, so quarantined and rejected stock is deliberately
+ * absent — this view answers "what do we hold", and material nobody has passed
+ * is not held in any sense that matters.
+ */
+export interface InventoryLot {
+  id: string;
+  lotNumber: string;
+  vendorBatchNumber: string | null;
+  /** ISO date. Null when the material does not expire — cartons, leaflets. */
+  expiryDate: string | null;
+  quantityReceived: string;
+  quantityAvailable: string;
+  storageLocation: string | null;
+  /** Derived from `expiryDate` against today; see INVENTORY_STATUSES. */
+  status: InventoryStatus;
+  /** Whole days until expiry. Negative once past it, null when there is none. */
+  daysToExpiry: number | null;
+  /** Where it came from, so a lot can be traced without leaving the dialog. */
+  goodsReceiptNumber: string | null;
+  receivedOn: string | null;
+  vendorName: string | null;
+}
+
+export interface ItemInventory {
+  item: ItemSummary;
+  /** Sum of `quantityAvailable` across lots that are not expired. */
+  usableQuantity: string;
+  /** Sum across lots that are. */
+  expiredQuantity: string;
+  /** Soonest expiry first, undated lots last — the order FEFO consumes them. */
+  lots: InventoryLot[];
+}
+
 export interface StockLotSummary {
   id: string;
   lotNumber: string;
@@ -743,7 +806,13 @@ export interface RecordPaymentRequest {
  * day it falls due, which tells the person paying bills nothing about whether
  * they are late.
  */
-export const AGEING_BUCKETS = ['NOT_DUE', 'DUE_0_30', 'DUE_31_60', 'DUE_61_90', 'DUE_90_PLUS'] as const;
+export const AGEING_BUCKETS = [
+  'NOT_DUE',
+  'DUE_0_30',
+  'DUE_31_60',
+  'DUE_61_90',
+  'DUE_90_PLUS',
+] as const;
 export type AgeingBucket = (typeof AGEING_BUCKETS)[number];
 
 export const AGEING_BUCKET_LABELS: Record<AgeingBucket, string> = {

@@ -180,6 +180,9 @@ type PartyRow = {
 
 export function toPartySummary(row: PartyRow): PartySummary {
   return {
+    // Always 0 here: Procure-to-Pay resolves a party as a vendor, and documents
+    // are a customer's paperwork. The master-data listing is what counts them.
+    documentCount: 0,
     id: row.id,
     code: row.code,
     name: row.name,

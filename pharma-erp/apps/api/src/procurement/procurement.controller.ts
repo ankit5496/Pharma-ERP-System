@@ -17,6 +17,7 @@ import type {
   BomSummary,
   ProductionPlanSummary,
   ReorderCheckResult,
+  ItemInventory,
   ItemStockPosition,
   ItemSummary,
   LowStockItem,
@@ -39,11 +40,7 @@ import { parsePositive } from './decimal.util';
 import { ConsumeStockDto, ProcurementListQueryDto } from './dto/common.dto';
 import { CreateGoodsReceiptDto } from './dto/goods-receipt.dto';
 import { ChangeInvoiceStatusDto, CreatePurchaseInvoiceDto } from './dto/invoice.dto';
-import {
-  CreateItemDto,
-  CreatePartyDto,
-  CreateProductionPlanDto,
-} from './dto/masters.dto';
+import { CreateItemDto, CreatePartyDto, CreateProductionPlanDto } from './dto/masters.dto';
 import { RecordPaymentDto } from './dto/payment.dto';
 import {
   ChangePurchaseOrderStatusDto,
@@ -131,6 +128,20 @@ export class ProcurementController {
     return this.stock.stockPositions();
   }
 
+  /**
+   * What one item is actually holding, lot by lot — the Item register's
+   * Inventory view.
+   *
+   * Under `items/` rather than `stock/` because it is addressed by the item,
+   * and read-only: it computes the expired/usable standing per request and
+   * stores nothing.
+   */
+  @Get('items/:id/inventory')
+  @SkipAudit('Read-only stock listing.')
+  async itemInventory(@Param('id', ParseUUIDPipe) id: string): Promise<ItemInventory> {
+    return this.stock.itemInventory(id);
+  }
+
   @Get('stock/ledger')
   @SkipAudit('Read-only.')
   async ledger(@Query('itemId') itemId?: string): Promise<StockLedgerRow[]> {
@@ -182,9 +193,7 @@ export class ProcurementController {
   @Post('production-plans')
   @Auditable('ProductionPlan')
   @HttpCode(HttpStatus.CREATED)
-  async createProductionPlan(
-    @Body() dto: CreateProductionPlanDto,
-  ): Promise<ProductionPlanSummary> {
+  async createProductionPlan(@Body() dto: CreateProductionPlanDto): Promise<ProductionPlanSummary> {
     return this.masters.createProductionPlan(dto);
   }
 
@@ -256,9 +265,7 @@ export class ProcurementController {
    */
   @Patch('settings')
   @SkipAudit('Recorded by the service, with both values.')
-  async updateSettings(
-    @Body() dto: UpdateProcurementSettingsDto,
-  ): Promise<ProcurementSettings> {
+  async updateSettings(@Body() dto: UpdateProcurementSettingsDto): Promise<ProcurementSettings> {
     return this.settings.update(dto.autoRequisitionEnabled);
   }
 
@@ -274,9 +281,7 @@ export class ProcurementController {
 
   @Get('requisitions/:id')
   @SkipAudit('Read-only.')
-  async getRequisition(
-    @Param('id', new ParseUUIDPipe()) id: string,
-  ): Promise<RequisitionListItem> {
+  async getRequisition(@Param('id', new ParseUUIDPipe()) id: string): Promise<RequisitionListItem> {
     return this.requisitions.findOne(id);
   }
 
@@ -435,17 +440,13 @@ export class ProcurementController {
 
   @Get('invoices')
   @SkipAudit('Read-only listing.')
-  async listInvoices(
-    @Query() query: ProcurementListQueryDto,
-  ): Promise<PurchaseInvoiceListItem[]> {
+  async listInvoices(@Query() query: ProcurementListQueryDto): Promise<PurchaseInvoiceListItem[]> {
     return this.invoices.list(query);
   }
 
   @Get('invoices/:id')
   @SkipAudit('Read-only.')
-  async getInvoice(
-    @Param('id', new ParseUUIDPipe()) id: string,
-  ): Promise<PurchaseInvoiceListItem> {
+  async getInvoice(@Param('id', new ParseUUIDPipe()) id: string): Promise<PurchaseInvoiceListItem> {
     return this.invoices.findOne(id);
   }
 
