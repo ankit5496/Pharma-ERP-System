@@ -19,7 +19,7 @@ import type { PartyType } from './procurement';
 
 
 
-export const PARTY_STATUSES = ['ACTIVE', 'INACTIVE'] as const;
+export const PARTY_STATUSES = ['ACTIVE', 'INACTIVE', 'BLOCKED'] as const;
 export type PartyStatus = (typeof PARTY_STATUSES)[number];
 
 export const PARTY_TYPE_LABELS: Record<PartyType, string> = {
@@ -31,6 +31,8 @@ export const PARTY_TYPE_LABELS: Record<PartyType, string> = {
 export const PARTY_STATUS_LABELS: Record<PartyStatus, string> = {
   ACTIVE: 'Active',
   INACTIVE: 'Inactive',
+  /// A commercial hold, distinct from simply not being in use.
+  BLOCKED: 'Blocked',
 };
 
 /** Whether the customer-only fields apply — licence, credit limit, period. */

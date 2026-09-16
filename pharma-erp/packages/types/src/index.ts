@@ -5,6 +5,7 @@ export * from './health';
 export * from './job-work';
 export * from './licences';
 export * from './master-data';
+export * from './order-to-cash';
 export * from './packaging';
 export * from './parties';
 export * from './platform';
