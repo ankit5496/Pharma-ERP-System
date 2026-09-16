@@ -135,6 +135,9 @@ export function PackagingRequirementMasterForm({
   const typed = (field: string, stored?: string | number | null) =>
     state.values?.[field] ?? (stored === null || stored === undefined ? undefined : String(stored));
 
+  /** The refusal about one control, when the save named it. */
+  const errorFor = (field: string) => state.fieldErrors?.[field];
+
   const cell = (row: number, field: string, fallback?: string) =>
     rows[String(row)]?.[field] ?? fallback ?? '';
 
@@ -155,7 +158,9 @@ export function PackagingRequirementMasterForm({
 
   return (
     <form action={formAction} className="flex flex-col gap-8" noValidate>
-      {!state.ok && state.message && <FormError message={state.message} />}
+      {!state.ok && state.message && (
+        <FormError message={state.message} fieldErrors={state.fieldErrors} />
+      )}
 
       {(products.length === 0 || packingMaterials.length === 0) && (
         <p className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
@@ -184,6 +189,7 @@ export function PackagingRequirementMasterForm({
           ) : (
             <SelectField
               name="productId"
+              error={errorFor('productId')}
               label="Finished product"
               required
               options={productOptions}
@@ -195,6 +201,7 @@ export function PackagingRequirementMasterForm({
           )}
           <TextField
             name="packVariant"
+            error={errorFor('packVariant')}
             label="Pack variant"
             required
             maxLength={128}
@@ -204,6 +211,7 @@ export function PackagingRequirementMasterForm({
           />
           <TextField
             name="unitsPerPack"
+            error={errorFor('unitsPerPack')}
             label="Units per pack"
             required
             type="number"
