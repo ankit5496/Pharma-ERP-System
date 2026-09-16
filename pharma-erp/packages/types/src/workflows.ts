@@ -22,12 +22,17 @@ export type WorkflowKey = 'procure-to-pay' | 'production-quality' | 'order-to-ca
 /**
  * Whether a step has a real screen behind it.
  *
- * Mirrors `WidgetState` in ./dashboard and exists for the same reason: the
- * domain tables (Item, Party, Bom, Batch, purchase/production/sales) are not
- * built yet, and a step that renders an honest "not built yet" panel beats one
- * that shows an empty table. An empty table is a claim — "there are no open
+ * Mirrors `WidgetState` in ./dashboard and exists for the same reason: a step
+ * whose domain tables do not exist yet renders an honest "not built yet" panel
+ * rather than an empty table. An empty table is a claim — "there are no open
  * purchase orders" — and in a pharma system a wrong claim is worse than a
  * visible gap.
+ *
+ * All seven Order-to-Cash steps are 'ready': their screens are built and wired
+ * through @/components/order-to-cash. Their API endpoints are NOT built yet, so
+ * each panel renders its heading, its create form and its table chrome, then an
+ * ErrorState where the rows would be. That is deliberate — the failure is shown
+ * where the data would have been, not disguised as an empty register.
  */
 export type WorkflowStepState = 'ready' | 'planned';
 
@@ -171,43 +176,43 @@ export const WORKFLOWS: readonly Workflow[] = [
         key: 'customers',
         label: 'Customers',
         purpose: 'Distributors and stockists, with their drug licence details.',
-        state: 'planned',
+        state: 'ready',
       },
       {
         key: 'sales-orders',
         label: 'Sales orders',
         purpose: 'Orders received from a distributor, priced and confirmed.',
-        state: 'planned',
+        state: 'ready',
       },
       {
         key: 'allocation',
         label: 'Allocation',
         purpose: 'Reserving released batches against an order, respecting expiry order.',
-        state: 'planned',
+        state: 'ready',
       },
       {
         key: 'dispatch',
         label: 'Dispatch',
         purpose: 'Picking, packing and shipping, recorded down to the batch.',
-        state: 'planned',
+        state: 'ready',
       },
       {
         key: 'invoices',
         label: 'Invoices',
         purpose: 'Tax invoices raised against a dispatch.',
-        state: 'planned',
+        state: 'ready',
       },
       {
         key: 'receipts',
         label: 'Receipts',
         purpose: 'Payments collected and applied to outstanding invoices.',
-        state: 'planned',
+        state: 'ready',
       },
       {
         key: 'returns',
         label: 'Returns',
         purpose: 'Sales returns and recalls, traced back to the batch that shipped.',
-        state: 'planned',
+        state: 'ready',
       },
     ],
   },

@@ -14,6 +14,8 @@ import { JobWorkModule } from './job-work/job-work.module';
 import { LicencesModule } from './licences/licences.module';
 import { PackagingModule } from './packaging/packaging.module';
 import { PartiesModule } from './parties/parties.module';
+import { MastersModule } from './masters/masters.module';
+import { OrderToCashModule } from './order-to-cash/order-to-cash.module';
 import { PlatformModule } from './platform/platform.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { ProcurementModule } from './procurement/procurement.module';
@@ -47,6 +49,8 @@ import { UsersModule } from './users/users.module';
     JobWorkModule,
     PackagingModule,
     ProductionModule,
+    OrderToCashModule,
+    MastersModule,
   ],
   providers: [
     {
