@@ -3,7 +3,24 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@pharma-erp/database';
 
 /** Document prefixes. The set is closed so a typo cannot invent a new series. */
-export type DocumentType = 'PR' | 'PO' | 'GRN' | 'PINV' | 'PAY' | 'LOT' | 'PLAN';
+export type DocumentType =
+  // Procure-to-Pay
+  | 'PR'
+  | 'PO'
+  | 'GRN'
+  | 'PINV'
+  | 'PAY'
+  | 'LOT'
+  | 'PLAN'
+  // Order-to-Cash. Added when the O2C services that already passed these
+  // reached main without them — the numbering service is the one place that
+  // knows every document series, so a new one has to be declared here or it
+  // cannot be allocated.
+  | 'SO'
+  | 'DSP'
+  | 'SINV'
+  | 'RCPT'
+  | 'SRTN';
 
 /**
  * Allocates human-readable document numbers: PR-2026-0001, GRN-2026-0014.
@@ -29,7 +46,11 @@ export class NumberingService {
    * different timezone may see the roll-over a few hours early or late, which
    * is acceptable for a document number and not worth a per-tenant clock.
    */
-  async next(tx: Prisma.TransactionClient, tenantId: string, docType: DocumentType): Promise<string> {
+  async next(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    docType: DocumentType,
+  ): Promise<string> {
     const year = new Date().getUTCFullYear();
 
     // upsert then read would race; this is one statement. `update` on a
