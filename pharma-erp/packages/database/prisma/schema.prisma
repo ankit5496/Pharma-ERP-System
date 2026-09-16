@@ -186,6 +186,18 @@ model Tenant {
   packingRecords     BatchPackingRecord[]
   packagingConsumptions BatchPackagingConsumption[]
   finishedGoodsLots  FinishedGoodsLot[]
+  customerLicences   CustomerLicence[]
+  salesOrders        SalesOrder[]
+  salesOrderItems    SalesOrderItem[]
+  batchAllocations   BatchAllocation[]
+  dispatches         Dispatch[]
+  dispatchItems      DispatchItem[]
+  salesInvoices      SalesInvoice[]
+  salesInvoiceItems  SalesInvoiceItem[]
+  receipts           Receipt[]
+  salesReturns       SalesReturn[]
+  salesReturnItems   SalesReturnItem[]
+  receivableEntries  ReceivableLedgerEntry[]
 
   @@index([deletedAt])
   @@map("tenants")
@@ -261,6 +273,14 @@ model User {
   materialIssuesMade      MaterialIssue[]      @relation("MaterialIssueIssuedBy")
   packingRecordsMade      BatchPackingRecord[] @relation("BatchPackingRecordedBy")
   batchReleaseDecisions   Batch[]              @relation("BatchReleaseDecidedBy")
+  salesOrdersCreated      SalesOrder[]
+  allocationsMade         BatchAllocation[]    @relation("AllocationAllocatedBy")
+  allocationChecksMade    BatchAllocation[]    @relation("AllocationComplianceCheckedBy")
+  dispatchesCreated       Dispatch[]           @relation("DispatchCreatedBy")
+  invoicesCreated         SalesInvoice[]       @relation("InvoiceCreatedBy")
+  receiptsCreated         Receipt[]            @relation("ReceiptCreatedBy")
+  salesReturnsCreated     SalesReturn[]        @relation("ReturnCreatedBy")
+  ledgerEntriesCreated    ReceivableLedgerEntry[] @relation("LedgerCreatedBy")
 
   /// Retained alongside the global unique on `email` so a tenant's user list
   /// can be scanned by address without touching the global index.
@@ -330,8 +350,6 @@ model AuditLog {
 // dispensed quantity is a regulatory finding, not a cosmetic bug.
 // -----------------------------------------------------------------------------
 
-
-
 /// Which side of the business a party sits on.
 ///
 /// These three values are NOT ours to choose — the `parties` table and this
@@ -346,12 +364,46 @@ enum PartyType {
   JOB_WORK_PRINCIPAL
 }
 
+/// What kind of buyer this is. Drives nothing on its own today; it is what the
+/// sales desk filters and reports by.
+enum CustomerType {
+  DISTRIBUTOR
+  STOCKIST
+  WHOLESALER
+  RETAIL_CHAIN
+  HOSPITAL
+  GOVERNMENT
+  EXPORT
+  OTHER
+}
+
+enum CustomerLicenceCategory {
+  RETAIL
+  WHOLESALE
+  MANUFACTURING
+  OTHER
+}
+
+/// The licence's REGULATORY STANDING, not its freshness. Whether it is still in
+/// date is derived from expiryDate at read time; this records whether the
+/// authority has suspended or cancelled it. A licence can be well inside its
+/// validity window and still be SUSPENDED.
+enum CustomerLicenceStatus {
+  ACTIVE
+  SUSPENDED
+  CANCELLED
+}
+
 /// Whether a party may be transacted with. A CUSTOMER may only be ACTIVE
 /// when its drug licence number and validity are on file — enforced by the
 /// `parties_active_customer_is_licensed` CHECK constraint, not only here.
 enum PartyStatus {
   ACTIVE
   INACTIVE
+  /// A commercial hold — credit stopped, licence lapsed — distinct from
+  /// INACTIVE, which means the account is simply not in use. The order gate
+  /// treats them differently, so they cannot collapse into one value.
+  BLOCKED
 }
 
 /// Where a work order has reached. Ordered as the process runs.
@@ -377,7 +429,6 @@ enum BatchReleaseStatus {
 // Item
 // -----------------------------------------------------------------------------
 
-
 // -----------------------------------------------------------------------------
 // Party — suppliers and customers in one register
 // -----------------------------------------------------------------------------
@@ -391,7 +442,6 @@ enum BatchReleaseStatus {
 // file. That is a CHECK constraint in the migration, not just a service rule,
 // because selling to an unlicensed buyer is the kind of thing that has to be
 // impossible rather than merely discouraged.
-
 
 // -----------------------------------------------------------------------------
 // Stock: see StockLot, above
@@ -407,8 +457,6 @@ enum BatchReleaseStatus {
 // -----------------------------------------------------------------------------
 // Bom — the formulation
 // -----------------------------------------------------------------------------
-
-
 
 // -----------------------------------------------------------------------------
 // ProductionOrder — the work order
@@ -577,6 +625,10 @@ model Batch {
 
   packingRecord    BatchPackingRecord?
   finishedGoodsLot FinishedGoodsLot?
+
+  allocations       BatchAllocation[]
+  salesInvoiceItems SalesInvoiceItem[]
+  salesReturnItems  SalesReturnItem[]
 
   @@unique([tenantId, batchNumber])
   @@index([tenantId, releaseStatus, deletedAt])
@@ -903,7 +955,6 @@ enum LicenceType {
   NARCOTICS
 }
 
-
 /// Lifecycle of a purchase requisition.
 ///
 /// OPEN covers everything before approval — whether the system raised it from
@@ -1137,6 +1188,9 @@ model Item {
   productionOrders  ProductionOrder[]
   issueLines        MaterialIssueLine[]
   finishedGoodsLots FinishedGoodsLot[]
+  salesOrderItems   SalesOrderItem[]
+  salesInvoiceItems SalesInvoiceItem[]
+  salesReturnItems  SalesReturnItem[]
 
   @@unique([tenantId, code])
   @@index([tenantId, type, deletedAt])
@@ -1180,8 +1234,8 @@ model Bom {
   tenant  Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   product Item   @relation(fields: [productId], references: [id], onDelete: Restrict)
 
-  lines           BomLine[]
-  productionPlans ProductionPlan[]
+  lines            BomLine[]
+  productionPlans  ProductionPlan[]
   productionOrders ProductionOrder[]
   /// The principals whose brands this formulation is made under.
   jobWorkMappings  JobWorkProductMapping[]
@@ -1240,6 +1294,32 @@ model Party {
   creditLimit        Decimal?    @map("credit_limit") @db.Decimal(14, 2)
   creditPeriodDays   Int?        @map("credit_period_days")
 
+  // Added by 20260915000000_order_to_cash_customer_register. Customers are
+  // parties, not a second master — see that migration's header. All nullable,
+  // so every vendor Procure-to-Pay created stays valid without a backfill.
+  customerType  CustomerType? @map("customer_type")
+  contactPerson String?       @map("contact_person") @db.VarChar(255)
+
+  /// First two digits set the place of supply, deciding IGST vs CGST+SGST.
+  /// Separate from the GSTIN because a customer without one still has a state.
+  stateCode String? @map("state_code") @db.VarChar(2)
+
+  billingLine1 String? @map("billing_line1") @db.VarChar(255)
+  billingLine2 String? @map("billing_line2") @db.VarChar(255)
+  billingCity  String? @map("billing_city") @db.VarChar(120)
+  billingState String? @map("billing_state") @db.VarChar(120)
+  billingPin   String? @map("billing_pin") @db.VarChar(10)
+
+  /// Held apart from billing because goods and paperwork diverge: a distributor
+  /// bills to a head office and receives at a warehouse.
+  shippingLine1 String? @map("shipping_line1") @db.VarChar(255)
+  shippingLine2 String? @map("shipping_line2") @db.VarChar(255)
+  shippingCity  String? @map("shipping_city") @db.VarChar(120)
+  shippingState String? @map("shipping_state") @db.VarChar(120)
+  shippingPin   String? @map("shipping_pin") @db.VarChar(10)
+
+  notes String? @db.VarChar(1000)
+
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
@@ -1253,10 +1333,19 @@ model Party {
   /// Set only on a JOB_WORK_PRINCIPAL; see JobWorkAgreement.principalId.
   jobWorkAgreements        JobWorkAgreement[]
   documents                CustomerDocument[]
+  /// Set only on a CUSTOMER; see CustomerLicence.
+  customerLicences         CustomerLicence[]
+  salesOrders              SalesOrder[]
+  dispatches               Dispatch[]
+  salesInvoices            SalesInvoice[]
+  receipts                 Receipt[]
+  salesReturns             SalesReturn[]
+  receivableEntries        ReceivableLedgerEntry[]
 
   @@unique([tenantId, code])
   @@index([tenantId, partyType, deletedAt])
   @@index([tenantId, drugLicenceValidTo])
+  @@index([tenantId, customerType])
   @@map("parties")
 }
 
@@ -1278,7 +1367,7 @@ model CustomerDocument {
   id       String @id @default(uuid()) @db.Uuid
   tenantId String @map("tenant_id") @db.Uuid
 
-  /// The party. Only a CUSTOMER may have documents — enforced in the service,
+  /// The party. Only a CUSTOMER may have documents â€” enforced in the service,
   /// because a CHECK constraint cannot read another table.
   partyId String @map("party_id") @db.Uuid
 
@@ -1306,6 +1395,57 @@ model CustomerDocument {
 
   @@index([tenantId, partyId, deletedAt])
   @@map("customer_documents")
+}
+
+/// The customer's drug licences — distinct from `Licence`, which is the
+/// company's OWN register.
+///
+/// A child table rather than more columns on Party because a distributor holds
+/// several at once: a retail 20B, a wholesale 21B, sometimes a Schedule X
+/// endorsement, each with its own number, authority and expiry. The existing
+/// `Party.drugLicenceNumber` / `drugLicenceValidTo` pair holds one and is what
+/// US-MD-02's CHECK constraint reads, so it is left untouched; this register
+/// sits alongside it.
+model CustomerLicence {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  partyId  String @map("party_id") @db.Uuid
+
+  licenceNumber String                  @map("licence_number") @db.VarChar(64)
+  category      CustomerLicenceCategory
+  /// "20B", "21B" â€” the form the licence was granted on.
+  formNumber    String?                 @map("form_number") @db.VarChar(32)
+
+  issuingAuthority String? @map("issuing_authority") @db.VarChar(255)
+
+  /// Dates, not timestamps: a licence is valid for a day in the issuing
+  /// authority's calendar, and an instant would make validity depend on the
+  /// reader's timezone.
+  issueDate  DateTime @map("issue_date") @db.Date
+  expiryDate DateTime @map("expiry_date") @db.Date
+
+  status CustomerLicenceStatus @default(ACTIVE)
+
+  /// Schedule X needs a specific endorsement; a wholesale licence is not
+  /// enough. The allocation gate reads this directly.
+  coversScheduleX Boolean @default(false) @map("covers_schedule_x")
+
+  /// The one the order gate tests when it needs a single answer. At most one
+  /// per customer, enforced by a partial unique index in the migration.
+  isPrimary Boolean @default(false) @map("is_primary")
+
+  notes String? @db.VarChar(1000)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  party  Party  @relation(fields: [partyId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, partyId, licenceNumber])
+  @@index([tenantId, expiryDate])
+  @@map("customer_licences")
 }
 
 // -----------------------------------------------------------------------------
@@ -1572,9 +1712,9 @@ model PackagingRequirementLine {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  tenant      Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  packaging   PackagingRequirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
-  item        Item                 @relation("PackagingRequirementComponent", fields: [itemId], references: [id], onDelete: Restrict)
+  tenant    Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  packaging PackagingRequirement @relation(fields: [requirementId], references: [id], onDelete: Cascade)
+  item      Item                 @relation("PackagingRequirementComponent", fields: [itemId], references: [id], onDelete: Restrict)
 
   /// One line per component per specification. The same carton listed twice
   /// with different quantities is a contradiction, not a case to support.
@@ -1775,8 +1915,8 @@ model PurchaseOrderLine {
   /// keeping the link wherever it exists.
   requisitionId String? @map("requisition_id") @db.Uuid
 
-  quantity Decimal @db.Decimal(18, 4)
-  rate     Decimal @db.Decimal(18, 4)
+  quantity       Decimal @db.Decimal(18, 4)
+  rate           Decimal @db.Decimal(18, 4)
   /// GST percentage applied to this line, e.g. 12.00.
   taxRatePercent Decimal @default(0) @map("tax_rate_percent") @db.Decimal(5, 2)
 
@@ -2137,7 +2277,6 @@ model VendorPayment {
   @@map("vendor_payments")
 }
 
-
 // -----------------------------------------------------------------------------
 // Production plan
 // -----------------------------------------------------------------------------
@@ -2190,3 +2329,602 @@ model ProductionPlan {
   @@map("production_plans")
 }
 
+enum SalesOrderStatus {
+  DRAFT
+  PENDING_CHECK
+  APPROVED
+  BLOCKED
+  PARTIALLY_ALLOCATED
+  ALLOCATED
+  DISPATCHED
+  COMPLETED
+  CANCELLED
+}
+
+enum SalesOrderItemStatus {
+  PENDING
+  PARTIALLY_ALLOCATED
+  ALLOCATED
+  DISPATCHED
+  CANCELLED
+}
+
+/// NOT_RUN is distinct from FAIL on purpose: an unchecked order is not a
+/// refused one, and showing "Fail" for "nobody has asked yet" would stop work
+/// that was never blocked.
+enum CheckResult {
+  NOT_RUN
+  PASS
+  FAIL
+}
+
+/// A distributor's order, priced and gated.
+///
+/// The gate's verdict is STORED, not recomputed on read. An order approved last
+/// Tuesday must not silently re-decide itself today because the customer's
+/// balance moved — the person who approved it has to be able to see what they
+/// approved. Re-running the check overwrites the snapshot deliberately.
+model SalesOrder {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// Allocated from DocumentSequence ("SO"), not derived from the id, because
+  /// it is quoted on every downstream document.
+  orderNumber String @map("order_number") @db.VarChar(32)
+
+  customerId String @map("customer_id") @db.Uuid
+
+  orderDate             DateTime  @map("order_date") @db.Date
+  requestedDeliveryDate DateTime? @map("requested_delivery_date") @db.Date
+
+  status SalesOrderStatus @default(DRAFT)
+
+  /// Denormalised from the lines: the list screen sorts by them, and summing
+  /// lines per row would turn one query into N.
+  totalQuantity Decimal @default(0) @map("total_quantity") @db.Decimal(14, 3)
+  subtotal      Decimal @default(0) @db.Decimal(14, 2)
+  taxAmount     Decimal @default(0) @map("tax_amount") @db.Decimal(14, 2)
+  grandTotal    Decimal @default(0) @map("grand_total") @db.Decimal(14, 2)
+
+  licenceCheck       CheckResult @default(NOT_RUN) @map("licence_check")
+  creditCheck        CheckResult @default(NOT_RUN) @map("credit_check")
+  checkFailureReason String?     @map("check_failure_reason") @db.VarChar(500)
+  checkedAt          DateTime?   @map("checked_at") @db.Timestamptz(6)
+
+  /// The credit position as at checkedAt, kept so the refusal stays explicable.
+  outstandingAmount Decimal? @map("outstanding_amount") @db.Decimal(14, 2)
+  creditLimit       Decimal? @map("credit_limit") @db.Decimal(14, 2)
+  availableCredit   Decimal? @map("available_credit") @db.Decimal(14, 2)
+  orderAmount       Decimal? @map("order_amount") @db.Decimal(14, 2)
+  creditShortfall   Decimal? @map("credit_shortfall") @db.Decimal(14, 2)
+
+  licenceNumber     String?   @map("licence_number") @db.VarChar(64)
+  licenceExpiryDate DateTime? @map("licence_expiry_date") @db.Date
+
+  notes String? @db.VarChar(1000)
+
+  createdById String? @map("created_by_id") @db.Uuid
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  customer  Party  @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  createdBy User?  @relation(fields: [createdById], references: [id], onDelete: Restrict)
+
+  items         SalesOrderItem[]
+  allocations   BatchAllocation[]
+  dispatches    Dispatch[]
+  salesInvoices SalesInvoice[]
+  salesReturns  SalesReturn[]
+
+  @@unique([tenantId, orderNumber])
+  @@index([tenantId, status, deletedAt])
+  @@index([tenantId, customerId])
+  @@index([tenantId, orderDate])
+  @@map("sales_orders")
+}
+
+model SalesOrderItem {
+  id           String @id @default(uuid()) @db.Uuid
+  tenantId     String @map("tenant_id") @db.Uuid
+  salesOrderId String @map("sales_order_id") @db.Uuid
+
+  /// Printed on the invoice, so stored rather than inferred from row order.
+  lineNumber Int @map("line_number")
+
+  itemId String @map("item_id") @db.Uuid
+
+  quantityOrdered    Decimal @map("quantity_ordered") @db.Decimal(14, 3)
+  quantityAllocated  Decimal @default(0) @map("quantity_allocated") @db.Decimal(14, 3)
+  quantityDispatched Decimal @default(0) @map("quantity_dispatched") @db.Decimal(14, 3)
+
+  /// Copied from the item at order time, never read through: a price list
+  /// changes, but an order placed at last month's price stays placed at it.
+  unitPrice       Decimal @map("unit_price") @db.Decimal(14, 2)
+  discountPercent Decimal @default(0) @map("discount_percent") @db.Decimal(5, 2)
+  discountAmount  Decimal @default(0) @map("discount_amount") @db.Decimal(14, 2)
+  gstRatePercent  Decimal @default(0) @map("gst_rate_percent") @db.Decimal(5, 2)
+  taxableAmount   Decimal @default(0) @map("taxable_amount") @db.Decimal(14, 2)
+  taxAmount       Decimal @default(0) @map("tax_amount") @db.Decimal(14, 2)
+  lineTotal       Decimal @default(0) @map("line_total") @db.Decimal(14, 2)
+
+  status SalesOrderItemStatus @default(PENDING)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant     Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  salesOrder SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  item       Item       @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  allocations BatchAllocation[]
+
+  @@unique([salesOrderId, lineNumber])
+  @@index([tenantId, itemId])
+  @@index([salesOrderId])
+  @@map("sales_order_items")
+}
+
+enum AllocationStatus {
+  ALLOCATED
+  PARTIALLY_DISPATCHED
+  DISPATCHED
+  RELEASED_BACK
+  CANCELLED
+}
+
+enum DispatchStatus {
+  DRAFT
+  DISPATCHED
+  DELIVERED
+  CANCELLED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+}
+
+enum PaymentMethod {
+  BANK_TRANSFER
+  UPI
+  CHEQUE
+  CASH
+  OTHER
+}
+
+/// BOUNCED is not CANCELLED: a bounced cheque was received and recorded, then
+/// failed. The ledger shows both the credit and its reversal.
+enum ReceiptStatus {
+  RECORDED
+  CLEARED
+  BOUNCED
+  CANCELLED
+}
+
+enum SalesReturnStatus {
+  DRAFT
+  RECEIVED
+  QUARANTINED
+  CREDITED
+  CANCELLED
+}
+
+enum ReturnReason {
+  EXPIRED
+  NEAR_EXPIRY
+  DAMAGED
+  BREAKAGE
+  WRONG_ITEM
+  QUALITY_COMPLAINT
+  RECALL
+  ORDER_ERROR
+  OTHER
+}
+
+/// Returned medicine has an unknown storage history, so QUARANTINE is the
+/// default and putting it back on the shelf is a decision somebody makes.
+enum ReturnedStockDisposition {
+  QUARANTINE
+  DESTROY
+  RESTOCK
+}
+
+enum ReceivableEntryType {
+  INVOICE
+  RECEIPT
+  CREDIT_NOTE
+  ADJUSTMENT
+}
+
+enum ReceivableDirection {
+  DEBIT
+  CREDIT
+}
+
+/// Stock reserved against an order line, picked first-expiry-first-out.
+model BatchAllocation {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  salesOrderId     String @map("sales_order_id") @db.Uuid
+  salesOrderItemId String @map("sales_order_item_id") @db.Uuid
+  batchId          String @map("batch_id") @db.Uuid
+
+  quantityAllocated  Decimal @map("quantity_allocated") @db.Decimal(14, 3)
+  quantityDispatched Decimal @default(0) @map("quantity_dispatched") @db.Decimal(14, 3)
+
+  /// The expiry as at allocation, so a FEFO decision can be explained later
+  /// with the figure it was actually made on.
+  expiryDateAtAllocation DateTime @map("expiry_date_at_allocation") @db.Date
+
+  status AllocationStatus @default(ALLOCATED)
+
+  /// Schedule H1 / H1X / X need a second look before stock physically moves.
+  complianceRecheckRequired Boolean   @default(false) @map("compliance_recheck_required")
+  complianceCheckedAt       DateTime? @map("compliance_checked_at") @db.Timestamptz(6)
+  complianceCheckedById     String?   @map("compliance_checked_by_id") @db.Uuid
+  complianceNotes           String?   @map("compliance_notes") @db.VarChar(1000)
+
+  allocatedById String? @map("allocated_by_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant              Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  salesOrder          SalesOrder     @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
+  salesOrderItem      SalesOrderItem @relation(fields: [salesOrderItemId], references: [id], onDelete: Cascade)
+  batch               Batch          @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  complianceCheckedBy User?          @relation("AllocationComplianceCheckedBy", fields: [complianceCheckedById], references: [id], onDelete: Restrict)
+  allocatedBy         User?          @relation("AllocationAllocatedBy", fields: [allocatedById], references: [id], onDelete: Restrict)
+
+  dispatchItems DispatchItem[]
+
+  @@index([tenantId, salesOrderId])
+  @@index([tenantId, batchId])
+  @@index([tenantId, status])
+  @@index([salesOrderItemId])
+  @@map("batch_allocations")
+}
+
+model Dispatch {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  dispatchNumber String @map("dispatch_number") @db.VarChar(32)
+
+  salesOrderId   String  @map("sales_order_id") @db.Uuid
+  customerId     String  @map("customer_id") @db.Uuid
+  /// Nullable: goods may leave before the paperwork is finished.
+  salesInvoiceId String? @map("sales_invoice_id") @db.Uuid
+
+  dispatchDate DateTime       @map("dispatch_date") @db.Date
+  status       DispatchStatus @default(DRAFT)
+
+  transporterName String? @map("transporter_name") @db.VarChar(255)
+  vehicleNumber   String? @map("vehicle_number") @db.VarChar(32)
+  /// Lorry receipt number from the transporter.
+  lrNumber        String? @map("lr_number") @db.VarChar(64)
+  ewayBillNumber  String? @map("eway_bill_number") @db.VarChar(32)
+
+  totalQuantity Decimal @default(0) @map("total_quantity") @db.Decimal(14, 3)
+
+  notes String? @db.VarChar(1000)
+
+  createdById String? @map("created_by_id") @db.Uuid
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  salesOrder   SalesOrder    @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
+  customer     Party         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  salesInvoice SalesInvoice? @relation("DispatchInvoice", fields: [salesInvoiceId], references: [id], onDelete: Restrict)
+  createdBy    User?         @relation("DispatchCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  items          DispatchItem[]
+  invoicesRaised SalesInvoice[] @relation("InvoiceDispatch")
+
+  @@unique([tenantId, dispatchNumber])
+  @@index([tenantId, salesOrderId])
+  @@index([tenantId, customerId])
+  @@index([tenantId, status, deletedAt])
+  @@map("dispatches")
+}
+
+model DispatchItem {
+  id         String @id @default(uuid()) @db.Uuid
+  tenantId   String @map("tenant_id") @db.Uuid
+  dispatchId String @map("dispatch_id") @db.Uuid
+
+  batchAllocationId String @map("batch_allocation_id") @db.Uuid
+
+  quantityDispatched Decimal @map("quantity_dispatched") @db.Decimal(14, 3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant          Tenant          @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  dispatch        Dispatch        @relation(fields: [dispatchId], references: [id], onDelete: Cascade)
+  batchAllocation BatchAllocation @relation(fields: [batchAllocationId], references: [id], onDelete: Restrict)
+
+  @@index([dispatchId])
+  @@index([batchAllocationId])
+  @@index([tenantId])
+  @@map("dispatch_items")
+}
+
+/// A tax invoice. Everything printed on it is COPIED at issue, because it is a
+/// statutory document and has to keep saying what it said.
+model SalesInvoice {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  invoiceNumber String @map("invoice_number") @db.VarChar(32)
+
+  customerId   String  @map("customer_id") @db.Uuid
+  salesOrderId String? @map("sales_order_id") @db.Uuid
+  dispatchId   String? @map("dispatch_id") @db.Uuid
+
+  invoiceDate DateTime  @map("invoice_date") @db.Date
+  dueDate     DateTime? @map("due_date") @db.Date
+
+  status        InvoiceStatus @default(DRAFT)
+  paymentStatus PaymentStatus @default(UNPAID) @map("payment_status")
+
+  billingName     String  @map("billing_name") @db.VarChar(255)
+  billingAddress  String? @map("billing_address") @db.VarChar(1000)
+  shippingName    String? @map("shipping_name") @db.VarChar(255)
+  shippingAddress String? @map("shipping_address") @db.VarChar(1000)
+  customerGstin   String? @map("customer_gstin") @db.VarChar(15)
+  sellerGstin     String? @map("seller_gstin") @db.VarChar(15)
+
+  placeOfSupplyStateCode String? @map("place_of_supply_state_code") @db.VarChar(2)
+  sellerStateCode        String? @map("seller_state_code") @db.VarChar(2)
+  isInterState           Boolean @default(false) @map("is_inter_state")
+
+  subtotal       Decimal @default(0) @db.Decimal(14, 2)
+  discountAmount Decimal @default(0) @map("discount_amount") @db.Decimal(14, 2)
+  cgstAmount     Decimal @default(0) @map("cgst_amount") @db.Decimal(14, 2)
+  sgstAmount     Decimal @default(0) @map("sgst_amount") @db.Decimal(14, 2)
+  igstAmount     Decimal @default(0) @map("igst_amount") @db.Decimal(14, 2)
+  taxAmount      Decimal @default(0) @map("tax_amount") @db.Decimal(14, 2)
+  grandTotal     Decimal @default(0) @map("grand_total") @db.Decimal(14, 2)
+
+  amountPaid     Decimal @default(0) @map("amount_paid") @db.Decimal(14, 2)
+  amountCredited Decimal @default(0) @map("amount_credited") @db.Decimal(14, 2)
+
+  notes String? @db.VarChar(1000)
+
+  createdById String? @map("created_by_id") @db.Uuid
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  customer   Party       @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  salesOrder SalesOrder? @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
+  dispatch   Dispatch?   @relation("InvoiceDispatch", fields: [dispatchId], references: [id], onDelete: Restrict)
+  createdBy  User?       @relation("InvoiceCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  items            SalesInvoiceItem[]
+  receipts         Receipt[]
+  salesReturns     SalesReturn[]
+  dispatchesBilled Dispatch[]              @relation("DispatchInvoice")
+  ledgerEntries    ReceivableLedgerEntry[]
+
+  @@unique([tenantId, invoiceNumber])
+  @@index([tenantId, customerId])
+  @@index([tenantId, paymentStatus, deletedAt])
+  @@index([tenantId, dueDate])
+  @@map("sales_invoices")
+}
+
+model SalesInvoiceItem {
+  id             String @id @default(uuid()) @db.Uuid
+  tenantId       String @map("tenant_id") @db.Uuid
+  salesInvoiceId String @map("sales_invoice_id") @db.Uuid
+
+  lineNumber Int @map("line_number")
+
+  itemId  String @map("item_id") @db.Uuid
+  batchId String @map("batch_id") @db.Uuid
+
+  description String   @db.VarChar(500)
+  hsnCode     String?  @map("hsn_code") @db.VarChar(16)
+  batchNumber String   @map("batch_number") @db.VarChar(32)
+  expiryDate  DateTime @map("expiry_date") @db.Date
+  mrp         Decimal? @db.Decimal(14, 2)
+
+  quantity       Decimal @db.Decimal(14, 3)
+  unitPrice      Decimal @map("unit_price") @db.Decimal(14, 2)
+  discountAmount Decimal @default(0) @map("discount_amount") @db.Decimal(14, 2)
+  taxableValue   Decimal @default(0) @map("taxable_value") @db.Decimal(14, 2)
+  gstRatePercent Decimal @default(0) @map("gst_rate_percent") @db.Decimal(5, 2)
+  cgstAmount     Decimal @default(0) @map("cgst_amount") @db.Decimal(14, 2)
+  sgstAmount     Decimal @default(0) @map("sgst_amount") @db.Decimal(14, 2)
+  igstAmount     Decimal @default(0) @map("igst_amount") @db.Decimal(14, 2)
+  taxAmount      Decimal @default(0) @map("tax_amount") @db.Decimal(14, 2)
+  lineTotal      Decimal @default(0) @map("line_total") @db.Decimal(14, 2)
+
+  /// The DPCO/NLEM ceiling as at invoice time, when one applied.
+  ceilingPriceAtInvoice Decimal? @map("ceiling_price_at_invoice") @db.Decimal(14, 2)
+
+  quantityReturned Decimal @default(0) @map("quantity_returned") @db.Decimal(14, 3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  salesInvoice SalesInvoice @relation(fields: [salesInvoiceId], references: [id], onDelete: Cascade)
+  item         Item         @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  batch        Batch        @relation(fields: [batchId], references: [id], onDelete: Restrict)
+
+  returnItems SalesReturnItem[]
+
+  @@unique([salesInvoiceId, lineNumber])
+  @@index([tenantId, itemId])
+  @@index([salesInvoiceId])
+  @@map("sales_invoice_items")
+}
+
+model Receipt {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  receiptNumber String @map("receipt_number") @db.VarChar(32)
+
+  customerId     String @map("customer_id") @db.Uuid
+  salesInvoiceId String @map("sales_invoice_id") @db.Uuid
+
+  receiptDate DateTime @map("receipt_date") @db.Date
+  amount      Decimal  @db.Decimal(14, 2)
+
+  paymentMethod   PaymentMethod @map("payment_method")
+  referenceNumber String?       @map("reference_number") @db.VarChar(64)
+
+  status ReceiptStatus @default(RECORDED)
+
+  notes String? @db.VarChar(1000)
+
+  createdById String? @map("created_by_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  customer     Party        @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  salesInvoice SalesInvoice @relation(fields: [salesInvoiceId], references: [id], onDelete: Restrict)
+  createdBy    User?        @relation("ReceiptCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  ledgerEntries ReceivableLedgerEntry[]
+
+  @@unique([tenantId, receiptNumber])
+  @@index([tenantId, salesInvoiceId])
+  @@index([tenantId, customerId])
+  @@map("receipts")
+}
+
+model SalesReturn {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  returnNumber String @map("return_number") @db.VarChar(32)
+
+  customerId     String  @map("customer_id") @db.Uuid
+  salesInvoiceId String  @map("sales_invoice_id") @db.Uuid
+  salesOrderId   String? @map("sales_order_id") @db.Uuid
+
+  returnDate  DateTime     @map("return_date") @db.Date
+  reason      ReturnReason
+  reasonNotes String?      @map("reason_notes") @db.VarChar(1000)
+
+  status SalesReturnStatus @default(DRAFT)
+
+  subtotal    Decimal @default(0) @db.Decimal(14, 2)
+  taxAmount   Decimal @default(0) @map("tax_amount") @db.Decimal(14, 2)
+  totalAmount Decimal @default(0) @map("total_amount") @db.Decimal(14, 2)
+
+  notes String? @db.VarChar(1000)
+
+  createdById String? @map("created_by_id") @db.Uuid
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  customer     Party        @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  salesInvoice SalesInvoice @relation(fields: [salesInvoiceId], references: [id], onDelete: Restrict)
+  salesOrder   SalesOrder?  @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
+  createdBy    User?        @relation("ReturnCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  items         SalesReturnItem[]
+  ledgerEntries ReceivableLedgerEntry[]
+
+  @@unique([tenantId, returnNumber])
+  @@index([tenantId, salesInvoiceId])
+  @@index([tenantId, customerId])
+  @@index([tenantId, status, deletedAt])
+  @@map("sales_returns")
+}
+
+model SalesReturnItem {
+  id            String @id @default(uuid()) @db.Uuid
+  tenantId      String @map("tenant_id") @db.Uuid
+  salesReturnId String @map("sales_return_id") @db.Uuid
+
+  salesInvoiceItemId String @map("sales_invoice_item_id") @db.Uuid
+  itemId             String @map("item_id") @db.Uuid
+  batchId            String @map("batch_id") @db.Uuid
+
+  quantity       Decimal @db.Decimal(14, 3)
+  unitPrice      Decimal @map("unit_price") @db.Decimal(14, 2)
+  gstRatePercent Decimal @default(0) @map("gst_rate_percent") @db.Decimal(5, 2)
+  taxableValue   Decimal @default(0) @map("taxable_value") @db.Decimal(14, 2)
+  taxAmount      Decimal @default(0) @map("tax_amount") @db.Decimal(14, 2)
+  amount         Decimal @default(0) @db.Decimal(14, 2)
+
+  reason      ReturnReason
+  disposition ReturnedStockDisposition @default(QUARANTINE)
+
+  notes String? @db.VarChar(1000)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  salesReturn      SalesReturn      @relation(fields: [salesReturnId], references: [id], onDelete: Cascade)
+  salesInvoiceItem SalesInvoiceItem @relation(fields: [salesInvoiceItemId], references: [id], onDelete: Restrict)
+  item             Item             @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  batch            Batch            @relation(fields: [batchId], references: [id], onDelete: Restrict)
+
+  @@index([salesReturnId])
+  @@index([salesInvoiceItemId])
+  @@index([tenantId])
+  @@map("sales_return_items")
+}
+
+/// Append-only. The outstanding balance is the running sum, so it can be
+/// explained line by line rather than asserted by a cached column.
+model ReceivableLedgerEntry {
+  id       BigInt @id @default(autoincrement())
+  tenantId String @map("tenant_id") @db.Uuid
+
+  customerId String @map("customer_id") @db.Uuid
+
+  entryType ReceivableEntryType @map("entry_type")
+  direction ReceivableDirection
+  amount    Decimal             @db.Decimal(14, 2)
+
+  salesInvoiceId String? @map("sales_invoice_id") @db.Uuid
+  receiptId      String? @map("receipt_id") @db.Uuid
+  salesReturnId  String? @map("sales_return_id") @db.Uuid
+
+  notes String? @db.VarChar(1000)
+
+  createdById String? @map("created_by_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  customer     Party         @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  salesInvoice SalesInvoice? @relation(fields: [salesInvoiceId], references: [id], onDelete: Restrict)
+  receipt      Receipt?      @relation(fields: [receiptId], references: [id], onDelete: Restrict)
+  salesReturn  SalesReturn?  @relation(fields: [salesReturnId], references: [id], onDelete: Restrict)
+  createdBy    User?         @relation("LedgerCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, customerId, createdAt])
+  @@index([tenantId, salesInvoiceId])
+  @@map("receivable_ledger_entries")
+}
