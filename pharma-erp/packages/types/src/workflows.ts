@@ -147,18 +147,23 @@ export const WORKFLOWS: readonly Workflow[] = [
         purpose: 'The batch manufacturing record: every stage, signed as it happens.',
         state: 'ready',
       },
-      {
-        key: 'in-process-checks',
-        label: 'In-process checks',
-        purpose: 'Quality checks taken during manufacture, at defined control points.',
-        state: 'planned',
-      },
-      {
-        key: 'finished-goods-testing',
-        label: 'Finished-goods testing',
-        purpose: 'Final analytical testing against the product specification.',
-        state: 'planned',
-      },
+      // REMOVED, NOT BUILT: 'in-process-checks' and 'finished-goods-testing'
+      // sat here between the batch record and the release gate. They were
+      // withdrawn from the navigation on 2026-09-15 at the product owner's
+      // request, because a tab that only ever showed "not built yet" read as a
+      // broken screen rather than as a gap.
+      //
+      // The gap itself is still real, and withdrawing the tabs does not close
+      // it: a Quality Officer can release a batch with NO recorded test
+      // results. The release decision captures who, when and why, but nothing
+      // requires that in-process checks passed or that finished-goods testing
+      // happened. Building them needs tables that do not exist — a product
+      // specification master (what to test, and the acceptance limits), a
+      // results table per batch per control point — and then the release gate
+      // has to refuse a batch whose required tests have not passed.
+      //
+      // Restore them here when that work is scheduled; the placeholder
+      // mechanism they used is still in place for the other workflows.
       {
         key: 'batch-release',
         label: 'Batch release',

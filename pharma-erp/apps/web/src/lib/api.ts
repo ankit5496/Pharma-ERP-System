@@ -6,7 +6,18 @@ import { env } from './env';
 
 /** Shape returned to the UI so a failed call renders as data, not an exception. */
 export type ApiResult<T> =
-  { ok: true; data: T } | { ok: false; status: number | null; error: string };
+  | { ok: true; data: T }
+  | {
+      ok: false;
+      status: number | null;
+      error: string;
+      /**
+       * The refusal keyed by the DTO property it is about, when the API said
+       * so. Lets a form mark the offending control; absent for refusals that
+       * are not about one field, and the caller shows `error` then.
+       */
+      fields?: Record<string, string>;
+    };
 
 /**
  * How long to wait for the API before giving up.
@@ -204,7 +215,14 @@ export async function apiFetch<T>(
       });
 
       if (!response.ok) {
-        return { ok: false, status: response.status, error: await readErrorMessage(response) };
+        const refusal = await readError(response);
+
+        return {
+          ok: false,
+          status: response.status,
+          error: refusal.message,
+          ...(refusal.fields ? { fields: refusal.fields } : {}),
+        };
       }
 
       // 204 and friends have no body to parse.
@@ -280,27 +298,59 @@ async function getSessionToken(): Promise<string | null> {
 }
 
 /**
- * Pulls a human-usable message out of a Nest error response.
+ * Pulls a human-usable message out of a Nest error response, and the
+ * per-field errors when the API sent them.
  *
  * Nest's exception filter returns `{ message: string | string[], error, statusCode }`,
  * and the array form is what the ValidationPipe produces — one entry per failed
  * constraint. Joining them is what turns a 400 into something a form can show.
+ *
+ * `fields` is the same failures keyed by the DTO property they came from, which
+ * is what lets a form mark the offending control instead of printing a
+ * paragraph above it. Absent on refusals that are not about one field — an
+ * expired session, a role check, a rule about the state of a document — and the
+ * caller falls back to the sentence then.
  */
-async function readErrorMessage(response: Response): Promise<string> {
+async function readError(response: Response): Promise<{
+  message: string;
+  fields?: Record<string, string>;
+}> {
   try {
     const body: unknown = await response.json();
 
-    if (body && typeof body === 'object' && 'message' in body) {
-      const message = (body as { message: unknown }).message;
+    if (body && typeof body === 'object') {
+      const raw = body as { message?: unknown; fields?: unknown };
 
-      if (Array.isArray(message)) return message.join('. ');
-      if (typeof message === 'string' && message.length > 0) return message;
+      const fields: Record<string, string> = {};
+
+      if (Array.isArray(raw.fields)) {
+        for (const entry of raw.fields) {
+          if (
+            entry &&
+            typeof entry === 'object' &&
+            typeof (entry as { field?: unknown }).field === 'string' &&
+            typeof (entry as { message?: unknown }).message === 'string'
+          ) {
+            const { field, message } = entry as { field: string; message: string };
+            // First wins: the API already ordered them most-specific first.
+            if (!(field in fields)) fields[field] = message;
+          }
+        }
+      }
+
+      const message = Array.isArray(raw.message)
+        ? raw.message.join(' ')
+        : typeof raw.message === 'string' && raw.message.length > 0
+          ? raw.message
+          : `${response.status} ${response.statusText || 'Request failed'}`;
+
+      return Object.keys(fields).length > 0 ? { message, fields } : { message };
     }
   } catch {
     // Not JSON — fall through to the status line.
   }
 
-  return `${response.status} ${response.statusText || 'Request failed'}`;
+  return { message: `${response.status} ${response.statusText || 'Request failed'}` };
 }
 
 /** Calls the API's unauthenticated health endpoint. */

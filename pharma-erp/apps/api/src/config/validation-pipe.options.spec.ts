@@ -77,7 +77,9 @@ describe('VALIDATION_PIPE_OPTIONS', () => {
       });
 
       expect(response.statusCode).toBe(400);
-      expect(messagesOf(response)).toContain('Enter a valid email address');
+      // With the terminating full stop toReadableMessages adds, so that the
+      // web app can join several messages into prose rather than a run-on.
+      expect(messagesOf(response)).toContain('Enter a valid email address.');
     });
 
     it('accepts the same address without the trailing dot', async () => {
@@ -89,8 +91,8 @@ describe('VALIDATION_PIPE_OPTIONS', () => {
     it('reports every failed constraint, not just the first', async () => {
       const messages = messagesOf(await responseFor(pipe, { email: 'nope', password: '' }));
 
-      expect(messages).toContain('Enter a valid email address');
-      expect(messages).toContain('Enter your password');
+      expect(messages).toContain('Enter a valid email address.');
+      expect(messages).toContain('Enter your password.');
     });
 
     it('does not put the submitted password in the response', async () => {

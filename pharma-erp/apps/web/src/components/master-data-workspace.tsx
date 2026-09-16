@@ -18,6 +18,7 @@ import {
 } from '@pharma-erp/types';
 
 import { BomMasterForm } from '@/app/(app)/master-data/bom-master-form';
+import { ItemInventoryDialog } from '@/components/item-inventory-dialog';
 import { ItemMasterForm } from '@/app/(app)/master-data/item-master-form';
 import { LicenceComplianceMasterForm } from '@/app/(app)/master-data/licence-compliance-master-form';
 import { PackagingRequirementMasterForm } from '@/app/(app)/master-data/packaging-requirement-master-form';
@@ -85,6 +86,11 @@ export function MasterDataWorkspace({
   );
 
   const [activeKey, setActiveKey] = useState<MasterDataFormKey>(initialKey);
+  // The inventory dialog is its own layer, not a drawer mode: it is a read,
+  // it does not save anything, and conflating the two would mean every
+  // drawer branch had to explain why it is not the inventory.
+  const [inventoryFor, setInventoryFor] = useState<ItemSummary | null>(null);
+
   // One piece of state, not an `isOpen` plus an `editing`: those two can
   // disagree, and "open with nothing to edit" is not a state that exists.
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
@@ -96,8 +102,7 @@ export function MasterDataWorkspace({
   // would show them the Item grid under a heading that says Licence &
   // Compliance. Keeping the requested register active lets Register answer
   // honestly instead.
-  const active =
-    MASTER_DATA_FORMS.find((form) => form.key === activeKey) ?? MASTER_DATA_FORMS[0]!;
+  const active = MASTER_DATA_FORMS.find((form) => form.key === activeKey) ?? MASTER_DATA_FORMS[0]!;
   const Form = FORMS[active.key];
 
   function select(key: MasterDataFormKey) {
@@ -174,7 +179,9 @@ export function MasterDataWorkspace({
             agreements={agreements}
             packaging={packaging}
             onNew={() => setDrawer({ mode: 'new' })}
+            onEditBom={(row) => setDrawer({ mode: 'edit-bom', bom: row })}
             onEditItem={(row) => setDrawer({ mode: 'edit', item: row })}
+            onInventory={setInventoryFor}
             onEditParty={(row) => setDrawer({ mode: 'edit-party', party: row })}
             onEditLicence={(row) => setDrawer({ mode: 'edit-licence', licence: row })}
             onEditAgreement={(row) => setDrawer({ mode: 'edit-agreement', agreement: row })}
@@ -200,14 +207,18 @@ export function MasterDataWorkspace({
                       }`
                     : drawer.mode === 'edit-packaging'
                       ? `${drawer.requirement.product.code} — ${drawer.requirement.packVariant}`
-                      : `New — ${active.title}`
+                      : drawer.mode === 'edit-bom'
+                        ? `${drawer.bom.product.code} v${drawer.bom.version}`
+                        : `New — ${active.title}`
           }
           description={
             drawer.mode === 'new'
               ? SAVES.has(active.key)
                 ? 'Required fields are marked. The record joins the register as soon as it saves.'
                 : 'Nothing is saved yet; this register has no create endpoint behind it.'
-              : 'The code cannot be changed. Everything else can.'
+              : drawer.mode === 'edit-bom'
+                ? 'Editing this version in place. The product and the version number cannot be changed.'
+                : 'The code cannot be changed. Everything else can.'
           }
           onClose={closeDrawer}
         >
@@ -215,7 +226,13 @@ export function MasterDataWorkspace({
               and each is only reachable from its own grid — so the edit
               branches name their form directly rather than pretending the
               registry supports editing generally. */}
-          {drawer.mode === 'edit' ? (
+          {drawer.mode === 'edit-bom' ? (
+            <BomMasterForm
+              bom={drawer.bom}
+              items={items.ok ? items.data : []}
+              onSaved={closeDrawer}
+            />
+          ) : drawer.mode === 'edit' ? (
             <ItemMasterForm item={drawer.item} onSaved={closeDrawer} />
           ) : drawer.mode === 'edit-party' ? (
             <PartyMasterForm party={drawer.party} onSaved={closeDrawer} />
@@ -244,6 +261,10 @@ export function MasterDataWorkspace({
           )}
         </MasterDataDrawer>
       )}
+
+      {inventoryFor && (
+        <ItemInventoryDialog item={inventoryFor} onClose={() => setInventoryFor(null)} />
+      )}
     </>
   );
 }
@@ -255,7 +276,8 @@ type DrawerState =
   | { mode: 'edit-party'; party: PartySummary }
   | { mode: 'edit-licence'; licence: LicenceSummary }
   | { mode: 'edit-agreement'; agreement: JobWorkAgreementSummary }
-  | { mode: 'edit-packaging'; requirement: PackagingRequirementView };
+  | { mode: 'edit-packaging'; requirement: PackagingRequirementView }
+  | { mode: 'edit-bom'; bom: BomView };
 
 /**
  * Whether this role may see the licence register at all — US-MD-04.
@@ -275,9 +297,7 @@ function canSeeLicences(role: UserRole): boolean {
  * asks the question, and because the honest answer stops being "yes" the
  * moment a seventh register is added ahead of its endpoint.
  */
-const SAVES: ReadonlySet<MasterDataFormKey> = new Set(
-  MASTER_DATA_FORMS.map((form) => form.key),
-);
+const SAVES: ReadonlySet<MasterDataFormKey> = new Set(MASTER_DATA_FORMS.map((form) => form.key));
 
 /**
  * Which grid serves each register.
@@ -296,7 +316,9 @@ function Register({
   agreements,
   packaging,
   onNew,
+  onEditBom,
   onEditItem,
+  onInventory,
   onEditParty,
   onEditLicence,
   onEditAgreement,
@@ -310,7 +332,9 @@ function Register({
   agreements: ApiResult<JobWorkAgreementSummary[]>;
   packaging: ApiResult<PackagingRequirementView[]>;
   onNew: () => void;
+  onEditBom: (bom: BomView) => void;
   onEditItem: (item: ItemSummary) => void;
+  onInventory: (item: ItemSummary) => void;
   onEditParty: (party: PartySummary) => void;
   onEditLicence: (licence: LicenceSummary) => void;
   onEditAgreement: (agreement: JobWorkAgreementSummary) => void;
@@ -318,11 +342,13 @@ function Register({
 }) {
   switch (activeKey) {
     case 'item-product':
-      return <ItemGrid result={items} onNew={onNew} onEdit={onEditItem} />;
+      return (
+        <ItemGrid result={items} onNew={onNew} onEdit={onEditItem} onInventory={onInventory} />
+      );
     case 'party':
       return <PartyGrid result={parties} onNew={onNew} onEdit={onEditParty} />;
     case 'bom-formulation':
-      return <BomGrid result={boms} onNew={onNew} />;
+      return <BomGrid result={boms} onNew={onNew} onEdit={onEditBom} />;
     case 'licence-compliance':
       // Null when the role may not see licences. Unreachable through the rail,
       // which does not list the register for those roles — but a stale URL or
@@ -351,9 +377,7 @@ function Restricted() {
   return (
     <div className="flex flex-1 items-center justify-center p-10">
       <div className="max-w-md text-center">
-        <p className="text-sm font-semibold text-slate-900">
-          Licence records are restricted
-        </p>
+        <p className="text-sm font-semibold text-slate-900">Licence records are restricted</p>
         <p className="mt-1.5 text-sm text-slate-600">
           Only an Admin or a Quality / Compliance Officer may view the licence register. Ask one of
           them if you need a licence number or a renewal date.

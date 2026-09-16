@@ -122,6 +122,15 @@ model Tenant {
   /// by hand instead.
   autoRequisitionEnabled Boolean @default(true) @map("auto_requisition_enabled")
 
+  /// The leading part of a batch number, e.g. "B" in "B-2609-001" (US-PROD-03).
+  ///
+  /// The criterion is that a batch number follows the COMPANY'S configured
+  /// convention, so the part a company would want to choose is a column. The
+  /// rest of the shape — year, month, zero-padded counter — is fixed, because a
+  /// free-form format string is a way to configure two companies into the same
+  /// number.
+  batchNumberPrefix String @default("B") @map("batch_number_prefix") @db.VarChar(8)
+
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   /// Soft delete. A tenant is never physically removed — its records are
@@ -135,6 +144,9 @@ model Tenant {
   items    Item[]
   parties  Party[]
   licences Licence[]
+
+  /// Customer paperwork; the bytes live in the row. See CustomerDocument.
+  customerDocuments CustomerDocument[]
 
   // Job-work: manufacturing under a principal's brand.
   jobWorkAgreements      JobWorkAgreement[]
@@ -167,12 +179,12 @@ model Tenant {
   // Production & Quality Gate. `boms` and `bomLines` are not repeated here:
   // formulations are master data, shared with Procure-to-Pay, and declared
   // once in the block above.
-  materialLots       MaterialLot[]
   productionOrders   ProductionOrder[]
   materialIssues     MaterialIssue[]
   materialIssueLines MaterialIssueLine[]
   batches            Batch[]
   packingRecords     BatchPackingRecord[]
+  packagingConsumptions BatchPackagingConsumption[]
   finishedGoodsLots  FinishedGoodsLot[]
   customerLicences   CustomerLicence[]
   salesOrders        SalesOrder[]
@@ -253,6 +265,9 @@ model User {
 
   tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   auditLogs AuditLog[]
+
+  /// Who uploaded a customer's document, for the audit trail.
+  customerDocumentsUploaded CustomerDocument[]
 
   productionOrdersCreated ProductionOrder[]    @relation("ProductionOrderCreatedBy")
   materialIssuesMade      MaterialIssue[]      @relation("MaterialIssueIssuedBy")
@@ -391,15 +406,6 @@ enum PartyStatus {
   BLOCKED
 }
 
-/// Disposition of a received lot. Only USABLE lots are eligible for FEFO
-/// selection — quarantined and rejected stock is visible but unpickable, which
-/// is the entire point of tracking a status rather than deleting the row.
-enum MaterialLotStatus {
-  QUARANTINE
-  USABLE
-  REJECTED
-}
-
 /// Where a work order has reached. Ordered as the process runs.
 enum ProductionOrderStatus {
   PLANNED
@@ -438,54 +444,15 @@ enum BatchReleaseStatus {
 // impossible rather than merely discouraged.
 
 // -----------------------------------------------------------------------------
-// MaterialLot
+// Stock: see StockLot, above
 // -----------------------------------------------------------------------------
+//
+// Production once had its own `material_lots` table here. It was dropped by
+// 20260914120000_drop_material_lots: a goods receipt writes a StockLot and
+// incoming QC releases it, and no request path ever wrote the other one. FEFO
+// allocates from StockLot — the lot a batch consumed is the lot a vendor
+// delivered, which is what makes a recall answerable in both directions.
 
-/// A received lot of raw or packing material, with the expiry date that makes
-/// FEFO possible.
-///
-/// FEFO — First Expiry, First Out — is a property of lots, not of items: the
-/// question "which stock do I consume next" can only be answered by something
-/// that knows each parcel's expiry. Without this table, material issue would be
-/// a quantity decrement with no traceability, and a recall could not be answered.
-///
-/// Deliberately NOT called RawMaterialLot: packing material expires and must be
-/// traced too.
-model MaterialLot {
-  id       String @id @default(uuid()) @db.Uuid
-  tenantId String @map("tenant_id") @db.Uuid
-  itemId   String @map("item_id") @db.Uuid
-
-  /// The supplier's lot number, as printed on the container.
-  lotNumber String @map("lot_number") @db.VarChar(64)
-
-  /// Date-only: a lot expires on a day, not at an instant, and storing a
-  /// timestamp would make the displayed date depend on the reader's timezone.
-  expiryDate DateTime @map("expiry_date") @db.Date
-  receivedOn DateTime @map("received_on") @db.Date
-
-  quantityReceived  Decimal @map("quantity_received") @db.Decimal(14, 3)
-  /// Decremented as the lot is issued. Never negative — a check constraint in
-  /// the migration enforces that, because an over-issue must fail loudly rather
-  /// than leave stock that does not exist.
-  quantityAvailable Decimal @map("quantity_available") @db.Decimal(14, 3)
-
-  status MaterialLotStatus @default(QUARANTINE)
-
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
-
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  item   Item   @relation(fields: [itemId], references: [id], onDelete: Restrict)
-
-  issueLines MaterialIssueLine[]
-
-  @@unique([tenantId, itemId, lotNumber])
-  /// The FEFO query itself: usable stock of one item, soonest expiry first.
-  @@index([tenantId, itemId, status, expiryDate])
-  @@map("material_lots")
-}
 
 // -----------------------------------------------------------------------------
 // Bom — the formulation
@@ -574,14 +541,35 @@ model MaterialIssueLine {
   tenantId        String @map("tenant_id") @db.Uuid
   materialIssueId String @map("material_issue_id") @db.Uuid
   itemId          String @map("item_id") @db.Uuid
+
+  /// The stock lot the material came out of.
+  ///
+  /// StockLot, and now the only one. Production and Procure-to-Pay each
+  /// modelled their own stock table, and only one of them was ever filled by
+  /// the application: a goods receipt creates a StockLot and incoming QC marks
+  /// it USABLE. The other, `material_lots`, was populated by the demo seeder
+  /// alone — issuing from it meant allocating against stock that no real
+  /// receipt had produced — and was dropped by
+  /// 20260914120000_drop_material_lots. One table, and it is the one the
+  /// warehouse actually puts things in.
   lotId           String @map("lot_id") @db.Uuid
 
   quantityIssued Decimal @map("quantity_issued") @db.Decimal(14, 3)
 
+  /// US-PROD-02: FEFO is the default, and departing from it is recorded.
+  ///
+  /// The criterion is that the screen always PROPOSES the nearest-expiry lot;
+  /// it does not forbid picking another one, because a physically damaged or
+  /// quarantined-on-the-shelf container is a real thing. What it cannot be is
+  /// silent — so an override carries a written reason, and the CHECK constraint
+  /// makes a reasonless override impossible rather than merely discouraged.
+  isFefoOverride Boolean @default(false) @map("is_fefo_override")
+  overrideReason String? @map("override_reason") @db.VarChar(500)
+
   tenant        Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   materialIssue MaterialIssue @relation(fields: [materialIssueId], references: [id], onDelete: Cascade)
   item          Item          @relation(fields: [itemId], references: [id], onDelete: Restrict)
-  lot           MaterialLot   @relation(fields: [lotId], references: [id], onDelete: Restrict)
+  lot           StockLot      @relation(fields: [lotId], references: [id], onDelete: Restrict)
 
   @@index([materialIssueId])
   /// Answers a recall from the supplier's side.
@@ -662,6 +650,22 @@ model BatchPackingRecord {
   /// Saleable units packed. This — not the manufactured yield — is what becomes
   /// finished-goods stock on release.
   packedQuantity Decimal  @map("packed_quantity") @db.Decimal(14, 3)
+
+  /// Units damaged or discarded on the packing line (US-PROD-04).
+  ///
+  /// Separate from packedQuantity because the two answer different questions:
+  /// what can be sold, and what the batch cost to pack. Their SUM is what has
+  /// to reconcile against the bulk yield — packed alone always would, by
+  /// leaving the losses out.
+  rejectedQuantity Decimal @default(0) @map("rejected_quantity") @db.Decimal(14, 3)
+
+  /// Which presentation was packed, e.g. "10 x 10 blister carton".
+  ///
+  /// Matches PackagingRequirement.packVariant, which is how the line knows what
+  /// components this pack consumes. Nullable because a batch packed before any
+  /// pack specification existed still has a record.
+  packVariant String? @map("pack_variant") @db.VarChar(128)
+
   packedOn       DateTime @map("packed_on") @db.Date
 
   recordedById String? @map("recorded_by_id") @db.Uuid
@@ -674,8 +678,54 @@ model BatchPackingRecord {
   batch      Batch  @relation(fields: [batchId], references: [id], onDelete: Cascade)
   recordedBy User?  @relation("BatchPackingRecordedBy", fields: [recordedById], references: [id], onDelete: Restrict)
 
+  consumptions BatchPackagingConsumption[]
+
   @@index([tenantId])
   @@map("batch_packing_records")
+}
+
+/// One packaging component consumed by a batch (US-PROD-04).
+///
+/// "Officer records the consumption of packaging materials (bottles, foils,
+/// cartons) against the specific batch." Recorded per component rather than as
+/// a single number, because a shortage is answered per component and a recall
+/// asks which carton lot went onto which batch.
+///
+/// What was EXPECTED comes from the Packaging Requirement Master, scaled to the
+/// packed quantity; this table records what was actually used. The two differ
+/// in normal operation — that difference is packing wastage — so the expected
+/// figure is computed, never stored here.
+model BatchPackagingConsumption {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  packingRecordId String @map("packing_record_id") @db.Uuid
+
+  /// The packing material. An Item of type PACKING_MATERIAL, checked by the
+  /// service — a CHECK constraint cannot read another table.
+  itemId String @map("item_id") @db.Uuid
+
+  quantityConsumed Decimal @map("quantity_consumed") @db.Decimal(14, 3)
+
+  /// The stock lot it came out of, where the line recorded one. Nullable
+  /// because packing material is not always lot-tracked, and a recall that
+  /// cannot name the carton lot is still better than no record of the carton.
+  lotId String? @map("lot_id") @db.Uuid
+
+  notes String? @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant        Tenant             @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  packingRecord BatchPackingRecord @relation(fields: [packingRecordId], references: [id], onDelete: Cascade)
+  item          Item               @relation("BatchPackagingComponent", fields: [itemId], references: [id], onDelete: Restrict)
+  lot           StockLot?          @relation(fields: [lotId], references: [id], onDelete: Restrict)
+
+  /// One line per component per packing record.
+  @@unique([packingRecordId, itemId])
+  @@index([tenantId, itemId])
+  @@map("batch_packaging_consumptions")
 }
 
 // -----------------------------------------------------------------------------
@@ -706,7 +756,7 @@ model FinishedGoodsLot {
   batch  Batch  @relation(fields: [batchId], references: [id], onDelete: Restrict)
   item   Item   @relation(fields: [itemId], references: [id], onDelete: Restrict)
 
-  /// FEFO for despatch, mirroring the index on material_lots.
+  /// FEFO for despatch, mirroring the index on stock_lots.
   @@index([tenantId, itemId, expiryDate])
   @@map("finished_goods_lots")
 }
@@ -1121,6 +1171,7 @@ model Item {
   /// Two relations to one model, so both need names.
   packagingRequirements     PackagingRequirement[]     @relation("PackagingRequirementProduct")
   packagingRequirementLines PackagingRequirementLine[] @relation("PackagingRequirementComponent")
+  packagingConsumptions     BatchPackagingConsumption[] @relation("BatchPackagingComponent")
 
   requisitions                PurchaseRequisition[] @relation("RequisitionItem")
   requisitionsAsFinishedGood  PurchaseRequisition[] @relation("RequisitionFinishedProduct")
@@ -1132,8 +1183,8 @@ model Item {
   ledgerEntries      StockLedgerEntry[]
   invoiceLines       PurchaseInvoiceLine[]
 
-  // Production & Quality Gate.
-  lots              MaterialLot[]
+  // Production & Quality Gate. Stock is `stockLots` in the block above: one
+  // stock table, shared with Procure-to-Pay.
   productionOrders  ProductionOrder[]
   issueLines        MaterialIssueLine[]
   finishedGoodsLots FinishedGoodsLot[]
@@ -1281,6 +1332,7 @@ model Party {
   purchaseInvoices         PurchaseInvoice[]
   /// Set only on a JOB_WORK_PRINCIPAL; see JobWorkAgreement.principalId.
   jobWorkAgreements        JobWorkAgreement[]
+  documents                CustomerDocument[]
   /// Set only on a CUSTOMER; see CustomerLicence.
   customerLicences         CustomerLicence[]
   salesOrders              SalesOrder[]
@@ -1295,6 +1347,54 @@ model Party {
   @@index([tenantId, drugLicenceValidTo])
   @@index([tenantId, customerType])
   @@map("parties")
+}
+
+/// A customer's paperwork — drug licence, GST certificate, purchase agreement —
+/// held against the party it belongs to.
+///
+/// THE BYTES ARE IN POSTGRES, not on a disk. The hosted service declares no
+/// persistent disk, so a file written to the filesystem is destroyed on the
+/// next deploy while the row pointing at it survives — a record of a document
+/// that is no longer anywhere. In the database the bytes are in the same
+/// backups as everything else and, more importantly, under the same row-level
+/// security: one company physically cannot read another's paperwork, which a
+/// filesystem path does not give you.
+///
+/// Capped at 5 MB by the service and by a CHECK constraint. Every read pulls
+/// the whole file through the connection, so this is for certificates and
+/// scans, not a general file store.
+model CustomerDocument {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// The party. Only a CUSTOMER may have documents â€” enforced in the service,
+  /// because a CHECK constraint cannot read another table.
+  partyId String @map("party_id") @db.Uuid
+
+  /// Kept verbatim, so a download arrives with the name it was sent with.
+  fileName    String @map("file_name") @db.VarChar(255)
+  /// Whitelisted by the service. Stored so a download sets the right
+  /// Content-Type rather than guessing from the extension.
+  contentType String @map("content_type") @db.VarChar(127)
+  sizeBytes   Int    @map("size_bytes")
+  content     Bytes
+
+  /// What the document IS, in the uploader's words. Free text rather than an
+  /// enum: the set of documents a customer might be asked for is not fixed.
+  label String? @db.VarChar(255)
+
+  uploadedById String @map("uploaded_by_id") @db.Uuid
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant     Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  party      Party  @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  uploadedBy User   @relation(fields: [uploadedById], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, partyId, deletedAt])
+  @@map("customer_documents")
 }
 
 /// The customer's drug licences — distinct from `Licence`, which is the
@@ -1313,7 +1413,7 @@ model CustomerLicence {
 
   licenceNumber String                  @map("licence_number") @db.VarChar(64)
   category      CustomerLicenceCategory
-  /// "20B", "21B" — the form the licence was granted on.
+  /// "20B", "21B" â€” the form the licence was granted on.
   formNumber    String?                 @map("form_number") @db.VarChar(32)
 
   issuingAuthority String? @map("issuing_authority") @db.VarChar(255)
@@ -1967,6 +2067,10 @@ model StockLot {
 
   qcResults     QcResult[]
   ledgerEntries StockLedgerEntry[]
+  /// Production consumes the same stock Procure-to-Pay received; see the note
+  /// on MaterialIssueLine.lot.
+  issueLines    MaterialIssueLine[]
+  packagingConsumptions BatchPackagingConsumption[]
 
   @@unique([tenantId, lotNumber])
   /// The FEFO index: usable lots of an item, earliest expiry first.

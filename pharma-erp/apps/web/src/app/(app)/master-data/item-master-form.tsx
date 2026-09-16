@@ -101,14 +101,20 @@ export function ItemMasterForm({
   const typed = (field: string, stored?: string | number | null) =>
     state.values?.[field] ?? (stored === null || stored === undefined ? undefined : String(stored));
 
+  /** The refusal about one control, when the save named it. */
+  const errorFor = (field: string) => state.fieldErrors?.[field];
+
   return (
     <form action={formAction} className="flex flex-col gap-8" noValidate>
-      {!state.ok && state.message && <FormError message={state.message} />}
+      {!state.ok && state.message && (
+        <FormError message={state.message} fieldErrors={state.fieldErrors} />
+      )}
 
       <FormSection title="Identity">
         <FormGrid>
           <TextField
             name="code"
+            error={errorFor('code')}
             label="Item code"
             required
             maxLength={64}
@@ -123,6 +129,7 @@ export function ItemMasterForm({
           />
           <SelectField
             name="category"
+            error={errorFor('category')}
             label="Category"
             required
             options={CATEGORY_OPTIONS}
@@ -132,6 +139,7 @@ export function ItemMasterForm({
           />
           <TextField
             name="brandName"
+            error={errorFor('brandName')}
             label="Brand name"
             maxLength={255}
             placeholder="Calpol 500"
@@ -157,6 +165,7 @@ export function ItemMasterForm({
           />
           <SelectField
             name="uom"
+            error={errorFor('uom')}
             label="Unit of measure"
             required
             options={UOM_OPTIONS}
@@ -173,6 +182,7 @@ export function ItemMasterForm({
         <FormGrid>
           <TextField
             name="hsnCode"
+            error={errorFor('hsnCode')}
             label="HSN code"
             required
             inputMode="numeric"
@@ -183,6 +193,7 @@ export function ItemMasterForm({
           />
           <SelectField
             name="gstRate"
+            error={errorFor('gstRate')}
             label="GST rate"
             required
             options={GST_RATE_OPTIONS}
@@ -192,6 +203,7 @@ export function ItemMasterForm({
           />
           <TextField
             name="mrp"
+            error={errorFor('mrp')}
             label="MRP (₹)"
             type="number"
             min="0"

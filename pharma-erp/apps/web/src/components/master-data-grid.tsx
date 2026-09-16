@@ -25,17 +25,20 @@ import {
   type PackagingLevel,
   type PackagingLineView,
   type PackagingRequirementView,
+  type CustomerDocumentSummary,
   type PartySummary,
 } from '@pharma-erp/types';
 
 import {
   deleteAgreementAction,
+  listCustomerDocumentsAction,
   deleteItemAction,
   deleteLicenceAction,
   deletePackagingAction,
   deletePartyAction,
   setLicenceAlertAction,
 } from '@/app/(app)/master-data/actions';
+import { DocumentIcon, DocumentPreview } from '@/components/document-preview';
 import type { ApiResult } from '@/lib/api';
 
 /**
@@ -489,6 +492,7 @@ function RowActions({
   onEdit,
   onDelete,
   onError,
+  extra,
 }: {
   /** Names the row in the confirmation and the button's accessible name. */
   label: string;
@@ -496,6 +500,12 @@ function RowActions({
   /** The register's own delete action. Returns the API's refusal, if any. */
   onDelete: () => Promise<{ ok: boolean; message?: string }>;
   onError: (message: string | null) => void;
+  /**
+   * A register-specific entry, above Edit. Only the Item register uses one
+   * today (Inventory), and it sits first because looking at stock is a read
+   * and the two below it are writes.
+   */
+  extra?: { label: string; onClick: () => void };
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -638,6 +648,18 @@ function RowActions({
           style={{ top: anchor.top, right: anchor.right }}
           className="fixed z-50 w-40 rounded-md border border-slate-200 bg-white p-1 text-left shadow-lg"
         >
+          {extra && (
+            <button
+              type="button"
+              onClick={() => {
+                setIsOpen(false);
+                extra.onClick();
+              }}
+              className="block w-full rounded px-3 py-1.5 text-left text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+            >
+              {extra.label}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -665,10 +687,12 @@ export function ItemGrid({
   result,
   onNew,
   onEdit,
+  onInventory,
 }: {
   result: ApiResult<ItemSummary[]>;
   onNew: () => void;
   onEdit: (item: ItemSummary) => void;
+  onInventory: (item: ItemSummary) => void;
 }) {
   // Declared before the early return: hooks cannot sit behind a condition.
   const [actionError, setActionError] = useState<string | null>(null);
@@ -688,6 +712,7 @@ export function ItemGrid({
           onEdit={() => onEdit(item)}
           onDelete={() => deleteItemAction(item.id)}
           onError={setActionError}
+          extra={{ label: 'Inventory', onClick: () => onInventory(item) }}
         />
       ),
     },
@@ -776,13 +801,47 @@ const BOM_COLUMNS: readonly GridColumn<BomView>[] = [
   { key: 'from', label: 'Effective', align: 'right', render: (bom) => bom.effectiveFrom },
 ];
 
-export function BomGrid({ result, onNew }: { result: ApiResult<BomView[]>; onNew: () => void }) {
+export function BomGrid({
+  result,
+  onNew,
+  onEdit,
+}: {
+  result: ApiResult<BomView[]>;
+  onNew: () => void;
+  onEdit: (bom: BomView) => void;
+}) {
   if (!result.ok) return <LoadFailed error={result.error} />;
+
+  // A plain button rather than the RowActions menu the other registers use:
+  // that menu pairs Edit with Delete, and a formulation has no delete endpoint.
+  // A menu offering one action is a menu nobody wants to open.
+  const columns: GridColumn<BomView>[] = [
+    ...BOM_COLUMNS,
+    {
+      key: 'actions',
+      label: '',
+      align: 'right',
+      pinned: true,
+      render: (bom) => (
+        <button
+          type="button"
+          onClick={() => onEdit(bom)}
+          className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+        >
+          Edit
+          <span className="sr-only">
+            {' '}
+            {bom.product.code} v{bom.version}
+          </span>
+        </button>
+      ),
+    },
+  ];
 
   return (
     <Grid
       rows={result.data}
-      columns={BOM_COLUMNS}
+      columns={columns}
       rowKey={(bom) => bom.id}
       searchText={(bom) => `${bom.product.code} ${bom.product.name} v${bom.version}`}
       noun="formulations"
@@ -837,6 +896,20 @@ const PARTY_COLUMNS: readonly GridColumn<PartySummary>[] = [
     key: 'gstin',
     label: 'GSTIN',
     render: (party) => (party.gstin ? <Code>{party.gstin}</Code> : <Blank />),
+  },
+  {
+    key: 'documents',
+    label: 'Documents',
+    // The count, not a link, in the SHARED column definition: opening one needs
+    // its id, and the register holds only a count — the bytes stay in the
+    // database until somebody asks for a specific file. PartyGrid replaces this
+    // with a clickable version; see there.
+    render: (party) =>
+      party.documentCount > 0 ? (
+        <span className="text-slate-700">{party.documentCount}</span>
+      ) : (
+        <Blank />
+      ),
   },
   {
     key: 'licence',
@@ -901,6 +974,115 @@ const PARTY_COLUMNS: readonly GridColumn<PartySummary>[] = [
   },
 ];
 
+/**
+ * The Documents cell: the paperwork on file, as icons.
+ *
+ * An icon per document rather than a count in words, because the useful fact at
+ * a glance is WHAT is on file — a PDF licence reads differently from a
+ * photographed one — and "1 document" says neither.
+ *
+ * Clicking opens a preview rather than downloading. Checking a licence number
+ * is the common reason to open one, and a download makes that a detour through
+ * the file manager; the preview carries its own Download button for when the
+ * file really is wanted.
+ *
+ * The ids are fetched on first click, not with the register: the listing
+ * carries a count precisely so drawing it does not touch the documents table
+ * for every row. Until then the count is all there is to draw, so the icons
+ * start as neutral placeholders and take their real type once loaded.
+ */
+function PartyDocumentsCell({ party }: { party: PartySummary }) {
+  const [documents, setDocuments] = useState<CustomerDocumentSummary[] | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(false);
+  const [previewing, setPreviewing] = useState<CustomerDocumentSummary | null>(null);
+
+  const load = async (): Promise<CustomerDocumentSummary[] | null> => {
+    if (documents) return documents;
+
+    setIsLoading(true);
+    setError(false);
+
+    const result = await listCustomerDocumentsAction(party.id);
+
+    setIsLoading(false);
+
+    if (!result.ok) {
+      setError(true);
+      return null;
+    }
+
+    setDocuments(result.data);
+    return result.data;
+  };
+
+  const open = async (index: number) => {
+    const loaded = await load();
+    const chosen = loaded?.[index];
+
+    if (chosen) setPreviewing(chosen);
+  };
+
+  // Before the first click the types are unknown, so one neutral button per
+  // document stands in — the count is known, which is what the register was
+  // given.
+  const entries: (CustomerDocumentSummary | null)[] =
+    documents ?? Array.from({ length: party.documentCount }, () => null);
+
+  return (
+    <>
+      <div className="flex items-center gap-1.5">
+        {entries.map((document, index) => (
+          <button
+            key={document?.id ?? index}
+            type="button"
+            disabled={isLoading}
+            onClick={() => void open(index)}
+            title={document?.fileName ?? 'Open document'}
+            aria-label={document ? `Open ${document.fileName}` : `Open document ${index + 1}`}
+            className="rounded p-0.5 text-slate-400 transition hover:bg-slate-100 disabled:opacity-50"
+          >
+            {document ? (
+              <DocumentIcon contentType={document.contentType} />
+            ) : (
+              <svg
+                viewBox="0 0 20 20"
+                aria-hidden="true"
+                className="h-5 w-5 shrink-0"
+                fill="none"
+                stroke="currentColor"
+              >
+                <path
+                  d="M5 2.5h6.5L16 7v10.5H5z"
+                  strokeWidth="1.3"
+                  strokeLinejoin="round"
+                  className="stroke-slate-400"
+                />
+                <path
+                  d="M11.5 2.5V7H16"
+                  strokeWidth="1.3"
+                  strokeLinejoin="round"
+                  className="stroke-slate-400"
+                />
+              </svg>
+            )}
+          </button>
+        ))}
+
+        {error && <span className="text-xs text-red-700">could not load</span>}
+      </div>
+
+      {previewing && (
+        <DocumentPreview
+          partyId={party.id}
+          document={previewing}
+          onClose={() => setPreviewing(null)}
+        />
+      )}
+    </>
+  );
+}
+
 export function PartyGrid({
   result,
   onNew,
@@ -915,7 +1097,18 @@ export function PartyGrid({
   if (!result.ok) return <LoadFailed error={result.error} />;
 
   const columns: GridColumn<PartySummary>[] = [
-    ...PARTY_COLUMNS,
+    // The shared definition renders a bare count; here it becomes a control
+    // that opens the paperwork. Replaced rather than appended so the column
+    // keeps its position between GSTIN and the licence.
+    ...PARTY_COLUMNS.map((column) =>
+      column.key === 'documents'
+        ? {
+            ...column,
+            render: (party: PartySummary) =>
+              party.documentCount > 0 ? <PartyDocumentsCell party={party} /> : <Blank />,
+          }
+        : column,
+    ),
     {
       key: 'actions',
       label: '',
@@ -1008,7 +1201,9 @@ const LICENCE_COLUMNS: readonly GridColumn<LicenceSummary>[] = [
     key: 'status',
     label: 'Status',
     render: (licence) => (
-      <Pill tone={LICENCE_STATUS_TONE[licence.status]}>{LICENCE_STATUS_LABELS[licence.status]}</Pill>
+      <Pill tone={LICENCE_STATUS_TONE[licence.status]}>
+        {LICENCE_STATUS_LABELS[licence.status]}
+      </Pill>
     ),
   },
   {
@@ -1191,8 +1386,10 @@ export function LicenceGrid({
         </>
       }
       empty={
-        <>No licences on file yet. Add the manufacturing licence first — it is the one that stops
-        production when it lapses.</>
+        <>
+          No licences on file yet. Add the manufacturing licence first — it is the one that stops
+          production when it lapses.
+        </>
       }
     />
   );
@@ -1397,8 +1594,10 @@ export function AgreementGrid({
         )
       }
       empty={
-        <>No job-work agreements yet. Add one to record what a principal is billed and which of
-        our formulations carry their brand.</>
+        <>
+          No job-work agreements yet. Add one to record what a principal is billed and which of our
+          formulations carry their brand.
+        </>
       }
     />
   );
@@ -1571,8 +1770,10 @@ export function PackagingGrid({
         </>
       }
       empty={
-        <>No pack specifications yet. Add one before raising a work order — a product cannot go
-        into production without a pack to put it in.</>
+        <>
+          No pack specifications yet. Add one before raising a work order — a product cannot go into
+          production without a pack to put it in.
+        </>
       }
     />
   );

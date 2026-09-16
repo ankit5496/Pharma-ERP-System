@@ -32,10 +32,28 @@ interface FieldShell {
   label: string;
   required?: boolean;
   hint?: string;
+  /**
+   * The refusal about THIS field, shown under it and used to redden the
+   * control. Replaces the hint while it is present: the hint explains what to
+   * type and the error says what is wrong with what was typed, and showing
+   * both makes the person read two lines to find the one that matters.
+   */
+  error?: string;
   /** Span both columns of the grid — for addresses and long names. */
   wide?: boolean;
   /** Smaller control, for the line-item rows where a full-height field is too tall. */
   compact?: boolean;
+}
+
+/**
+ * The control's own classes plus the invalid state.
+ *
+ * A red ring AND a message, never colour alone: about one man in twelve cannot
+ * reliably distinguish the red from the grey, and a field that is only
+ * differently-coloured is a field they cannot find.
+ */
+function fieldClass(base: string, error?: string): string {
+  return error ? `${base} border-red-400 focus:border-red-500 focus:ring-red-500` : base;
 }
 
 function Shell({
@@ -43,6 +61,7 @@ function Shell({
   label,
   required,
   hint,
+  error,
   wide,
   compact,
   children,
@@ -57,7 +76,15 @@ function Shell({
         {required && <RequiredMark />}
       </label>
       {children}
-      {hint && <p className="field-hint">{hint}</p>}
+      {error ? (
+        // `id` matches the control's aria-describedby, and role="alert" is what
+        // makes a screen reader announce it when it appears after a save.
+        <p id={`${name}-error`} role="alert" className="mt-1 text-xs text-red-700">
+          {error}
+        </p>
+      ) : (
+        hint && <p className="field-hint">{hint}</p>
+      )}
     </div>
   );
 }
@@ -116,12 +143,15 @@ export function TextField({
         step={step}
         defaultValue={defaultValue}
         readOnly={readOnly}
+        aria-invalid={shell.error ? true : undefined}
+        aria-describedby={shell.error ? `${shell.name}-error` : undefined}
         // Off everywhere: a browser offering someone's home address for
         // "Issuing authority" is worse than no help at all.
         autoComplete="off"
-        className={`${shell.compact ? 'field-sm mt-1 w-full' : 'field mt-1.5'} ${
-          readOnly ? 'cursor-not-allowed bg-slate-100 text-slate-500' : ''
-        }`}
+        className={`${fieldClass(
+          shell.compact ? 'field-sm mt-1 w-full' : 'field mt-1.5',
+          shell.error,
+        )} ${readOnly ? 'cursor-not-allowed bg-slate-100 text-slate-500' : ''}`}
       />
     </Shell>
   );
@@ -166,11 +196,21 @@ export function SelectField({
         required={shell.required}
         {...(value === undefined ? { defaultValue: defaultValue ?? '' } : { value })}
         onChange={onChange ? (event) => onChange(event.target.value) : undefined}
-        className={shell.compact ? 'field-sm mt-1 w-full' : 'field mt-1.5'}
+        aria-invalid={shell.error ? true : undefined}
+        aria-describedby={shell.error ? `${shell.name}-error` : undefined}
+        className={fieldClass(shell.compact ? 'field-sm mt-1 w-full' : 'field mt-1.5', shell.error)}
       >
-        <option value="" disabled>
-          {placeholder}
-        </option>
+        {/* NOT `disabled`, deliberately. A disabled option cannot hold the
+            selection, so a select whose value is "" fell through to the first
+            real option — the Item form opened already showing "Raw material"
+            and "kg", submitted them for someone who had chosen neither, and
+            the required-field check passed because the values were genuinely
+            there. QA reported it as "the dropdowns select themselves on save".
+
+            Selectable-and-empty is what makes "nothing chosen" a real state.
+            `required` on the select is what refuses it, and the browser then
+            says so before the request is ever made. */}
+        <option value="">{placeholder}</option>
         {options.map((option) => (
           <option key={option.value} value={option.value}>
             {option.label}
@@ -408,7 +448,39 @@ export function SubmitActions({
 }
 
 /** What the API said when it refused. Shown above the fields, not below. */
-export function FormError({ message }: { message: string }) {
+/**
+ * The refusal, above the form.
+ *
+ * SUPPRESSED when every failed field is marked on its own control. Saying
+ * "Item code, Category and GST rate are required" at the top AND under each of
+ * the three fields is the same sentence four times, and it pushes the form
+ * down so the marked fields are further from the eye that just read it.
+ *
+ * Still shown when the refusal has no control to point at — a duplicate that
+ * names a field the form does not render, a role check, a rule about the state
+ * of a document — because that is exactly when a person has nowhere else to
+ * look.
+ */
+export function FormError({
+  message,
+  fieldErrors,
+}: {
+  message: string;
+  /** What is already marked inline; the banner hides when this covers it. */
+  fieldErrors?: Record<string, string>;
+}) {
+  // Anything marked on a control is already said where it can be acted on, so
+  // the banner has nothing left to add. Hidden on the presence of field errors
+  // rather than by comparing the sentences: the banner's wording is a combined
+  // list — "Party code, Party name and Status are required" — and no substring
+  // of it matches the per-field "Party code is required.", so matching was
+  // never going to suppress the case it was written for.
+  //
+  // A refusal with no field attached still shows: a role check, an expired
+  // session, a rule about the state of a document. Those have no control to
+  // point at, which is exactly when a banner is the only place to put them.
+  if (fieldErrors && Object.keys(fieldErrors).length > 0) return null;
+
   return (
     <div
       role="alert"
@@ -428,8 +500,12 @@ export function FormError({ message }: { message: string }) {
  * are reused for the wrong data.
  */
 export function useLineRows(initial = 1) {
-  const nextId = useRef(initial);
-  const [ids, setIds] = useState<number[]>(() => Array.from({ length: initial }, (_, i) => i));
+  // At least one row always: `initial` of 0 would render a section with no
+  // line and no way to add one back except the Add button, which reads as a
+  // broken form on the edit path when a formulation has no packing material.
+  const count = Math.max(initial, 1);
+  const nextId = useRef(count);
+  const [ids, setIds] = useState<number[]>(() => Array.from({ length: count }, (_, i) => i));
 
   return {
     ids,

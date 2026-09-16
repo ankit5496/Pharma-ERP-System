@@ -1,7 +1,13 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 
 import { Prisma } from '@pharma-erp/database';
-import type { ItemStockPosition, LowStockItem, StockLedgerRow } from '@pharma-erp/types';
+import type {
+  InventoryStatus,
+  ItemInventory,
+  ItemStockPosition,
+  LowStockItem,
+  StockLedgerRow,
+} from '@pharma-erp/types';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
@@ -40,9 +46,7 @@ export class StockService {
       _sum: { quantityAvailable: true },
     });
 
-    return new Map(
-      grouped.map((row) => [row.itemId, row._sum.quantityAvailable ?? ZERO] as const),
-    );
+    return new Map(grouped.map((row) => [row.itemId, row._sum.quantityAvailable ?? ZERO] as const));
   }
 
   /**
@@ -55,7 +59,10 @@ export class StockService {
   async lowStockItems(): Promise<LowStockItem[]> {
     const [items, usable, quarantine, openRequisitions] = await Promise.all([
       this.prisma.scoped.item.findMany({
-        where: { deletedAt: null, type: { in: ['RAW_MATERIAL', 'PACKING_MATERIAL', 'SEMI_FINISHED'] } },
+        where: {
+          deletedAt: null,
+          type: { in: ['RAW_MATERIAL', 'PACKING_MATERIAL', 'SEMI_FINISHED'] },
+        },
         select: ITEM_SELECT,
         orderBy: [{ name: 'asc' }],
       }),
@@ -96,6 +103,98 @@ export class StockService {
   }
 
   /** Every item's position, with its usable lots in FEFO order. */
+  /**
+   * Every lot of one item that incoming QC accepted, with its expiry standing.
+   *
+   * WHY ONLY ACCEPTED LOTS. A goods receipt creates a lot in QUARANTINE and the
+   * QC decision is what releases it. Showing quarantined or rejected material
+   * here would answer a different question — "what arrived" rather than "what
+   * do we hold" — and the two differ by exactly the material somebody has
+   * decided must not be used.
+   *
+   * CONSUMED lots are left out for the same reason: fully drawn down, they are
+   * history rather than stock.
+   *
+   * EXPIRY IS COMPUTED, NOT STORED. A lot expiring tonight is usable now and
+   * expired tomorrow with nothing happening in between, so a stored flag would
+   * be wrong from midnight until a job nobody runs rewrote it. Compared on the
+   * UTC calendar day, matching how `@db.Date` round-trips — a date column read
+   * through a timezone west of Greenwich moves to the previous day, and an
+   * expiry that shifts with the server's location is a labelling error.
+   */
+  async itemInventory(itemId: string): Promise<ItemInventory> {
+    const item = await this.prisma.scoped.item.findFirst({
+      where: { id: itemId, deletedAt: null },
+      select: ITEM_SELECT,
+    });
+
+    if (!item) throw new NotFoundException('That item does not exist.');
+
+    const lots = await this.prisma.scoped.stockLot.findMany({
+      where: { itemId, status: { in: ['USABLE', 'ON_HOLD'] } },
+      orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { lotNumber: 'asc' }],
+      select: {
+        id: true,
+        lotNumber: true,
+        vendorBatchNumber: true,
+        expiryDate: true,
+        quantityReceived: true,
+        quantityAvailable: true,
+        storageLocation: true,
+        goodsReceiptLine: {
+          select: {
+            goodsReceipt: {
+              select: { number: true, receiptDate: true, vendor: { select: { name: true } } },
+            },
+          },
+        },
+      },
+    });
+
+    const today = Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`);
+
+    let usable = ZERO;
+    let expired = ZERO;
+
+    const rows = lots.map((lot) => {
+      const daysToExpiry = lot.expiryDate
+        ? Math.round((lot.expiryDate.getTime() - today) / 86_400_000)
+        : null;
+
+      // Expired ON the expiry date, not after it: a label reading "Exp 09/2026"
+      // means do not use it in September, and treating the last day as usable
+      // is the kind of off-by-one that reaches a patient.
+      const isExpired = daysToExpiry !== null && daysToExpiry <= 0;
+
+      if (isExpired) expired = expired.plus(lot.quantityAvailable);
+      else usable = usable.plus(lot.quantityAvailable);
+
+      const receipt = lot.goodsReceiptLine?.goodsReceipt;
+
+      return {
+        id: lot.id,
+        lotNumber: lot.lotNumber,
+        vendorBatchNumber: lot.vendorBatchNumber,
+        expiryDate: lot.expiryDate ? lot.expiryDate.toISOString().slice(0, 10) : null,
+        quantityReceived: qty(lot.quantityReceived),
+        quantityAvailable: qty(lot.quantityAvailable),
+        storageLocation: lot.storageLocation,
+        status: (isExpired ? 'EXPIRED' : 'USABLE') as InventoryStatus,
+        daysToExpiry,
+        goodsReceiptNumber: receipt?.number ?? null,
+        receivedOn: receipt?.receiptDate ? receipt.receiptDate.toISOString().slice(0, 10) : null,
+        vendorName: receipt?.vendor.name ?? null,
+      };
+    });
+
+    return {
+      item: toItemSummary(item),
+      usableQuantity: qty(usable),
+      expiredQuantity: qty(expired),
+      lots: rows,
+    };
+  }
+
   async stockPositions(): Promise<ItemStockPosition[]> {
     const [items, lots] = await Promise.all([
       this.prisma.scoped.item.findMany({

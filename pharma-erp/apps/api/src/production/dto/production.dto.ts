@@ -258,6 +258,40 @@ export class CreateBomDto {
   lines!: BomLineDto[];
 }
 
+/**
+ * Changes a formulation IN PLACE, rather than superseding it with a new
+ * version.
+ *
+ * Deliberately NOT a partial of CreateBomDto. `productId` is absent because a
+ * formulation that changes which product it makes is a different formulation,
+ * and the version it carries would then be a version of nothing. Correcting a
+ * recipe and repointing it at another product are not the same request.
+ *
+ * `activate` is absent for the same reason: which version is current is a
+ * decision about the SET of versions, and the partial unique index allows only
+ * one active version per product. Switching that belongs in its own operation,
+ * not folded into an edit.
+ *
+ * The service refuses this entirely once the formulation has been used to
+ * manufacture. See updateBom.
+ */
+export class UpdateBomDto {
+  @Matches(QUANTITY, { message: `outputQuantity ${QUANTITY_MESSAGE}` })
+  outputQuantity!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(4000)
+  instructions?: string;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(200)
+  @ValidateNested({ each: true })
+  @Type(() => BomLineDto)
+  lines!: BomLineDto[];
+}
+
 // ---------------------------------------------------------------------------
 // Production orders
 // ---------------------------------------------------------------------------
@@ -290,9 +324,84 @@ export class RecordBatchDto {
   actualQuantity!: string;
 }
 
+/**
+ * Picking a lot other than the one FEFO proposed — US-PROD-02.
+ *
+ * `reason` is required and must not be blank: the criterion allows departing
+ * from the suggestion, and the column's CHECK constraint refuses a reasonless
+ * override, so asking here turns that into a readable message rather than a
+ * constraint violation.
+ */
+export class MaterialIssueOverrideDto {
+  @IsUUID()
+  itemId!: string;
+
+  @IsUUID()
+  lotId!: string;
+
+  @Matches(QUANTITY, { message: `quantity ${QUANTITY_MESSAGE}` })
+  quantity!: string;
+
+  @IsString()
+  @MaxLength(500)
+  @Matches(/\S/, { message: 'reason must not be blank' })
+  reason!: string;
+}
+
+export class IssueMaterialDto {
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => MaterialIssueOverrideDto)
+  overrides?: MaterialIssueOverrideDto[];
+}
+
+/** One packaging component actually consumed by the batch — US-PROD-04. */
+export class PackagingConsumptionDto {
+  @IsUUID()
+  itemId!: string;
+
+  @Matches(QUANTITY, { message: `quantityConsumed ${QUANTITY_MESSAGE}` })
+  quantityConsumed!: string;
+
+  /** The lot it came from, where the line recorded one. */
+  @IsOptional()
+  @IsUUID()
+  lotId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  notes?: string | null;
+}
+
 export class RecordPackingDto {
   @Matches(QUANTITY, { message: `packedQuantity ${QUANTITY_MESSAGE}` })
   packedQuantity!: string;
+
+  /**
+   * Units damaged or discarded on the line — US-PROD-04.
+   *
+   * Defaults to zero rather than being required: a run with no losses is
+   * normal, and forcing a "0" would be asking a question whose answer is
+   * usually obvious. What it must not do is go unrecorded when it happens,
+   * because packed + rejected is what reconciles against the bulk yield.
+   */
+  @IsOptional()
+  @Matches(QUANTITY, { message: `rejectedQuantity ${QUANTITY_MESSAGE}` })
+  rejectedQuantity?: string;
+
+  /** Which presentation was packed; matches a PackagingRequirement pack variant. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  packVariant?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => PackagingConsumptionDto)
+  consumptions?: PackagingConsumptionDto[];
 
   @IsOptional()
   @IsISO8601()

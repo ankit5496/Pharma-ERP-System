@@ -1,13 +1,9 @@
-import {
-  BadRequestException,
-  ConflictException,
-  Injectable,
-  NotFoundException,
-} from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 
 import type { Party, Prisma } from '@pharma-erp/database';
 import type { PartySummary, PartyStatus, PartyType } from '@pharma-erp/types';
 
+import { fieldConflict } from '../common/field-error';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
@@ -43,9 +39,12 @@ export class PartiesService {
     const parties = await this.prisma.scoped.party.findMany({
       where: { deletedAt: null, ...(partyType ? { partyType } : {}) },
       orderBy: [{ name: 'asc' }],
+      // A count, never the documents: the bytes are in the row, so including
+      // them would pull every customer's paperwork to draw a register.
+      include: { _count: { select: { documents: { where: { deletedAt: null } } } } },
     });
 
-    return parties.map(toPartySummary);
+    return parties.map((party) => toPartySummary(party, party._count.documents));
   }
 
   async create(dto: CreatePartyDto): Promise<PartySummary> {
@@ -183,7 +182,7 @@ function assertLicensedWhenActiveCustomer(party: {
 /** Turns a database refusal into something the person who hit it can read. */
 function translate(error: unknown, code: string): unknown {
   if (isConstraint(error, 'P2002') || isConstraint(error, 'parties_tenant_id_code_key')) {
-    return new ConflictException(`A party with code "${code}" already exists.`);
+    return fieldConflict('code', `A party with code "${code}" already exists.`);
   }
 
   if (isConstraint(error, 'parties_active_customer_is_licensed')) {
@@ -234,7 +233,7 @@ function fromIsoDate(value: string): Date {
   return new Date(`${value.slice(0, 10)}T00:00:00.000Z`);
 }
 
-export function toPartySummary(party: Party): PartySummary {
+export function toPartySummary(party: Party, documentCount = 0): PartySummary {
   const validTo = party.drugLicenceValidTo ? toIsoDate(party.drugLicenceValidTo) : null;
 
   return {
@@ -257,5 +256,9 @@ export function toPartySummary(party: Party): PartySummary {
     // Compared as calendar days in UTC. A licence is valid THROUGH its final
     // day, so only a date strictly before today has lapsed.
     licenceExpired: validTo !== null && validTo < new Date().toISOString().slice(0, 10),
+    // Defaults to 0 for the single-record paths: a create has none by
+    // definition, and an update's own response is not what draws the register.
+    // The listing passes the real count.
+    documentCount,
   };
 }

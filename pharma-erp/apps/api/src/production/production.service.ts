@@ -5,14 +5,17 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 
-import type { Prisma } from '@pharma-erp/database';
+// A value import, not `import type`: Prisma.Decimal is constructed below.
+import { Prisma } from '@pharma-erp/database';
 import type {
   BomView,
   ItemSummary,
-  MaterialLotSummary,
+  ProductionStockLot,
   ProductionOrderSummary,
+  WorkOrderFeasibility,
 } from '@pharma-erp/types';
 
+import { fieldBadRequest, fieldConflict } from '../common/field-error';
 import { PackagingService } from '../packaging/packaging.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
@@ -21,6 +24,7 @@ import type {
   CreateBomDto,
   CreateItemDto,
   CreateProductionOrderDto,
+  UpdateBomDto,
   UpdateItemDto,
 } from './dto/production.dto';
 import { toItemSummary, toIsoDate, type ItemRow } from './production.mappers';
@@ -98,7 +102,7 @@ export class ProductionService {
       return toItemSummary(item);
     } catch (error) {
       if (isUniqueViolation(error)) {
-        throw new ConflictException(`An item with code "${dto.code.trim()}" already exists.`);
+        throw fieldConflict('code', `An item with code "${dto.code.trim()}" already exists.`);
       }
 
       // The database also enforces `dpco_ceiling` requiring an MRP. The DTO
@@ -106,7 +110,10 @@ export class ProductionService {
       // constraint is the enforcement and this turns it into a usable message
       // rather than a 500.
       if (isCheckViolation(error, 'items_dpco_ceiling_needs_a_price')) {
-        throw new BadRequestException('An item under a DPCO ceiling must have an MRP.');
+        // Against `mrp`, not `dpcoCeiling`: the ceiling is the thing being
+        // asserted and the price is the thing missing, so the price is what
+        // the person has to go and type.
+        throw fieldBadRequest('mrp', 'An item under a DPCO ceiling must have an MRP.');
       }
 
       throw error;
@@ -171,7 +178,8 @@ export class ProductionService {
       return toItemSummary(item);
     } catch (error) {
       if (isCheckViolation(error, 'items_dpco_ceiling_needs_a_price')) {
-        throw new BadRequestException(
+        throw fieldBadRequest(
+          'mrp',
           'An item under a DPCO ceiling must have an MRP. Clear the DPCO flag, or give it a price.',
         );
       }
@@ -230,20 +238,30 @@ export class ProductionService {
   }
 
   /**
-   * Stock lots, soonest expiry first — the same order FEFO consumes them in,
+   * Stock on hand, soonest expiry first — the same order FEFO consumes it in,
    * so the list reads as the queue it actually is.
+   *
+   * Reads `stock_lots`: the lots Procure-to-Pay received and incoming QC
+   * ruled on. Production has no stock table of its own, which is the point —
+   * a second one would let the shop floor issue material the goods-in gate
+   * never passed.
+   *
+   * Nulls last, because a lot with no expiry never becomes urgent and sorting
+   * it to the top would put cartons above an API three weeks from expiring.
+   * CONSUMED lots are left out: they are drawn fully down and issuing against
+   * one is impossible, so they are history rather than stock.
    */
-  async listMaterialLots(): Promise<MaterialLotSummary[]> {
-    const lots = await this.prisma.scoped.materialLot.findMany({
-      where: { deletedAt: null },
+  async listStockLots(): Promise<ProductionStockLot[]> {
+    const lots = await this.prisma.scoped.stockLot.findMany({
+      where: { status: { not: 'CONSUMED' } },
       include: { item: true },
-      orderBy: [{ expiryDate: 'asc' }, { lotNumber: 'asc' }],
+      orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { lotNumber: 'asc' }],
     });
 
     return lots.map((lot) => ({
       id: lot.id,
       lotNumber: lot.lotNumber,
-      expiryDate: toIsoDate(lot.expiryDate),
+      expiryDate: lot.expiryDate ? toIsoDate(lot.expiryDate) : null,
       status: lot.status,
       quantityAvailable: lot.quantityAvailable.toString(),
       quantityReceived: lot.quantityReceived.toString(),
@@ -397,6 +415,148 @@ export class ProductionService {
   // Production orders
   // -------------------------------------------------------------------------
 
+  /**
+   * Rewrites a formulation in place — US-MD-03's edit path.
+   *
+   * WHY THIS IS NARROW. Superseding with a new version is the normal way to
+   * change a recipe, and it is what `createBom` does: v1 stays exactly as it
+   * was, v2 carries the change, and a batch made in March still names the
+   * recipe it was actually made from. An in-place edit throws that away — the
+   * row a past batch points at simply becomes different.
+   *
+   * So this refuses as soon as the formulation has been USED. A work order
+   * against it, a job-work brand mapping citing it, or a production plan built
+   * on it all mean something downstream has already been decided on these
+   * numbers, and quietly changing them underneath would make those documents
+   * describe a recipe that never existed. Before any of that, a formulation is
+   * still a draft and correcting a typo in it loses nothing.
+   *
+   * Lines are replaced wholesale rather than diffed. A BOM line has no identity
+   * anyone refers to — no document cites "line 3" — so matching them up would
+   * be effort spent producing the same result.
+   */
+  async updateBom(id: string, dto: UpdateBomDto): Promise<BomView> {
+    const tenantId = this.tenantContext.requireTenantId();
+
+    const existing = await this.prisma.scoped.bom.findFirst({
+      where: { id, deletedAt: null },
+      include: { product: true },
+    });
+
+    if (!existing) throw new NotFoundException('That formulation does not exist.');
+
+    const [orders, mappings, plans] = await Promise.all([
+      this.prisma.scoped.productionOrder.count({ where: { bomId: id, deletedAt: null } }),
+      this.prisma.scoped.jobWorkProductMapping.count({ where: { bomId: id } }),
+      this.prisma.scoped.productionPlan.count({ where: { bomId: id, deletedAt: null } }),
+    ]);
+
+    if (orders > 0 || mappings > 0 || plans > 0) {
+      const used = [
+        orders > 0 ? `${orders} work order${orders === 1 ? '' : 's'}` : null,
+        mappings > 0 ? `${mappings} brand mapping${mappings === 1 ? '' : 's'}` : null,
+        plans > 0 ? `${plans} production plan${plans === 1 ? '' : 's'}` : null,
+      ]
+        .filter(Boolean)
+        .join(', ');
+
+      throw new ConflictException(
+        `Formulation v${existing.version} of ${existing.product.code} cannot be edited: ` +
+          `${used} already reference it. Changing it now would alter the recipe those ` +
+          'documents were built on. Save a new version instead — the old one stays on record.',
+      );
+    }
+
+    await this.assertBomLinesAreUsable(existing.productId, dto.lines);
+
+    return this.prisma.transaction(async (tx) => {
+      await tx.bom.update({
+        where: { id },
+        data: {
+          outputQuantity: dto.outputQuantity,
+          instructions: dto.instructions?.trim() || null,
+        },
+      });
+
+      // Replaced, not diffed; see the note above. Deleting first keeps the
+      // unique (bom_id, item_id) index satisfied when lines are reordered.
+      await tx.bomLine.deleteMany({ where: { bomId: id } });
+
+      await tx.bomLine.createMany({
+        data: dto.lines.map((line) => ({
+          tenantId,
+          bomId: id,
+          itemId: line.itemId,
+          quantityPer: line.quantityPer,
+          notes: line.notes?.trim() || null,
+        })),
+      });
+
+      const saved = await tx.bom.findUniqueOrThrow({
+        where: { id },
+        include: {
+          product: true,
+          lines: { include: { item: true }, orderBy: { item: { code: 'asc' } } },
+        },
+      });
+
+      return {
+        id: saved.id,
+        version: saved.version,
+        isActive: saved.isActive,
+        outputQuantity: saved.outputQuantity.toString(),
+        effectiveFrom: toIsoDate(saved.effectiveFrom),
+        instructions: saved.instructions,
+        product: toItemSummary(saved.product),
+        lines: saved.lines.map((line) => ({
+          id: line.id,
+          item: toItemSummary(line.item),
+          quantityPer: line.quantityPer.toString(),
+          notes: line.notes,
+        })),
+      };
+    });
+  }
+
+  /**
+   * The line rules `createBom` applies, shared so an edit cannot accept a
+   * formulation that could never have been created.
+   */
+  private async assertBomLinesAreUsable(
+    productId: string,
+    lines: readonly { itemId: string }[],
+  ): Promise<void> {
+    const lineItemIds = lines.map((line) => line.itemId);
+
+    if (new Set(lineItemIds).size !== lineItemIds.length) {
+      throw new BadRequestException(
+        'A material appears more than once. Combine the quantities into a single line — ' +
+          'two lines for the same item would make the planned quantity ambiguous.',
+      );
+    }
+
+    if (lineItemIds.includes(productId)) {
+      throw new BadRequestException('A formulation cannot use its own product as an ingredient.');
+    }
+
+    const lineItems = await this.prisma.scoped.item.findMany({
+      where: { id: { in: lineItemIds }, deletedAt: null },
+    });
+
+    if (lineItems.length !== lineItemIds.length) {
+      throw new BadRequestException('One or more materials on the formulation do not exist.');
+    }
+
+    const finishedGoodLine = lineItems.find((item) => item.type === 'FINISHED_GOOD');
+
+    if (finishedGoodLine) {
+      throw new BadRequestException(
+        `"${finishedGoodLine.code}" is a finished good and cannot be an ingredient. ` +
+          'Sub-assemblies are not modelled yet.',
+      );
+    }
+  }
+
   async listProductionOrders(): Promise<ProductionOrderSummary[]> {
     const orders = await this.prisma.scoped.productionOrder.findMany({
       where: { deletedAt: null },
@@ -441,6 +601,192 @@ export class ProductionService {
    * progress, the order — and every variance calculated from it — still refers
    * to the version its material was actually issued against.
    */
+  /**
+   * Whether a batch could be raised, and what it would consume — US-PROD-01.
+   *
+   * The same three gates `createProductionOrder` applies, asked without writing
+   * anything: an active formulation, an active pack specification, and enough
+   * usable stock. Deliberately the same code path for the stock arithmetic, so
+   * the grid on the form and the refusal on the save cannot disagree.
+   */
+  async workOrderFeasibility(
+    productId: string,
+    batchQuantity: string,
+  ): Promise<WorkOrderFeasibility> {
+    const product = await this.prisma.scoped.item.findFirst({
+      where: { id: productId, deletedAt: null },
+      select: { id: true, code: true, name: true },
+    });
+
+    if (!product) throw new NotFoundException('That product does not exist.');
+
+    const quantity = new Prisma.Decimal(batchQuantity);
+
+    if (quantity.lessThanOrEqualTo(0)) {
+      throw new BadRequestException('A batch quantity must be greater than zero.');
+    }
+
+    const base = {
+      productId: product.id,
+      productCode: product.code,
+      productName: product.name,
+      batchQuantity: quantity.toDecimalPlaces(3).toString(),
+    };
+
+    const bom = await this.prisma.scoped.bom.findFirst({
+      where: { productId, isActive: true, deletedAt: null },
+      include: { lines: true },
+    });
+
+    if (!bom || bom.lines.length === 0) {
+      return {
+        ...base,
+        bomVersion: bom?.version ?? 0,
+        canRaise: false,
+        lines: [],
+        blockedReason: bom
+          ? `Formulation version ${bom.version} has no materials, so nothing could be issued.`
+          : 'This product has no active formulation. Create one under Formulations first.',
+      };
+    }
+
+    if (!(await this.packaging.hasActiveRequirement(productId))) {
+      return {
+        ...base,
+        bomVersion: bom.version,
+        canRaise: false,
+        lines: [],
+        blockedReason:
+          'This product has no active packaging requirement. Add one under Packaging ' +
+          'Requirement first — the batch would reach the packing line with no pack ' +
+          'specification to work to.',
+      };
+    }
+
+    const scale = quantity.div(bom.outputQuantity);
+    const itemIds = bom.lines.map((line) => line.itemId);
+
+    const [items, grouped] = await Promise.all([
+      this.prisma.scoped.item.findMany({
+        where: { id: { in: itemIds } },
+        select: { id: true, code: true, name: true, uom: true },
+      }),
+      this.prisma.scoped.stockLot.groupBy({
+        by: ['itemId'],
+        where: { itemId: { in: itemIds }, status: 'USABLE' },
+        _sum: { quantityAvailable: true },
+      }),
+    ]);
+
+    const detailsById = new Map(items.map((item) => [item.id, item]));
+    const availableById = new Map(
+      grouped.map((row) => [row.itemId, row._sum.quantityAvailable ?? new Prisma.Decimal(0)]),
+    );
+
+    const lines = bom.lines.map((line) => {
+      const details = detailsById.get(line.itemId);
+      const required = new Prisma.Decimal(line.quantityPer).mul(scale).toDecimalPlaces(3);
+      const available = new Prisma.Decimal(availableById.get(line.itemId) ?? 0).toDecimalPlaces(3);
+      const short = Prisma.Decimal.max(required.sub(available), new Prisma.Decimal(0));
+
+      return {
+        itemId: line.itemId,
+        code: details?.code ?? line.itemId,
+        name: details?.name ?? '',
+        uom: details?.uom ?? '',
+        required: required.toString(),
+        available: available.toString(),
+        short: short.toDecimalPlaces(3).toString(),
+        isShort: short.greaterThan(0),
+      };
+    });
+
+    return {
+      ...base,
+      bomVersion: bom.version,
+      canRaise: !lines.some((line) => line.isShort),
+      lines,
+      blockedReason: null,
+    };
+  }
+
+  /**
+   * Which materials a batch of `plannedQuantity` would be short of — US-PROD-01.
+   *
+   * Scaled by the same ratio MaterialIssueService uses: a BOM states quantities
+   * against its own output quantity, so this is a ratio rather than a
+   * multiplication by the order size.
+   *
+   * Availability is the sum of USABLE stock per item — one grouped aggregate
+   * for every material at once, not a query per line. Quarantined and rejected
+   * lots are excluded, which is the whole point: material that has not passed
+   * incoming QC is not available to production however much of it is on the
+   * floor.
+   *
+   * Returns the shortfalls, empty when there are none, so the caller decides
+   * whether that is a refusal or something to render.
+   */
+  async materialShortages(
+    bom: {
+      outputQuantity: Prisma.Decimal;
+      lines: { itemId: string; quantityPer: Prisma.Decimal }[];
+    },
+    plannedQuantity: string,
+  ): Promise<
+    {
+      itemId: string;
+      code: string;
+      uom: string;
+      required: string;
+      available: string;
+      short: string;
+    }[]
+  > {
+    if (bom.lines.length === 0) return [];
+
+    const scale = new Prisma.Decimal(plannedQuantity).div(bom.outputQuantity);
+    const itemIds = bom.lines.map((line) => line.itemId);
+
+    const [items, grouped] = await Promise.all([
+      this.prisma.scoped.item.findMany({
+        where: { id: { in: itemIds } },
+        select: { id: true, code: true, uom: true },
+      }),
+      this.prisma.scoped.stockLot.groupBy({
+        by: ['itemId'],
+        where: { itemId: { in: itemIds }, status: 'USABLE' },
+        _sum: { quantityAvailable: true },
+      }),
+    ]);
+
+    const detailsById = new Map(items.map((item) => [item.id, item]));
+    const availableById = new Map(
+      grouped.map((row) => [row.itemId, row._sum.quantityAvailable ?? new Prisma.Decimal(0)]),
+    );
+
+    const shortages = [];
+
+    for (const line of bom.lines) {
+      const required = new Prisma.Decimal(line.quantityPer).mul(scale).toDecimalPlaces(3);
+      const available = new Prisma.Decimal(availableById.get(line.itemId) ?? 0).toDecimalPlaces(3);
+
+      if (available.greaterThanOrEqualTo(required)) continue;
+
+      const details = detailsById.get(line.itemId);
+
+      shortages.push({
+        itemId: line.itemId,
+        code: details?.code ?? line.itemId,
+        uom: details?.uom ?? '',
+        required: required.toString(),
+        available: available.toString(),
+        short: required.sub(available).toDecimalPlaces(3).toString(),
+      });
+    }
+
+    return shortages;
+  }
+
   async createProductionOrder(dto: CreateProductionOrderDto): Promise<ProductionOrderSummary> {
     const tenantId = this.tenantContext.requireTenantId();
     const userId = this.tenantContext.getUserId();
@@ -478,6 +824,30 @@ export class ProductionService {
         'That product has no active packaging requirement. Add one under Packaging Requirement ' +
           'before raising a work order — the batch would reach the packing line with no pack ' +
           'specification to work to.',
+      );
+    }
+
+    // US-PROD-01: "The system must block work-order confirmation if any
+    // required raw material is insufficient in stock."
+    //
+    // The same arithmetic the issue plan uses, asked one step earlier. A work
+    // order raised against stock that does not exist is a promise the store
+    // cannot keep: it sits in the queue looking schedulable until the day
+    // someone tries to dispense it.
+    //
+    // A CHECK, a preview and this all read the same numbers, so the answer
+    // cannot differ between the screen and the save.
+    const shortages = await this.materialShortages(bom, dto.plannedQuantity);
+
+    if (shortages.length > 0) {
+      const detail = shortages
+        .map((line) => `${line.code} — short ${line.short} ${line.uom} of ${line.required}`)
+        .join('; ');
+
+      throw new BadRequestException(
+        `Not enough usable stock to make ${dto.plannedQuantity} of that product: ${detail}. ` +
+          'Only stock released by incoming QC counts — quarantined and rejected lots are not ' +
+          'available to production. Raise a purchase requisition, or reduce the batch size.',
       );
     }
 

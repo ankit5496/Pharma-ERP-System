@@ -3,20 +3,7 @@ import { Injectable } from '@nestjs/common';
 import type { Prisma } from '@pharma-erp/database';
 
 /** Document prefixes. The set is closed so a typo cannot invent a new series. */
-export type DocumentType =
-  | 'PR'
-  | 'PO'
-  | 'GRN'
-  | 'PINV'
-  | 'PAY'
-  | 'LOT'
-  | 'PLAN'
-  // Order-to-Cash: sales order, despatch, sales invoice, receipt, sales return.
-  | 'SO'
-  | 'DSP'
-  | 'SINV'
-  | 'RCPT'
-  | 'SRTN';
+export type DocumentType = 'PR' | 'PO' | 'GRN' | 'PINV' | 'PAY' | 'LOT' | 'PLAN';
 
 /**
  * Allocates human-readable document numbers: PR-2026-0001, GRN-2026-0014.

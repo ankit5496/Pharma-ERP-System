@@ -21,7 +21,7 @@ import type { PartyStatus, PartyType } from '@pharma-erp/types';
  * work that lives outside this repository.
  */
 const PARTY_TYPES = ['VENDOR', 'CUSTOMER', 'JOB_WORK_PRINCIPAL'] as const;
-const PARTY_STATUSES = ['ACTIVE', 'INACTIVE', 'BLOCKED'] as const;
+const PARTY_STATUSES = ['ACTIVE', 'INACTIVE'] as const;
 
 type AssertSame<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
 

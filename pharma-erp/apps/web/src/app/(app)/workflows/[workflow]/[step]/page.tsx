@@ -2,7 +2,8 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { findWorkflow, findWorkflowStep } from '@pharma-erp/types';
 
-import { AppShell } from '@/components/app-shell';
+// AppShell is deliberately absent: the workflow layout renders it now, so a
+// sub-tab change no longer re-runs the session lookup. See ../layout.tsx.
 import { OrderToCashStep } from '@/components/order-to-cash';
 import {
   BatchRecordPanel,
@@ -11,8 +12,6 @@ import {
   MaterialIssuePanel,
   ProductionOrdersPanel,
 } from '@/components/production/panels';
-import { WorkflowSubnav } from '@/components/workflow-subnav';
-import { requireSession } from '@/lib/session';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,10 +44,10 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 export default async function WorkflowStepPage({ params, searchParams }: PageProps) {
   const { workflow: workflowKey, step: stepKey } = await params;
 
-  // Session first: an unknown step should not be a way to find out whether
-  // someone is signed in.
-  const user = await requireSession();
-
+  // No session call here. The layout above establishes it, and a layout for a
+  // dynamic segment is not re-rendered when only the segment BELOW it changes —
+  // so moving between steps costs nothing extra. Reaching this page at all
+  // means the layout has already admitted the request.
   const workflow = findWorkflow(workflowKey);
   const step = workflow && findWorkflowStep(workflow, stepKey);
 
@@ -58,48 +57,33 @@ export default async function WorkflowStepPage({ params, searchParams }: PagePro
   const search = typeof query.search === 'string' ? query.search : undefined;
 
   return (
-    <AppShell user={user}>
-      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
-        <header className="mb-6">
-          <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{workflow.label}</h1>
-          <p className="mt-1.5 max-w-3xl text-sm text-slate-600">{workflow.purpose}</p>
-        </header>
+    <section aria-labelledby="step-heading">
+      <h2 id="step-heading" className="text-lg font-semibold text-slate-900">
+        {step.label}
+      </h2>
+      <p className="mt-1 max-w-3xl text-sm text-slate-600">{step.purpose}</p>
 
-        <div className="mb-8">
-          <WorkflowSubnav workflow={workflow} />
-        </div>
-
+      <div className="mt-5">
         {/* The extension point promised in WORKFLOWS: a step whose `state` is
             'ready' has a screen registered for it and renders it; anything else
             still gets the honest placeholder.
 
-            Order-to-Cash takes the other branch because each of its panels
+            Order-to-Cash takes its own branch because each of its panels
             renders its own heading — they need the room for a search box and a
-            create button beside the title, which the generic header cannot
-            give them. Production steps sit under the shared header as before. */}
+            create button beside the title. Production steps sit under the
+            shared heading above. */}
         {workflow.key === 'order-to-cash' && step.state === 'ready' ? (
-          <section aria-label={step.label}>
+          <>
             <StepSearch step={step.label} search={search} />
             <OrderToCashStep step={step.key} search={search} />
-          </section>
+          </>
+        ) : step.state === 'ready' ? (
+          <ProductionStep workflowKey={workflow.key} stepKey={step.key} />
         ) : (
-          <section aria-labelledby="step-heading">
-            <h2 id="step-heading" className="text-lg font-semibold text-slate-900">
-              {step.label}
-            </h2>
-            <p className="mt-1 max-w-3xl text-sm text-slate-600">{step.purpose}</p>
-
-            <div className="mt-5">
-              {step.state === 'ready' ? (
-                <ProductionStep workflowKey={workflow.key} stepKey={step.key} role={user.role} />
-              ) : (
-                <StepPlaceholder workflowLabel={workflow.label} stepLabel={step.label} />
-              )}
-            </div>
-          </section>
+          <StepPlaceholder workflowLabel={workflow.label} stepLabel={step.label} />
         )}
-      </main>
-    </AppShell>
+      </div>
+    </section>
   );
 }
 
@@ -111,23 +95,15 @@ export default async function WorkflowStepPage({ params, searchParams }: PagePro
  * missing key here rather than a silently blank page. `state: 'ready'` and an
  * entry in this table have to be changed together, and that is the point.
  */
-const PRODUCTION_STEPS: Record<string, (props: { role: string }) => React.ReactNode> = {
+const PRODUCTION_STEPS: Record<string, () => React.ReactNode> = {
   formulations: () => <FormulationsPanel />,
   'production-orders': () => <ProductionOrdersPanel />,
   'material-issue': () => <MaterialIssuePanel />,
   'batch-record': () => <BatchRecordPanel />,
-  'batch-release': ({ role }) => <BatchReleasePanel role={role} />,
+  'batch-release': () => <BatchReleasePanel />,
 };
 
-function ProductionStep({
-  workflowKey,
-  stepKey,
-  role,
-}: {
-  workflowKey: string;
-  stepKey: string;
-  role: string;
-}) {
+function ProductionStep({ workflowKey, stepKey }: { workflowKey: string; stepKey: string }) {
   const render = workflowKey === 'production-quality' ? PRODUCTION_STEPS[stepKey] : undefined;
 
   if (!render) {
@@ -141,7 +117,7 @@ function ProductionStep({
     );
   }
 
-  return <>{render({ role })}</>;
+  return <>{render()}</>;
 }
 
 /**
