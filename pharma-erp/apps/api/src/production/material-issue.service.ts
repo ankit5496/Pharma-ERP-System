@@ -8,9 +8,17 @@ import type {
   MaterialIssueView,
 } from '@pharma-erp/types';
 
+import { NumberingService } from '../procurement/numbering.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
+import {
+  assertLotInBucket,
+  describeBucket,
+  stockBucketFor,
+  stockBucketWhere,
+  type StockBucketRule,
+} from './job-work-tagging';
 import { toIsoDate, toItemSummary } from './production.mappers';
 import { ProductionService } from './production.service';
 
@@ -40,6 +48,8 @@ export class MaterialIssueService {
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
     private readonly production: ProductionService,
+    /** Allocates the MI-YYYY-NNNN dispensing note number. */
+    private readonly numbering: NumberingService,
   ) {}
 
   /**
@@ -53,6 +63,12 @@ export class MaterialIssueService {
   async plan(productionOrderId: string): Promise<MaterialIssuePlan> {
     const order = await this.production.requireOrder(productionOrderId);
 
+    // US-JW-03: which stock this order may draw on, derived from the billing
+    // model pinned on it when it was raised. Own-brand orders get
+    // COMPANY_OWNED, which is what every lot had before job work existed —
+    // so this is a no-op for them.
+    const bucket = stockBucketFor(order);
+
     // Scale the recipe to the order: a BOM states quantities per its own
     // output quantity, not per unit, so this is a ratio rather than a
     // multiplication by the order size.
@@ -62,7 +78,7 @@ export class MaterialIssueService {
 
     for (const bomLine of order.bom.lines) {
       const required = new Prisma.Decimal(bomLine.quantityPer).mul(scale);
-      const allocations = await this.allocate(bomLine.itemId, required);
+      const allocations = await this.allocate(bomLine.itemId, required, bucket);
 
       const allocated = allocations.reduce(
         (total, allocation) => total.add(allocation.quantity),
@@ -120,7 +136,13 @@ export class MaterialIssueService {
       );
     }
 
-    const plan = await this.applyOverrides(await this.plan(productionOrderId), overrides);
+    const bucket = stockBucketFor(order);
+
+    const plan = await this.applyOverrides(
+      await this.plan(productionOrderId),
+      overrides,
+      bucket,
+    );
     const short = plan.lines.filter((line) => line.quantityShort !== ZERO.toString());
 
     if (short.length > 0) {
@@ -129,14 +151,20 @@ export class MaterialIssueService {
         .join(', ');
 
       throw new BadRequestException(
-        `Not enough usable stock to issue ${order.orderNumber}: ${detail}. ` +
-          'Only lots marked usable and not yet expired can be dispensed.',
+        `Not enough ${describeBucket(bucket)} to issue ${order.orderNumber}: ${detail}. ` +
+          'Only lots marked usable and not yet expired can be dispensed.' +
+          (bucket.ownership === 'PRINCIPAL_OWNED'
+            ? ' This is a pure-conversion job-work order, so company-owned stock cannot be' +
+              ' substituted.'
+            : ''),
       );
     }
 
     return this.prisma.transaction(async (tx) => {
+      const issueNumber = await this.numbering.next(tx, tenantId, 'MI');
+
       const issue = await tx.materialIssue.create({
-        data: { tenantId, productionOrderId: order.id, issuedById: userId },
+        data: { tenantId, issueNumber, productionOrderId: order.id, issuedById: userId },
       });
 
       for (const line of plan.lines) {
@@ -145,6 +173,12 @@ export class MaterialIssueService {
             where: {
               id: allocation.lotId,
               status: 'USABLE',
+              // CONTROL 5, in the write itself and not only in the read that
+              // chose the lot. This is the statement that actually moves the
+              // stock, so this is where the bucket has to hold: a lot whose
+              // ownership does not match updates zero rows and aborts the
+              // whole issue, even if something upstream proposed it.
+              ...stockBucketWhere(bucket),
               // The guard: only decrement if the stock is still there.
               quantityAvailable: { gte: new Prisma.Decimal(allocation.quantity) },
             },
@@ -244,6 +278,7 @@ export class MaterialIssueService {
   private async applyOverrides(
     plan: MaterialIssuePlan,
     overrides: readonly MaterialIssueOverride[],
+    bucket: StockBucketRule,
   ): Promise<MaterialIssuePlan> {
     if (overrides.length === 0) return plan;
 
@@ -278,6 +313,9 @@ export class MaterialIssueService {
 
         const lots = await this.prisma.scoped.stockLot.findMany({
           where: { id: { in: chosen.map((entry) => entry.lotId) }, itemId: line.item.id },
+          // Needed to judge the bucket: ownership is on the lot, but which
+          // job-work order a principal-owned lot belongs to is on its receipt.
+          include: { jobWorkMaterialReceipt: { select: { jobWorkOrderId: true } } },
         });
 
         const lotsById = new Map(lots.map((lot) => [lot.id, lot]));
@@ -291,6 +329,12 @@ export class MaterialIssueService {
                 'that material.',
             );
           }
+
+          // CONTROL 5, on the one path that could otherwise reach around the
+          // FEFO filter. US-PROD-02 lets a person pick a lot other than the
+          // proposal — a damaged container, a retained sample — but the bucket
+          // is not part of what an override may set aside.
+          assertLotInBucket(lot, bucket);
 
           if (lot.status !== 'USABLE') {
             throw new BadRequestException(
@@ -336,7 +380,7 @@ export class MaterialIssueService {
    * rather than throwing when it cannot be — the caller decides whether a
    * shortfall is an error (issuing) or information (previewing).
    */
-  private async allocate(itemId: string, required: Prisma.Decimal) {
+  private async allocate(itemId: string, required: Prisma.Decimal, bucket: StockBucketRule) {
     const earliestUsableExpiry = new Date();
     earliestUsableExpiry.setUTCDate(
       earliestUsableExpiry.getUTCDate() + MaterialIssueService.MINIMUM_SHELF_LIFE_DAYS,
@@ -345,6 +389,12 @@ export class MaterialIssueService {
     const lots = await this.prisma.scoped.stockLot.findMany({
       where: {
         itemId,
+        // CONTROL 4, in the FEFO query itself. Under PURE_CONVERSION this
+        // narrows to the principal's own material for this job-work order; for
+        // everything else it is the company-owned stock that was always meant.
+        // Filtering here rather than after the fact means the wrong bucket is
+        // never even proposed.
+        ...stockBucketWhere(bucket),
         // Only released stock. Quarantined material has not passed incoming QC
         // and rejected material never will; both stay visible in the register
         // and unpickable here.

@@ -16,6 +16,7 @@ import type {
 } from '@pharma-erp/types';
 
 import { fieldBadRequest, fieldConflict } from '../common/field-error';
+import { JobWorkOrdersService } from '../job-work/job-work-orders.service';
 import { PackagingService } from '../packaging/packaging.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
@@ -27,6 +28,12 @@ import type {
   UpdateBomDto,
   UpdateItemDto,
 } from './dto/production.dto';
+import {
+  describeBucket,
+  stockBucketFor,
+  stockBucketWhere,
+  type StockBucketRule,
+} from './job-work-tagging';
 import { toItemSummary, toIsoDate, type ItemRow } from './production.mappers';
 
 /**
@@ -44,6 +51,8 @@ export class ProductionService {
     private readonly tenantContext: TenantContextService,
     /** US-MD-06's work-order gate; see createProductionOrder. */
     private readonly packaging: PackagingService,
+    /** US-JW-03: resolving the job-work order a batch is being made against. */
+    private readonly jobWorkOrders: JobWorkOrdersService,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -732,6 +741,15 @@ export class ProductionService {
       lines: { itemId: string; quantityPer: Prisma.Decimal }[];
     },
     plannedQuantity: string,
+    /**
+     * Which bucket counts — US-JW-03.
+     *
+     * Defaults to company-owned, so every existing caller keeps its meaning.
+     * Under PURE_CONVERSION the question "is there enough" has to be asked of
+     * the PRINCIPAL'S material: counting our own stock here would pass a work
+     * order that the material issue then refuses, which is the worst of both.
+     */
+    bucket: StockBucketRule = { ownership: 'COMPANY_OWNED', jobWorkOrderId: null },
   ): Promise<
     {
       itemId: string;
@@ -754,7 +772,7 @@ export class ProductionService {
       }),
       this.prisma.scoped.stockLot.groupBy({
         by: ['itemId'],
-        where: { itemId: { in: itemIds }, status: 'USABLE' },
+        where: { itemId: { in: itemIds }, status: 'USABLE', ...stockBucketWhere(bucket) },
         _sum: { quantityAvailable: true },
       }),
     ]);
@@ -790,6 +808,24 @@ export class ProductionService {
   async createProductionOrder(dto: CreateProductionOrderDto): Promise<ProductionOrderSummary> {
     const tenantId = this.tenantContext.requireTenantId();
     const userId = this.tenantContext.getUserId();
+
+    // US-JW-03. Resolved FIRST, because it decides which stock the shortage
+    // check below is allowed to count. Null on every own-brand work order,
+    // and nothing downstream changes for those.
+    const jobWork = dto.jobWorkOrderId
+      ? await this.jobWorkOrders.requireOrder(dto.jobWorkOrderId)
+      : null;
+
+    if (jobWork && jobWork.mapping.bom.product.id !== dto.productId) {
+      // The job-work order names a mapping, the mapping names a BOM, and that
+      // BOM has a product. Making anything else against the order would put
+      // the wrong goods on the principal's challan.
+      throw fieldBadRequest(
+        'productId',
+        `${jobWork.orderNumber} is for ${jobWork.mapping.bom.product.name}, so a work ` +
+          'order against it has to be for that product.',
+      );
+    }
 
     const bom = await this.prisma.scoped.bom.findFirst({
       where: { productId: dto.productId, isActive: true, deletedAt: null },
@@ -837,7 +873,16 @@ export class ProductionService {
     //
     // A CHECK, a preview and this all read the same numbers, so the answer
     // cannot differ between the screen and the save.
-    const shortages = await this.materialShortages(bom, dto.plannedQuantity);
+    // CONTROLS 4 and 5, at the earliest point they can be asked. Under
+    // PURE_CONVERSION this counts the principal's material and nothing else, so
+    // a work order our own stock could cover is still refused when theirs
+    // cannot — which is the point.
+    const bucket = stockBucketFor({
+      jobWorkOrderId: jobWork?.id ?? null,
+      jobWorkBillingModel: jobWork?.billingModel ?? null,
+    });
+
+    const shortages = await this.materialShortages(bom, dto.plannedQuantity, bucket);
 
     if (shortages.length > 0) {
       const detail = shortages
@@ -845,9 +890,15 @@ export class ProductionService {
         .join('; ');
 
       throw new BadRequestException(
-        `Not enough usable stock to make ${dto.plannedQuantity} of that product: ${detail}. ` +
-          'Only stock released by incoming QC counts — quarantined and rejected lots are not ' +
-          'available to production. Raise a purchase requisition, or reduce the batch size.',
+        `Not enough ${describeBucket(bucket)} to make ${dto.plannedQuantity} of that ` +
+          `product: ${detail}. ` +
+          (bucket.ownership === 'PRINCIPAL_OWNED'
+            ? 'This is a pure-conversion job-work order, so only material received against ' +
+              `${jobWork?.orderNumber} counts — company-owned stock cannot be used. Record ` +
+              "the principal's delivery challan, or reduce the batch size."
+            : 'Only stock released by incoming QC counts — quarantined and rejected lots are ' +
+              'not available to production. Raise a purchase requisition, or reduce the ' +
+              'batch size.'),
       );
     }
 
@@ -862,6 +913,11 @@ export class ProductionService {
           bomId: bom.id,
           plannedQuantity: dto.plannedQuantity,
           plannedStartOn: dto.plannedStartOn ? new Date(dto.plannedStartOn) : null,
+          // US-JW-03's "additional tagging", and the second half of US-MD-05:
+          // the billing model is COPIED here rather than joined, and a database
+          // trigger refuses to change either once the order leaves PLANNED.
+          jobWorkOrderId: jobWork?.id ?? null,
+          jobWorkBillingModel: jobWork?.billingModel ?? null,
           createdById: userId,
         },
         include: {

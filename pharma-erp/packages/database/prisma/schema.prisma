@@ -151,6 +151,9 @@ model Tenant {
   // Job-work: manufacturing under a principal's brand.
   jobWorkAgreements      JobWorkAgreement[]
   jobWorkProductMappings JobWorkProductMapping[]
+  jobWorkOrders          JobWorkOrder[]
+  jobWorkMaterialReceipts JobWorkMaterialReceipt[]
+  jobWorkInvoices        JobWorkInvoice[]
 
   // Packaging: what each pack presentation consumes.
   packagingRequirements     PackagingRequirement[]
@@ -273,6 +276,11 @@ model User {
   materialIssuesMade      MaterialIssue[]      @relation("MaterialIssueIssuedBy")
   packingRecordsMade      BatchPackingRecord[] @relation("BatchPackingRecordedBy")
   batchReleaseDecisions   Batch[]              @relation("BatchReleaseDecidedBy")
+
+  // Job work
+  jobWorkOrdersCreated    JobWorkOrder[]           @relation("JobWorkOrderCreatedBy")
+  jobWorkReceiptsMade     JobWorkMaterialReceipt[] @relation("JobWorkReceiptReceivedBy")
+  jobWorkInvoicesCreated  JobWorkInvoice[]         @relation("JobWorkInvoiceCreatedBy")
   salesOrdersCreated      SalesOrder[]
   allocationsMade         BatchAllocation[]    @relation("AllocationAllocatedBy")
   allocationChecksMade    BatchAllocation[]    @relation("AllocationComplianceCheckedBy")
@@ -480,6 +488,29 @@ model ProductionOrder {
 
   status ProductionOrderStatus @default(PLANNED)
 
+  // ---------------------------------------------------------------------------
+  // Job work — US-JW-03
+  // ---------------------------------------------------------------------------
+  // NO NEW PRODUCTION RECORD. US-JW-03 is explicit that job-work manufacturing
+  // reuses this work order; these two columns are the "additional tagging" it
+  // asks for, and nothing else about production changes.
+
+  /// The job-work order being made, when this batch is for a principal. NULL on
+  /// every own-brand work order, which is most of them.
+  jobWorkOrderId String? @map("job_work_order_id") @db.Uuid
+
+  /// The billing model, COPIED from the agreement at creation.
+  ///
+  /// This is the second half of US-MD-05 — "cannot be changed on an order that
+  /// is already in production" — which migration 20260913010000 recorded as
+  /// owed once production orders could carry an agreement. A snapshot rather
+  /// than a join: renegotiating the agreement next month must not rewrite which
+  /// stock bucket last month's batch was allowed to consume, nor what it was
+  /// billed on. The `production_orders_job_work_fields_together` CHECK keeps it
+  /// in step with `job_work_order_id`, and a BEFORE UPDATE trigger refuses a
+  /// change to either once the order has left PLANNED.
+  jobWorkBillingModel BillingModel? @map("job_work_billing_model")
+
   createdById String?   @map("created_by_id") @db.Uuid
   closedAt    DateTime? @map("closed_at") @db.Timestamptz(6)
 
@@ -492,11 +523,16 @@ model ProductionOrder {
   bom       Bom    @relation(fields: [bomId], references: [id], onDelete: Restrict)
   createdBy User?  @relation("ProductionOrderCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
 
+  jobWorkOrder JobWorkOrder? @relation(fields: [jobWorkOrderId], references: [id], onDelete: Restrict)
+
   issues  MaterialIssue[]
   batches Batch[]
 
   @@unique([tenantId, orderNumber])
   @@index([tenantId, status, deletedAt])
+  /// "What has been made against this job-work order" — the register's
+  /// consumption and dispatch columns both start here.
+  @@index([tenantId, jobWorkOrderId])
   @@map("production_orders")
 }
 
@@ -514,6 +550,16 @@ model MaterialIssue {
   tenantId          String @map("tenant_id") @db.Uuid
   productionOrderId String @map("production_order_id") @db.Uuid
 
+  /// The dispensing note number, MI-YYYY-NNNN.
+  ///
+  /// DECLARED LATE, and the delay was a live defect rather than an omission.
+  /// The column was added to the hosted database by a migration that never
+  /// reached this schema, so Prisma issued every INSERT without it and Postgres
+  /// rejected the NOT NULL — every material issue against that database failed
+  /// with a 500, and `material_issues` held no rows at all. Declared here and
+  /// allocated by NumberingService, the two agree again.
+  issueNumber String @map("issue_number") @db.VarChar(32)
+
   issuedAt   DateTime @default(now()) @map("issued_at") @db.Timestamptz(6)
   issuedById String?  @map("issued_by_id") @db.Uuid
 
@@ -527,6 +573,7 @@ model MaterialIssue {
 
   lines MaterialIssueLine[]
 
+  @@unique([tenantId, issueNumber])
   @@index([tenantId, productionOrderId])
   @@map("material_issues")
 }
@@ -629,6 +676,8 @@ model Batch {
   allocations       BatchAllocation[]
   salesInvoiceItems SalesInvoiceItem[]
   salesReturnItems  SalesReturnItem[]
+  /// Job-work dispatches of this batch back to the principal (US-JW-05).
+  jobWorkInvoices   JobWorkInvoice[]
 
   @@unique([tenantId, batchNumber])
   @@index([tenantId, releaseStatus, deletedAt])
@@ -942,6 +991,35 @@ enum ConversionRateBasis {
   PER_KG
 }
 
+/// Whose material a stock lot is — US-JW-02's "Stock Ownership Tag".
+///
+/// A COLUMN ON stock_lots RATHER THAN A SECOND STOCK TABLE, and the choice is
+/// load-bearing. Principal-owned material is still material: it expires, it is
+/// issued FEFO, it is consumed by a material issue and it appears in the stock
+/// ledger. A parallel table would need every one of those mechanisms rebuilt,
+/// and `material_issue_lines.lot_id` could not point at both.
+///
+/// "Structurally separate" (rule 7) is then a NOT NULL discriminator that every
+/// allocation query filters on, enforced in MaterialIssueService rather than
+/// left to whoever writes the next query: the bucket is derived from the
+/// agreement's billing model and is never a user's choice.
+enum StockOwnership {
+  COMPANY_OWNED
+  PRINCIPAL_OWNED
+}
+
+/// What a job-work invoice is raised on — US-JW-05.
+///
+/// NEVER SELECTED BY A USER. Derived from the agreement's billing model in
+/// JobWorkDispatchService, and re-derived on every write: a request that names
+/// a basis contradicting its billing model is rejected rather than honoured.
+/// PURE_CONVERSION → CONVERSION_CHARGE_ONLY, OWN_PROCUREMENT →
+/// FULL_FINISHED_GOODS_VALUE, with no third combination reachable.
+enum JobWorkInvoiceBasis {
+  CONVERSION_CHARGE_ONLY
+  FULL_FINISHED_GOODS_VALUE
+}
+
 /// The statutory permissions a manufacturer holds, each with its own issuing
 /// authority and renewal cycle (US-MD-04).
 ///
@@ -1194,6 +1272,7 @@ model Item {
   // stock table, shared with Procure-to-Pay.
   productionOrders  ProductionOrder[]
   issueLines        MaterialIssueLine[]
+  jobWorkReceipts   JobWorkMaterialReceipt[]
   finishedGoodsLots FinishedGoodsLot[]
   salesOrderItems   SalesOrderItem[]
   salesInvoiceItems SalesInvoiceItem[]
@@ -1339,6 +1418,7 @@ model Party {
   purchaseInvoices         PurchaseInvoice[]
   /// Set only on a JOB_WORK_PRINCIPAL; see JobWorkAgreement.principalId.
   jobWorkAgreements        JobWorkAgreement[]
+  jobWorkOrders            JobWorkOrder[]        @relation("JobWorkOrderPrincipal")
   documents                CustomerDocument[]
   /// Set only on a CUSTOMER; see CustomerLicence.
   customerLicences         CustomerLicence[]
@@ -1573,6 +1653,7 @@ model JobWorkAgreement {
   principal Party  @relation(fields: [principalId], references: [id], onDelete: Restrict)
 
   mappings JobWorkProductMapping[]
+  orders   JobWorkOrder[]
 
   @@index([tenantId, principalId, deletedAt])
   @@index([tenantId, validTo])
@@ -1618,6 +1699,217 @@ model JobWorkProductMapping {
   @@unique([agreementId, bomId])
   @@index([tenantId, bomId])
   @@map("job_work_product_mappings")
+
+  jobWorkOrders JobWorkOrder[]
+}
+
+// -----------------------------------------------------------------------------
+// JobWorkOrder — what a principal has asked us to make (US-JW-01)
+// -----------------------------------------------------------------------------
+
+/// A principal's instruction to manufacture a stated quantity of one of their
+/// brands, under a named agreement.
+///
+/// THE PRODUCT AND THE BRAND ARE ONE FIELD HERE, not two. US-JW-01 asks for
+/// both, and both "must come through Product-Brand Mapping defined on the
+/// Agreement" — and a mapping row IS a (BOM → product, principal brand name)
+/// pair. Storing the mapping is therefore storing both, with the validation
+/// built in: a product/brand combination outside the agreement cannot be
+/// referenced because no mapping row exists for it. Two loose foreign keys
+/// would have needed a cross-check on every write to say the same thing, and
+/// would have allowed a valid product with the wrong principal's brand.
+///
+/// NO STATUS COLUMN, deliberately. US-JW-01 lists no status among its fields,
+/// and US-JW-06 says the register is derived from actual transactions — so
+/// "how far along is this order" is answered by counting receipts, issues and
+/// dispatches rather than by a flag someone has to remember to advance. A
+/// status column would be a second, driftable version of that same answer.
+model JobWorkOrder {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  orderNumber String @map("order_number") @db.VarChar(32)
+
+  /// Denormalised from the agreement so "this principal's orders" is one index
+  /// rather than a join, and so the FK to parties makes the principal
+  /// undeletable while an order stands. Kept honest by the service, which reads
+  /// it off the agreement rather than off the request.
+  principalId String @map("principal_id") @db.Uuid
+  agreementId String @map("agreement_id") @db.Uuid
+  mappingId   String @map("mapping_id") @db.Uuid
+
+  quantity     Decimal  @db.Decimal(14, 3)
+  deliveryDate DateTime @map("delivery_date") @db.Date
+
+  /// AUTO-INHERITED from the agreement and frozen here (US-JW-01, rules 2 and
+  /// 3; controls 3 and 7). The create and update DTOs have no field for it, so
+  /// there is nothing for a request to override — a client that sends one is
+  /// rejected by `forbidNonWhitelisted`, not quietly obeyed.
+  ///
+  /// Copied rather than joined for the reason ProductionOrder.bomId is pinned:
+  /// this order was placed on the terms in force the day it was placed.
+  billingModel BillingModel @map("billing_model")
+
+  notes String? @db.VarChar(1000)
+
+  createdById String? @map("created_by_id") @db.Uuid
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant    Tenant                @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  principal Party                 @relation("JobWorkOrderPrincipal", fields: [principalId], references: [id], onDelete: Restrict)
+  agreement JobWorkAgreement      @relation(fields: [agreementId], references: [id], onDelete: Restrict)
+  mapping   JobWorkProductMapping @relation(fields: [mappingId], references: [id], onDelete: Restrict)
+  createdBy User?                 @relation("JobWorkOrderCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  materialReceipts JobWorkMaterialReceipt[]
+  productionOrders ProductionOrder[]
+  invoices         JobWorkInvoice[]
+
+  @@unique([tenantId, orderNumber])
+  @@index([tenantId, principalId, deletedAt])
+  @@index([tenantId, agreementId, deletedAt])
+  @@map("job_work_orders")
+}
+
+// -----------------------------------------------------------------------------
+// JobWorkMaterialReceipt — free-of-cost material in (US-JW-02)
+// -----------------------------------------------------------------------------
+
+/// Material the principal supplied, received against THEIR delivery challan.
+///
+/// NOT A PURCHASE, and the schema says so by what it lacks: no vendor, no
+/// purchase order, no rate, no tax, no invoice. US-JW-02's "this transaction
+/// does NOT create a Purchase transaction" is therefore structural rather than
+/// a rule someone has to remember — there is no column here that a purchase
+/// could be recorded in.
+///
+/// ONE ITEM PER RECEIPT, flat rather than header/lines. US-JW-02 lists Item,
+/// Batch/Lot Number and Received Quantity as fields of the receipt itself, not
+/// of a line; a multi-item challan is recorded as several receipts sharing a
+/// challan number, which is also how the batch/lot stays unambiguous.
+///
+/// Applies to PURE_CONVERSION only. Enforced in the service against the ORDER's
+/// frozen billing model, not the agreement's current one.
+model JobWorkMaterialReceipt {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  receiptNumber String @map("receipt_number") @db.VarChar(32)
+
+  jobWorkOrderId String @map("job_work_order_id") @db.Uuid
+
+  /// The principal's own document number. Deliberately free text and NOT
+  /// unique: it is their numbering, not ours, and two principals may well use
+  /// the same series. Named `delivery_challan_number` and never `invoice`.
+  deliveryChallanNumber String @map("delivery_challan_number") @db.VarChar(64)
+
+  itemId String @map("item_id") @db.Uuid
+
+  /// The principal's batch/lot marking on the container.
+  batchNumber String @map("batch_number") @db.VarChar(64)
+
+  receivedQuantity Decimal @map("received_quantity") @db.Decimal(18, 4)
+
+  manufacturingDate DateTime? @map("manufacturing_date") @db.Date
+  expiryDate        DateTime? @map("expiry_date") @db.Date
+
+  notes String? @db.VarChar(500)
+
+  receivedById String?  @map("received_by_id") @db.Uuid
+  receivedAt   DateTime @default(now()) @map("received_at") @db.Timestamptz(6)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  jobWorkOrder JobWorkOrder @relation(fields: [jobWorkOrderId], references: [id], onDelete: Restrict)
+  item         Item         @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  receivedBy   User?        @relation("JobWorkReceiptReceivedBy", fields: [receivedById], references: [id], onDelete: Restrict)
+
+  /// The principal-owned lot this receipt created. Optional on this side only
+  /// because Prisma models the unique FK from StockLot; the service always
+  /// creates exactly one, in the same transaction.
+  stockLot StockLot?
+
+  @@unique([tenantId, receiptNumber])
+  @@index([tenantId, jobWorkOrderId, deletedAt])
+  @@index([tenantId, itemId])
+  @@map("job_work_material_receipts")
+}
+
+// -----------------------------------------------------------------------------
+// JobWorkInvoice — dispatch and invoice in one document (US-JW-05)
+// -----------------------------------------------------------------------------
+
+/// Finished goods returned to the principal, and what they are billed for.
+///
+/// ONE RECORD, because US-JW-05 names one: "Job-Work Delivery Challan /
+/// Invoice". Goods going back to the brand owner who commissioned them are not
+/// a sale — there is no sales order, no customer price list and no receivable
+/// against a distributor — so this deliberately does NOT reuse SalesInvoice,
+/// whose every row must hang off a SalesOrder and a BatchAllocation. Bending
+/// that chain would have put fictitious sales orders into the order book and
+/// the receivables ageing, which is a worse lie than a second table.
+///
+/// What it DOES reuse: the Batch and its FinishedGoodsLot (the same finished
+/// goods any other dispatch reduces), Item.gstRate for tax, the agreement's
+/// conversion rate, and NumberingService for the document number.
+model JobWorkInvoice {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  invoiceNumber String @map("invoice_number") @db.VarChar(32)
+
+  jobWorkOrderId String @map("job_work_order_id") @db.Uuid
+
+  /// The finished batch being returned. RELEASED at the moment of dispatch —
+  /// checked in the service and re-checked inside the transaction, because
+  /// US-JW-04's "a batch cannot be dispatched unless Released" is control 6.
+  batchId String @map("batch_id") @db.Uuid
+
+  /// AUTO-DERIVED from the order's billing model (control 7). The DTO has no
+  /// field for it; the `job_work_invoices_basis_matches_model` CHECK makes the
+  /// contradictory pair unstorable even by hand.
+  invoiceBasis JobWorkInvoiceBasis @map("invoice_basis")
+
+  /// Copied from the order so the CHECK above has both halves on one row.
+  billingModel BillingModel @map("billing_model")
+
+  dispatchDate       DateTime @map("dispatch_date") @db.Date
+  dispatchedQuantity Decimal  @map("dispatched_quantity") @db.Decimal(14, 3)
+
+  /// What one unit was charged at, and the basis it came from, snapshotted.
+  /// Under PURE_CONVERSION these come from the agreement's conversion charge;
+  /// under OWN_PROCUREMENT the full product value was used.
+  rateApplied     Decimal              @map("rate_applied") @db.Decimal(14, 4)
+  rateBasis       ConversionRateBasis? @map("rate_basis")
+
+  taxableValue   Decimal @map("taxable_value") @db.Decimal(14, 2)
+  gstRatePercent Decimal @map("gst_rate_percent") @db.Decimal(5, 2)
+  gstAmount      Decimal @map("gst_amount") @db.Decimal(14, 2)
+  totalValue     Decimal @map("total_value") @db.Decimal(14, 2)
+
+  notes String? @db.VarChar(1000)
+
+  createdById String? @map("created_by_id") @db.Uuid
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  jobWorkOrder JobWorkOrder @relation(fields: [jobWorkOrderId], references: [id], onDelete: Restrict)
+  batch        Batch        @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  createdBy    User?        @relation("JobWorkInvoiceCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, invoiceNumber])
+  @@index([tenantId, jobWorkOrderId, deletedAt])
+  @@index([tenantId, batchId])
+  @@map("job_work_invoices")
 }
 
 // -----------------------------------------------------------------------------
@@ -2055,8 +2347,28 @@ model StockLot {
   /// vendor's batch number, which is theirs and may collide across vendors.
   lotNumber String @map("lot_number") @db.VarChar(32)
 
-  itemId             String @map("item_id") @db.Uuid
-  goodsReceiptLineId String @unique @map("goods_receipt_line_id") @db.Uuid
+  itemId String @map("item_id") @db.Uuid
+
+  /// The goods-receipt line that created this lot — for company-owned stock.
+  ///
+  /// NULLABLE since US-JW-02. A principal's free-of-cost material arrives on
+  /// THEIR delivery challan and creates no purchase, no order and no goods
+  /// receipt; requiring a GRN line here would have forced a fake purchase into
+  /// existence to hold stock the company never bought. Exactly one of this and
+  /// `jobWorkMaterialReceiptId` is set, enforced by the
+  /// `stock_lots_has_one_source` CHECK constraint.
+  goodsReceiptLineId String? @unique @map("goods_receipt_line_id") @db.Uuid
+
+  /// The job-work material receipt that created this lot — for principal-owned
+  /// stock. The other half of the same either/or.
+  jobWorkMaterialReceiptId String? @unique @map("job_work_material_receipt_id") @db.Uuid
+
+  /// Whose material this is. See StockOwnership.
+  ///
+  /// Defaults to COMPANY_OWNED so every lot that existed before job work —
+  /// all of which came through a purchase — is correctly labelled by the
+  /// migration without a backfill pass.
+  ownership StockOwnership @default(COMPANY_OWNED)
 
   vendorBatchNumber String?   @map("vendor_batch_number") @db.VarChar(64)
   manufacturingDate DateTime? @map("manufacturing_date") @db.Date
@@ -2076,9 +2388,11 @@ model StockLot {
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  tenant           Tenant           @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  item             Item             @relation(fields: [itemId], references: [id], onDelete: Restrict)
-  goodsReceiptLine GoodsReceiptLine @relation(fields: [goodsReceiptLineId], references: [id], onDelete: Restrict)
+  tenant           Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  item             Item              @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  goodsReceiptLine GoodsReceiptLine? @relation(fields: [goodsReceiptLineId], references: [id], onDelete: Restrict)
+
+  jobWorkMaterialReceipt JobWorkMaterialReceipt? @relation(fields: [jobWorkMaterialReceiptId], references: [id], onDelete: Restrict)
 
   qcResults     QcResult[]
   ledgerEntries StockLedgerEntry[]
@@ -2089,7 +2403,14 @@ model StockLot {
 
   @@unique([tenantId, lotNumber])
   /// The FEFO index: usable lots of an item, earliest expiry first.
+  ///
+  /// `ownership` sits AFTER status so this one index still serves the ordinary
+  /// company-owned allocation — which never mentions ownership in its filter
+  /// before job work existed and now always does. Leading with ownership would
+  /// have made the common case scan a column whose value is the same on
+  /// virtually every row.
   @@index([tenantId, itemId, status, expiryDate])
+  @@index([tenantId, ownership, itemId, status, expiryDate])
   @@map("stock_lots")
 }
 

@@ -60,7 +60,7 @@ async function submit(
   body: unknown,
   successMessage: string,
   values?: Record<string, string>,
-  method: 'POST' | 'PATCH' = 'POST',
+  method: 'POST' | 'PATCH' | 'DELETE' = 'POST',
 ): Promise<ActionState> {
   const result = await apiFetch<unknown>(path, {
     method,
@@ -324,6 +324,22 @@ export async function createPurchaseOrderAction(
 }
 
 /** Places a draft: it becomes a real order and its requisition is converted. */
+/**
+ * Throws a draft away.
+ *
+ * Drafts only, and the API enforces that: a placed order is cancelled instead,
+ * which leaves it on the record. The row is soft-deleted, like every deletion
+ * in this module.
+ */
+export async function discardDraftPurchaseOrderAction(
+  _previous: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const id = str(form, 'id');
+
+  return submit(`${BASE}/purchase-orders/${id}`, undefined, 'Draft discarded.', undefined, 'DELETE');
+}
+
 export async function submitDraftPurchaseOrderAction(
   _previous: ActionState,
   form: FormData,

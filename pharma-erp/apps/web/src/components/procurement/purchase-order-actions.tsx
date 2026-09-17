@@ -1,62 +1,84 @@
 'use client';
 
 import { PROCUREMENT_ROUTES, type PurchaseOrderListItem } from '@pharma-erp/types';
+import { useState } from 'react';
 
 import { submitDraftPurchaseOrderAction } from '@/app/(app)/workflows/procure-to-pay/actions';
+import { RowActionMenu, type RowAction } from '@/components/row-action-menu';
 
 import { EditPurchaseOrderButton } from './edit-dialogs';
-import { ActionMessage, SubmitButton, useAction } from './form-kit';
+import { ActionMessage, useAction } from './form-kit';
 
 /**
- * The actions on one purchase-order row.
+ * Everything that can be done to a purchase order, behind one menu.
  *
- * THE STATUS CONTROL IS GONE FROM HERE. The row used to carry a status pill in
- * one column and a status dropdown in this one — two controls reporting the
- * same fact, leaving the reader to work out which was authoritative. The pill
- * in the Status column now reports it and the Edit dialog changes it, so there
- * is exactly one of each.
+ * ONE TRIGGER, NOT THREE BUTTONS. The row used to carry Edit, Create GRN and —
+ * on a draft — Place this order, side by side. Three controls per row across a
+ * page of orders is a column of buttons competing with the data, and the widths
+ * differed by status so no two rows lined up. The menu is the same width on
+ * every row whatever it contains.
  *
- * WHAT IS LEFT IS NOT A STATUS CHANGE UNDER ANOTHER NAME:
+ * WHAT IS OFFERED IS DECIDED BY THE ORDER, not by the menu:
  *
- *  - EDIT opens the record — terms and status together.
- *  - PLACE THIS ORDER is offered on a draft because it is NOT a transition the
- *    status rules allow: placing a draft also converts the requisitions behind
- *    it, which is a different operation with its own endpoint.
- *  - CREATE GRN is navigation, not an edit. It is offered while anything is
- *    still outstanding — including on a CLOSED order, because whether material
- *    can be received is decided by the PENDING QUANTITY and not by the status.
- *    A closed order with a balance still accepts the rest if it turns up.
+ *  - EDIT is always there. It opens the record — terms and status together —
+ *    and the dialog itself decides which fields are still editable.
+ *  - CREATE GRN appears while anything is outstanding, INCLUDING on a closed
+ *    order: whether material can be received is decided by the pending
+ *    quantity, not by the status, so a closed order with a balance still
+ *    accepts the rest if it turns up. It is absent on a draft, which cannot be
+ *    received against, and on a cancelled one.
+ *  - PLACE THIS ORDER is a draft's own action. It is not a status transition —
+ *    placing a draft also converts the requisitions behind it — so it has its
+ *    own endpoint and belongs here rather than in the status field.
+ *
+ * An action that cannot be taken is listed with the reason rather than hidden,
+ * so the menu is the same shape on every row and nothing appears to be missing.
  */
 export function PurchaseOrderActions({ order }: { order: PurchaseOrderListItem }) {
   const [submitState, submitAction] = useAction(submitDraftPurchaseOrderAction);
+  const [editing, setEditing] = useState(false);
 
   const isDraft = order.status === 'DRAFT';
   const cancelled = order.status === 'CANCELLED';
   const pending = order.lines.some((line) => line.quantityPending !== '0');
 
+  const receiptReason = isDraft
+    ? 'Place this order first — a draft cannot receive material.'
+    : cancelled
+      ? 'This order was cancelled.'
+      : !pending
+        ? 'Every line has been received in full.'
+        : null;
+
+  const actions: RowAction[] = [
+    { label: 'Edit', onSelect: () => setEditing(true) },
+    {
+      label: 'Create GRN',
+      href: `${PROCUREMENT_ROUTES.goodsReceipts}?purchaseOrderId=${order.id}`,
+      disabledReason: receiptReason,
+    },
+  ];
+
+  if (isDraft) {
+    actions.push({
+      label: 'Place this order',
+      onSelect: () => {
+        const form = new FormData();
+
+        form.set('id', order.id);
+        submitAction(form);
+      },
+    });
+  }
+
   return (
     <div className="flex flex-col items-start gap-1.5">
       <ActionMessage state={submitState} />
 
-      <EditPurchaseOrderButton order={order} />
+      <RowActionMenu label={order.number} actions={actions} />
 
-      {isDraft && (
-        <form action={submitAction}>
-          <input type="hidden" name="id" value={order.id} />
-          <SubmitButton variant="secondary" pendingLabel="Placing…">
-            Place this order
-          </SubmitButton>
-        </form>
-      )}
-
-      {pending && !cancelled && !isDraft && (
-        <a
-          href={`${PROCUREMENT_ROUTES.goodsReceipts}?purchaseOrderId=${order.id}`}
-          className="whitespace-nowrap rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
-        >
-          Create GRN
-        </a>
-      )}
+      {/* No trigger of its own: the menu entry above opens it. */}
+      <EditPurchaseOrderButton order={order} isOpen={editing} onOpenChange={setEditing} />
     </div>
   );
 }

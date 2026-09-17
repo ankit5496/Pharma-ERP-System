@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 
+import { JobWorkModule } from '../job-work/job-work.module';
+import { NumberingService } from '../procurement/numbering.service';
 import { PackagingModule } from '../packaging/packaging.module';
 
 import { BatchService } from './batch.service';
@@ -21,9 +23,15 @@ import { ProductionService } from './production.service';
  * question rather than reading packaging tables itself.
  */
 @Module({
-  imports: [PackagingModule],
+  // JobWorkModule for the same reason PackagingModule is here: US-JW-03 makes a
+  // work order resolvable against a job-work order, and ProductionService asks
+  // JobWorkOrdersService that question rather than reading job-work tables.
+  imports: [PackagingModule, JobWorkModule],
   controllers: [ProductionController],
-  providers: [ProductionService, MaterialIssueService, BatchService],
+  // NumberingService is stateless and takes the caller's transaction client, so
+  // a second instance allocates from the same row-locked counter table. See the
+  // note in JobWorkModule.
+  providers: [NumberingService, ProductionService, MaterialIssueService, BatchService],
   exports: [ProductionService, BatchService],
 })
 export class ProductionModule {}
