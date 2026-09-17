@@ -16,10 +16,29 @@
 // merge this comment is being written during.
 import type { ItemSummary, ItemType, ScheduleClassification, StockLotStatus } from './procurement';
 
-export type ProductionOrderStatus =
-  'PLANNED' | 'MATERIAL_ISSUED' | 'IN_PROGRESS' | 'PACKED' | 'UNDER_TEST' | 'CLOSED' | 'CANCELLED';
+/**
+ * Ordered as the process runs, so a status filter reads down the workflow
+ * rather than alphabetically.
+ *
+ * The array is the source and the union is derived from it: a filter needs the
+ * values at runtime, and a hand-written union beside a hand-written list is two
+ * places to forget a status.
+ */
+export const PRODUCTION_ORDER_STATUSES = [
+  'PLANNED',
+  'MATERIAL_ISSUED',
+  'IN_PROGRESS',
+  'PACKED',
+  'UNDER_TEST',
+  'CLOSED',
+  'CANCELLED',
+] as const;
 
-export type BatchReleaseStatus = 'PENDING' | 'RELEASED' | 'BLOCKED';
+export type ProductionOrderStatus = (typeof PRODUCTION_ORDER_STATUSES)[number];
+
+export const BATCH_RELEASE_STATUSES = ['PENDING', 'RELEASED', 'BLOCKED'] as const;
+
+export type BatchReleaseStatus = (typeof BATCH_RELEASE_STATUSES)[number];
 
 /**
  * Short labels for the tab row and grid; the long form is in
@@ -305,18 +324,25 @@ export interface MaterialIssuePlan {
 }
 
 /**
- * Picking a lot other than the one FEFO proposed — US-PROD-02.
+ * Naming the lot to draw from, rather than taking the one FEFO proposed —
+ * US-PROD-02.
  *
  * The criterion is that the screen always PROPOSES the nearest-expiry lot. It
  * does not forbid choosing another: a container damaged in the store, or one
  * held back for a retained sample, is a real reason. What it cannot be is
  * silent, so the reason travels with the choice and is stored on the line.
+ *
+ * `reason` is optional because naming a lot is not always a departure —
+ * confirming the one already suggested is the case the story calls "Actual
+ * Batch, manually confirmed, defaults to the suggestion". The API requires it
+ * when, and only when, the lot differs from the plan's proposal.
  */
 export interface MaterialIssueOverride {
   itemId: string;
   lotId: string;
   quantity: string;
-  reason: string;
+  /** Required when the lot differs from the FEFO suggestion; the API enforces that. */
+  reason?: string;
 }
 
 /** What the issue endpoint accepts. Omit `overrides` for a plain FEFO issue. */
@@ -338,6 +364,8 @@ export interface MaterialIssueLineView {
 
 export interface MaterialIssueView {
   id: string;
+  /** US-PROD-02's "Issue No.", as MI-YYYY-NNNN. Allocated when the issue saves. */
+  issueNumber: string;
   /**
    * The work order this dispensing was against.
    *

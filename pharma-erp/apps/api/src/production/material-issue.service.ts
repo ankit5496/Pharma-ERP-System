@@ -8,8 +8,8 @@ import type {
   MaterialIssueView,
 } from '@pharma-erp/types';
 
-import { NumberingService } from '../procurement/numbering.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { NumberingService } from '../procurement/numbering.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
 import {
@@ -19,7 +19,7 @@ import {
   stockBucketWhere,
   type StockBucketRule,
 } from './job-work-tagging';
-import { toIsoDate, toItemSummary } from './production.mappers';
+import { issuableStockWhere, toIsoDate, toItemSummary } from './production.mappers';
 import { ProductionService } from './production.service';
 
 const ZERO = new Prisma.Decimal(0);
@@ -35,15 +35,6 @@ const ZERO = new Prisma.Decimal(0);
  */
 @Injectable()
 export class MaterialIssueService {
-  /**
-   * Beyond this the earliest-expiring lot is skipped rather than issued.
-   *
-   * Zero: any unexpired usable lot may be consumed. Kept as a named constant
-   * because a real plant usually wants a margin here — material that expires
-   * mid-campaign is no use — and the place to put it should be obvious.
-   */
-  private static readonly MINIMUM_SHELF_LIFE_DAYS = 0;
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
@@ -266,9 +257,22 @@ export class MaterialIssueService {
    * The criterion is that the screen always PROPOSES the nearest-expiry lot,
    * not that it forbids anything else: a container damaged in the store, or one
    * held back for a retained sample, is a real reason to reach past it. What it
-   * cannot be is silent, so every line this produces is marked as an override
-   * and carries the reason, which the CHECK constraint on the column then makes
-   * impossible to omit.
+   * cannot be is silent, so a line that DEPARTS from the suggestion is marked as
+   * an override and carries the reason, which the CHECK constraint on the column
+   * then makes impossible to omit.
+   *
+   * "A LINE THAT DEPARTS" IS THE WHOLE POINT, and it used to read "every line".
+   * US-PROD-02 asks for the reason "only if Actual Batch ≠ Suggested Batch", and
+   * requiring one unconditionally had two costs. It made confirming the
+   * suggested lot by hand — which is exactly what "Actual Batch, manually
+   * confirmed, defaults to the suggestion" invites — impossible without
+   * inventing a reason for agreeing. And because `isFefoOverride` was then
+   * stamped `true` regardless, the FEFO-compliance figure counted departures
+   * that never happened. A false deviation in that column is worse than a
+   * missing one: it is the number an inspector reads.
+   *
+   * So each chosen lot is compared against the lots FEFO proposed for that same
+   * material, and only the ones that are not among them need explaining.
    *
    * An override REPLACES that material's allocation rather than adding to it.
    * Merging a hand-picked lot into a FEFO plan would issue more than the
@@ -283,6 +287,16 @@ export class MaterialIssueService {
     if (overrides.length === 0) return plan;
 
     const known = new Set(plan.lines.map((line) => line.item.id));
+    // What FEFO proposed, per material, before any of this ran. This is the
+    // "Suggested Batch" of the story, and the thing a choice is a departure
+    // FROM — so it is read from the plan rather than recomputed, which would
+    // re-query stock that may have moved in between.
+    const suggestedByItem = new Map(
+      plan.lines.map((line) => [
+        line.item.id,
+        new Set(line.allocations.map((allocation) => allocation.lotId)),
+      ]),
+    );
 
     for (const override of overrides) {
       if (!known.has(override.itemId)) {
@@ -292,7 +306,11 @@ export class MaterialIssueService {
         );
       }
 
-      if (!override.reason?.trim()) {
+      // Only a real departure needs a reason. Picking the lot FEFO already
+      // suggested is confirming it, not overriding it.
+      const isDeparture = !suggestedByItem.get(override.itemId)?.has(override.lotId);
+
+      if (isDeparture && !override.reason?.trim()) {
         throw new BadRequestException(
           'Choosing a lot other than the one suggested needs a reason. The suggestion is ' +
             'the nearest-expiry lot, and departing from it has to be explainable later.',
@@ -319,6 +337,7 @@ export class MaterialIssueService {
         });
 
         const lotsById = new Map(lots.map((lot) => [lot.id, lot]));
+        const suggested = suggestedByItem.get(line.item.id) ?? new Set<string>();
 
         const allocations = chosen.map((entry) => {
           const lot = lotsById.get(entry.lotId);
@@ -344,14 +363,38 @@ export class MaterialIssueService {
             );
           }
 
+          const quantity = this.round(new Prisma.Decimal(entry.quantity));
+
+          // Caught here rather than at the decrement. The `gte` guard in
+          // `issue` would reject this too, but it blames a concurrent
+          // consumer — "it was consumed while this issue was being prepared" —
+          // which is a confusing thing to read when nobody else touched it and
+          // the real answer is that the lot never held this much.
+          if (quantity.greaterThan(lot.quantityAvailable)) {
+            throw new BadRequestException(
+              `Lot ${lot.lotNumber} of ${line.item.code} holds ` +
+                `${lot.quantityAvailable.toString()} ${line.item.uom}, so ${quantity.toString()} ` +
+                'cannot be drawn from it. Reduce the quantity, or name a second lot.',
+            );
+          }
+
+          // The comparison US-PROD-02 actually asks for. A lot FEFO already
+          // proposed is a confirmation, and recording it as a departure would
+          // put a deviation in the record that did not happen.
+          const isFefoOverride = !suggested.has(lot.id);
+
           return {
             lotId: lot.id,
             lotNumber: lot.lotNumber,
             expiryDate: lot.expiryDate ? toIsoDate(lot.expiryDate) : null,
-            quantity: this.round(new Prisma.Decimal(entry.quantity)).toString(),
+            quantity: quantity.toString(),
             quantityAvailable: lot.quantityAvailable.toString(),
-            isFefoOverride: true,
-            overrideReason: entry.reason.trim(),
+            isFefoOverride,
+            // Only a departure carries one. The column's CHECK constraint
+            // allows a reason without an override but not the reverse, and
+            // storing "confirmed the suggestion" as an override reason would
+            // make the field unreadable as a list of deviations.
+            overrideReason: isFefoOverride ? (entry.reason?.trim() ?? null) : null,
           };
         });
 
@@ -360,6 +403,20 @@ export class MaterialIssueService {
           ZERO,
         );
         const required = new Prisma.Decimal(line.quantityRequired);
+
+        // US-PROD-01's scaling is what says how much this batch needs, and an
+        // override replaces the plan rather than adding to it — so naming more
+        // than the requirement is not a bigger issue, it is a wrong one. The
+        // shortfall below clamps at zero, so without this the excess would pass
+        // every check and simply be dispensed.
+        if (allocated.greaterThan(required)) {
+          throw new BadRequestException(
+            `The lots chosen for ${line.item.code} come to ${allocated.toString()} ` +
+              `${line.item.uom}, but the batch needs ${required.toString()}. An override replaces ` +
+              'the suggestion rather than adding to it, so the quantities have to match the ' +
+              'requirement.',
+          );
+        }
 
         return {
           ...line,
@@ -381,30 +438,21 @@ export class MaterialIssueService {
    * shortfall is an error (issuing) or information (previewing).
    */
   private async allocate(itemId: string, required: Prisma.Decimal, bucket: StockBucketRule) {
-    const earliestUsableExpiry = new Date();
-    earliestUsableExpiry.setUTCDate(
-      earliestUsableExpiry.getUTCDate() + MaterialIssueService.MINIMUM_SHELF_LIFE_DAYS,
-    );
-
     const lots = await this.prisma.scoped.stockLot.findMany({
       where: {
         itemId,
-        // CONTROL 4, in the FEFO query itself. Under PURE_CONVERSION this
-        // narrows to the principal's own material for this job-work order; for
-        // everything else it is the company-owned stock that was always meant.
-        // Filtering here rather than after the fact means the wrong bucket is
-        // never even proposed.
+        // WHAT may be dispensed: released, in stock, not expired. Shared with
+        // the work-order gate and the feasibility preview so all three agree.
+        ...issuableStockWhere(),
+        // WHOSE may be dispensed — control 4, in the FEFO query itself. Under
+        // PURE_CONVERSION this narrows to the principal's own material for this
+        // job-work order; otherwise it is the company-owned stock that was
+        // always meant. Filtering here rather than afterwards means the wrong
+        // bucket is never even proposed.
+        //
+        // The two compose because they constrain different columns: one status,
+        // quantity and expiry, the other ownership.
         ...stockBucketWhere(bucket),
-        // Only released stock. Quarantined material has not passed incoming QC
-        // and rejected material never will; both stay visible in the register
-        // and unpickable here.
-        status: 'USABLE',
-        quantityAvailable: { gt: 0 },
-        // A lot with NO expiry is usable. Cartons, leaflets and shippers
-        // routinely have none, and `expiryDate: { gte: ... }` alone would
-        // silently exclude every one of them — turning "no expiry" into
-        // "unissuable", which is the opposite of what it means.
-        OR: [{ expiryDate: { gte: earliestUsableExpiry } }, { expiryDate: null }],
       },
       // FEFO, with no-expiry lots LAST: something that cannot expire is the
       // safest thing to leave on the shelf. `lotNumber` breaks ties so the
@@ -434,8 +482,32 @@ export class MaterialIssueService {
     return value.toDecimalPlaces(3, Prisma.Decimal.ROUND_HALF_UP);
   }
 
+  /**
+   * The number the next dispensing record would take, for the form to show
+   * before anything is saved — US-PROD-02's "Issue No. (auto-generated)".
+   *
+   * A PREDICTION, not a reservation. The real number is allocated inside the
+   * issuing transaction, so a colleague who dispenses first takes this one and
+   * the next moves on. Nothing is held, which is why this reads the sequence
+   * rather than incrementing it.
+   */
+  async previewIssueNumber(): Promise<{ issueNumber: string }> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const year = new Date().getFullYear();
+
+    const sequence = await this.prisma.scoped.documentSequence.findUnique({
+      where: { tenantId_docType_year: { tenantId, docType: `MI-${year}`, year } },
+      select: { nextValue: true },
+    });
+
+    // No row yet means nothing has been dispensed this year, and the first
+    // issue will take 1.
+    return { issueNumber: `MI-${year}-${String(sequence?.nextValue ?? 1).padStart(4, '0')}` };
+  }
+
   private toView(issue: {
     id: string;
+    issueNumber: string;
     issuedAt: Date;
     notes: string | null;
     productionOrder: { orderNumber: string };
@@ -452,6 +524,7 @@ export class MaterialIssueService {
     return {
       orderNumber: issue.productionOrder.orderNumber,
       id: issue.id,
+      issueNumber: issue.issueNumber,
       issuedAt: issue.issuedAt.toISOString(),
       issuedBy: issue.issuedBy?.fullName ?? null,
       notes: issue.notes,

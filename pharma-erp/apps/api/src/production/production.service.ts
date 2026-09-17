@@ -34,7 +34,12 @@ import {
   stockBucketWhere,
   type StockBucketRule,
 } from './job-work-tagging';
-import { toItemSummary, toIsoDate, type ItemRow } from './production.mappers';
+import {
+  issuableStockWhere,
+  toItemSummary,
+  toIsoDate,
+  type ItemRow,
+} from './production.mappers';
 
 /**
  * Master data and planning: items, stock lots, formulations and work orders.
@@ -317,7 +322,29 @@ export class ProductionService {
    * what was followed — so a change is always a new version, and the old one
    * survives because production orders still point at it.
    */
+  /**
+   * A formulation's output quantity is the DENOMINATOR of every scaling ratio
+   * in this module, so zero is not merely invalid — it is a division by zero.
+   *
+   * Decimal.js does not throw on that; it returns Infinity, which then travels
+   * as the string "Infinity" into a shortage message and onto the screen. The
+   * order is refused either way, so this fails safe, but it fails safe with a
+   * message nobody can act on. The QUANTITY regex cannot catch it: it bounds
+   * the shape of a decimal, not its value.
+   */
+  private requirePositiveOutput(outputQuantity: string): void {
+    if (new Prisma.Decimal(outputQuantity).lessThanOrEqualTo(0)) {
+      throw fieldBadRequest(
+        'outputQuantity',
+        'A formulation must state how much it makes, as a quantity greater than zero. ' +
+          'Every material requirement is scaled against it.',
+      );
+    }
+  }
+
   async createBom(dto: CreateBomDto): Promise<BomView> {
+    this.requirePositiveOutput(dto.outputQuantity);
+
     const tenantId = this.tenantContext.requireTenantId();
 
     const product = await this.prisma.scoped.item.findFirst({
@@ -446,6 +473,8 @@ export class ProductionService {
    */
   async updateBom(id: string, dto: UpdateBomDto): Promise<BomView> {
     const tenantId = this.tenantContext.requireTenantId();
+
+    this.requirePositiveOutput(dto.outputQuantity);
 
     const existing = await this.prisma.scoped.bom.findFirst({
       where: { id, deletedAt: null },
@@ -682,7 +711,8 @@ export class ProductionService {
       }),
       this.prisma.scoped.stockLot.groupBy({
         by: ['itemId'],
-        where: { itemId: { in: itemIds }, status: 'USABLE' },
+        // Same definition as the gate and the allocator; see issuableStockWhere.
+        where: { itemId: { in: itemIds }, ...issuableStockWhere() },
         _sum: { quantityAvailable: true },
       }),
     ]);
@@ -772,7 +802,20 @@ export class ProductionService {
       }),
       this.prisma.scoped.stockLot.groupBy({
         by: ['itemId'],
-        where: { itemId: { in: itemIds }, status: 'USABLE', ...stockBucketWhere(bucket) },
+        // WHAT counts: the SAME definition the FEFO allocator dispenses
+        // against. See issuableStockWhere — these two used to disagree about
+        // expired lots, and the gate was refusing and permitting on different
+        // numbers from the ones the store could actually draw.
+        //
+        // WHOSE counts: the job-work bucket. Under PURE_CONVERSION the question
+        // "is there enough" has to be asked of the PRINCIPAL'S material, or a
+        // work order passes here and the material issue then refuses it — which
+        // is the same class of mismatch the comment above describes.
+        where: {
+          itemId: { in: itemIds },
+          ...issuableStockWhere(),
+          ...stockBucketWhere(bucket),
+        },
         _sum: { quantityAvailable: true },
       }),
     ]);
@@ -809,9 +852,21 @@ export class ProductionService {
     const tenantId = this.tenantContext.requireTenantId();
     const userId = this.tenantContext.getUserId();
 
-    // US-JW-03. Resolved FIRST, because it decides which stock the shortage
-    // check below is allowed to count. Null on every own-brand work order,
-    // and nothing downstream changes for those.
+    // The QUANTITY regex on the DTO accepts "0" — it bounds the SHAPE of a
+    // decimal, not its value — and zero has to be refused here for the same
+    // reason `workOrderFeasibility` refuses it. A zero-quantity order scales
+    // every requirement to nothing, so the shortage check below finds nothing
+    // short and the order saves: a work order to make none of something, which
+    // then blocks the real one, because one order produces one batch.
+    //
+    // First, because it costs no database round trip to say no.
+    if (new Prisma.Decimal(dto.plannedQuantity).lessThanOrEqualTo(0)) {
+      throw fieldBadRequest('plannedQuantity', 'A batch quantity must be greater than zero.');
+    }
+
+    // US-JW-03. Resolved before the BOM lookup, because it decides which stock
+    // the shortage check below is allowed to count. Null on every own-brand
+    // work order, and nothing downstream changes for those.
     const jobWork = dto.jobWorkOrderId
       ? await this.jobWorkOrders.requireOrder(dto.jobWorkOrderId)
       : null;
@@ -956,7 +1011,7 @@ export class ProductionService {
    * read the same maximum: the unique index on (tenant_id, order_number) is the
    * backstop, and the loser retries.
    */
-  private async nextOrderNumber(tx: Prisma.TransactionClient): Promise<string> {
+  private async nextOrderNumber(tx: OrderNumberReader): Promise<string> {
     const year = new Date().getFullYear();
     const prefix = `WO-${year}-`;
 
@@ -969,6 +1024,24 @@ export class ProductionService {
     const previous = latest ? Number.parseInt(latest.orderNumber.slice(prefix.length), 10) : 0;
 
     return `${prefix}${String(previous + 1).padStart(4, '0')}`;
+  }
+
+  /**
+   * The number the next work order would be given — US-PROD-01's "Work Order
+   * No. (auto-generated)", shown on the form before anything is saved.
+   *
+   * A PREDICTION, not a reservation, and the distinction is real: the number is
+   * allocated inside the create transaction, so if somebody else saves first
+   * theirs takes this value and the next one moves on. Nothing is held.
+   *
+   * It is still worth serving from here rather than computing it in the
+   * browser. The form would otherwise derive the number from whatever orders
+   * happened to be on the page — a filtered or paged list gives a wrong answer
+   * with no way to tell — while this reads the same rows, through the same
+   * tenant scoping, as the allocation it is predicting.
+   */
+  async previewOrderNumber(): Promise<{ orderNumber: string }> {
+    return { orderNumber: await this.nextOrderNumber(this.prisma.scoped) };
   }
 
   /** Used by the batch service to refuse a second batch on one order. */
@@ -999,6 +1072,26 @@ export class ProductionService {
  * which a pnpm workspace can easily end up with — silently returns false,
  * turning a 409 into a 500 that only shows up in production.
  */
+/**
+ * Just enough of a Prisma client to read the highest existing order number.
+ *
+ * Narrowed to the one call because the two callers hand in different clients:
+ * `createProductionOrder` passes its transaction, so the read and the insert
+ * cannot be separated by another writer, while `previewOrderNumber` passes the
+ * tenant-scoped client, having nothing to write. `Prisma.TransactionClient`
+ * would exclude the second — the extended client is not assignable to it — and
+ * widening to a union would name two long generated types to no purpose.
+ */
+interface OrderNumberReader {
+  productionOrder: {
+    findFirst(args: {
+      where: { orderNumber: { startsWith: string } };
+      orderBy: { orderNumber: 'desc' };
+      select: { orderNumber: true };
+    }): Promise<{ orderNumber: string } | null>;
+  };
+}
+
 function isUniqueViolation(error: unknown): boolean {
   return (
     typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'P2002'

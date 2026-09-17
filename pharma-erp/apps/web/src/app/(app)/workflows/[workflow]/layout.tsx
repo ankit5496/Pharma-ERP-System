@@ -52,7 +52,9 @@ export default async function WorkflowLayout({
       <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6">
         <header className="mb-6">
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900">{workflow.label}</h1>
-          <p className="mt-1.5 max-w-3xl text-sm text-slate-600">{workflow.purpose}</p>
+          {workflow.purpose && (
+            <p className="mt-1.5 max-w-3xl text-sm text-slate-600">{workflow.purpose}</p>
+          )}
         </header>
 
         <div className="mb-8">

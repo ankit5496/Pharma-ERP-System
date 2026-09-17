@@ -6,6 +6,7 @@ import { findWorkflow, findWorkflowStep } from '@pharma-erp/types';
 // sub-tab change no longer re-runs the session lookup. See ../layout.tsx.
 import { JOB_WORK_STEPS } from '@/components/job-work/panels';
 import { OrderToCashStep } from '@/components/order-to-cash';
+import { StepSearch } from '@/components/order-to-cash/step-search';
 import {
   BatchRecordPanel,
   BatchReleasePanel,
@@ -62,7 +63,7 @@ export default async function WorkflowStepPage({ params, searchParams }: PagePro
       <h2 id="step-heading" className="text-lg font-semibold text-slate-900">
         {step.label}
       </h2>
-      <p className="mt-1 max-w-3xl text-sm text-slate-600">{step.purpose}</p>
+      {step.purpose && <p className="mt-1 max-w-3xl text-sm text-slate-600">{step.purpose}</p>}
 
       <div className="mt-5">
         {/* The extension point promised in WORKFLOWS: a step whose `state` is
@@ -75,7 +76,10 @@ export default async function WorkflowStepPage({ params, searchParams }: PagePro
             shared heading above. */}
         {workflow.key === 'order-to-cash' && step.state === 'ready' ? (
           <>
-            <StepSearch step={step.label} search={search} />
+            {/* A fragment, not a <section>: the shared heading above already
+                opens one, and nesting a second would give the step two
+                landmarks for one screen. */}
+            <StepSearch step={step.label} stepKey={step.key} search={search} />
             <OrderToCashStep step={step.key} search={search} />
           </>
         ) : step.state === 'ready' ? (
@@ -126,50 +130,6 @@ function BuiltStep({ workflowKey, stepKey }: { workflowKey: string; stepKey: str
   }
 
   return <>{render()}</>;
-}
-
-/**
- * A plain GET search box.
- *
- * A form rather than a controlled input, so the whole thing works without
- * JavaScript and the search term lives in the URL — which means a filtered list
- * can be bookmarked and shared, and the server component that fetches it can
- * read the term directly.
- */
-function StepSearch({ step, search }: { step: string; search?: string }) {
-  return (
-    <form method="get" className="mb-5 flex flex-wrap items-end gap-2">
-      <div className="min-w-[16rem] flex-1">
-        <label htmlFor="step-search" className="field-label">
-          Search {step.toLowerCase()}
-        </label>
-        <input
-          id="step-search"
-          name="search"
-          type="search"
-          defaultValue={search ?? ''}
-          placeholder="Code, name, number…"
-          className="field mt-1.5"
-        />
-      </div>
-
-      <button
-        type="submit"
-        className="rounded-md border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-400 hover:text-slate-900"
-      >
-        Search
-      </button>
-
-      {search && (
-        <a
-          href="?"
-          className="px-2 py-2.5 text-sm font-medium text-slate-500 underline hover:text-slate-800"
-        >
-          Clear
-        </a>
-      )}
-    </form>
-  );
 }
 
 /**

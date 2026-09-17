@@ -29,6 +29,7 @@ export function MasterDataDrawer({
   title,
   description,
   placement = 'drawer',
+  width = 'default',
   onClose,
   children,
 }: {
@@ -36,6 +37,16 @@ export function MasterDataDrawer({
   description?: string;
   /** 'drawer' fills the right edge; 'center' is a modal box. */
   placement?: 'drawer' | 'center';
+  /**
+   * How wide a CENTRED box may grow. Ignored by the edge drawer, which takes
+   * its width from the viewport.
+   *
+   * Default fits a form of short fields. 'wide' is for a form carrying a table
+   * — the dispensing plan lists every material with its lots and quantities,
+   * and at the narrow width those columns wrapped into a block that had to be
+   * scrolled sideways to read.
+   */
+  width?: 'default' | 'wide';
   onClose: () => void;
   children: ReactNode;
 }) {
@@ -112,7 +123,9 @@ export function MasterDataDrawer({
         aria-labelledby="drawer-title"
         className={
           isCentred
-            ? 'relative flex max-h-[85vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl'
+            ? `relative flex max-h-[85vh] w-full flex-col overflow-hidden rounded-lg bg-white shadow-2xl ${
+                width === 'wide' ? 'max-w-5xl' : 'max-w-2xl'
+              }`
             : 'relative flex h-full w-full max-w-3xl flex-col bg-white shadow-2xl'
         }
       >

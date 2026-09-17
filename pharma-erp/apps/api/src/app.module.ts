@@ -12,6 +12,8 @@ import { DashboardModule } from './dashboard/dashboard.module';
 import { HealthModule } from './health/health.module';
 import { JobWorkModule } from './job-work/job-work.module';
 import { LicencesModule } from './licences/licences.module';
+import { MastersModule } from './masters/masters.module';
+import { OrderToCashModule } from './order-to-cash/order-to-cash.module';
 import { PackagingModule } from './packaging/packaging.module';
 import { PartiesModule } from './parties/parties.module';
 import { PlatformModule } from './platform/platform.module';
@@ -47,6 +49,8 @@ import { UsersModule } from './users/users.module';
     JobWorkModule,
     PackagingModule,
     ProductionModule,
+    OrderToCashModule,
+    MastersModule,
   ],
   providers: [
     {

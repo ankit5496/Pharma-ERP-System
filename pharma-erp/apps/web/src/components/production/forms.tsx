@@ -15,13 +15,46 @@ import {
   checkWorkOrderFeasibilityAction,
   createProductionOrderAction,
   issueMaterialAction,
+  issuePlanAction,
+  nextIssueNumberAction,
+  nextWorkOrderNumberAction,
   recordBatchAction,
   recordPackingAction,
   releaseBatchAction,
   type ActionResult,
 } from '@/app/(app)/workflows/production-actions';
+import { useReportSaved } from '@/components/production/register';
+
+import { ExpiryHint, Quantity } from './shared';
 
 const IDLE: ActionResult = { ok: true };
+
+/**
+ * Closes the drawer once a form has saved.
+ *
+ * ONLY closes it. The confirmation itself is the application-wide toast — see
+ * `Result` below — which arrived on main while this branch was building a
+ * dialog of its own to do the same job. The toast wins: it is what every other
+ * module raises, and it renders in the browser's top layer, so it stays
+ * readable over an open modal in a way an ordinary fixed element cannot.
+ *
+ * THE MESSAGE IS WHAT MAKES IT A SUCCESS, not `ok` alone. The idle state is
+ * `{ ok: true }` with nothing in it, so testing `state.ok` by itself matched
+ * the moment the form MOUNTED — every form would close as soon as it opened.
+ */
+function useReportOnSaved(state: ActionResult) {
+  // From context, not a prop: `form` is built by a server component, and a
+  // server component cannot hand a function to a client one. See the note on
+  // SavedContext in ./register. Outside a drawer this reports into nothing.
+  const reportSaved = useReportSaved();
+  const message = state.ok ? state.message : undefined;
+
+  useEffect(() => {
+    if (!message) return;
+
+    reportSaved(message);
+  }, [message, reportSaved]);
+}
 
 /**
  * Announces a finished submission through the application-wide toast.
@@ -29,26 +62,9 @@ const IDLE: ActionResult = { ok: true };
  * This used to be a banner rendered inline in each of the five forms. It now
  * raises the same centred message every other module raises — `ok: true` with
  * no message is still the idle state, so a fresh form announces nothing.
- */
-/**
- * Closes the drawer once a form has saved.
  *
- * Deliberately delayed. Closing the instant the action resolves takes the
- * confirmation with it — "B-2609-002 recorded" flashes and is gone — and the
- * register behind has not re-rendered yet, so for a moment nothing on screen
- * says anything happened. A second is long enough to read it and short enough
- * not to feel stuck.
+ * Renders nothing: the toast has its own host.
  */
-function useCloseOnSaved(state: ActionResult, onSaved?: () => void) {
-  useEffect(() => {
-    if (!state.ok || !onSaved) return;
-
-    const timer = setTimeout(onSaved, 1_000);
-
-    return () => clearTimeout(timer);
-  }, [state.ok, state.message, onSaved]);
-}
-
 function Result({ state, pending }: { state: ActionResult; pending: boolean }) {
   useActionToast(pending, state.ok ? 'success' : 'error', state.message);
 
@@ -62,6 +78,61 @@ const LABEL = 'block text-xs font-medium uppercase tracking-wide text-slate-600'
 
 const BUTTON =
   'rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400';
+
+/**
+ * A field the system fills in, shown but not editable.
+ *
+ * Every user story lists fields the form does not ask for — an auto-generated
+ * number, a date the server sets, a value derived from two others — and leaving
+ * them off the screen entirely was the wrong reading of "auto". Somebody
+ * recording a batch wants to see the expiry date that is about to be printed on
+ * the carton BEFORE they save, not after; a work order should show which
+ * formulation it is about to be pinned to.
+ *
+ * NOT a `<input readOnly>`. A read-only input still looks like somewhere to
+ * type, still takes focus, and still submits a value the server would then have
+ * to ignore or — worse — trust. This is a plain value, so there is nothing to
+ * submit and nothing to spoof: the server derives these regardless of anything
+ * the browser sends.
+ *
+ * `pending` is for the values that cannot be known until the record is written.
+ * "Assigned on save" is a truthful answer to "what will the batch number be";
+ * an empty box is not.
+ */
+function ReadOnlyField({
+  label,
+  value,
+  hint,
+  placeholder = 'Assigned automatically',
+}: {
+  label: string;
+  value?: React.ReactNode;
+  hint?: string;
+  /** Shown while `value` is absent — still loading, or not derivable yet. */
+  placeholder?: string;
+}) {
+  const isEmpty = value === undefined || value === null || value === '';
+
+  return (
+    <div>
+      {/* The label reads exactly like an editable field's. What marks this one
+          as the system's to fill is the dashed, greyed box below — the field is
+          plainly not somewhere to type, so saying so in the label as well was
+          repeating in words what the control already shows. */}
+      <span className={LABEL}>{label}</span>
+
+      <p
+        className={`mt-1.5 flex min-h-[2.625rem] items-center rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-sm ${
+          isEmpty ? 'italic text-slate-400' : 'text-slate-800'
+        }`}
+      >
+        {isEmpty ? placeholder : value}
+      </p>
+
+      {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // 2. Production orders
@@ -186,16 +257,10 @@ function FeasibilityGrid({
   );
 }
 
-export function CreateProductionOrderForm({
-  products,
-  onSaved,
-}: {
-  products: ItemSummary[];
-  onSaved?: () => void;
-}) {
+export function CreateProductionOrderForm({ products }: { products: ItemSummary[] }) {
   const [state, action, pending] = useActionState(createProductionOrderAction, IDLE);
 
-  useCloseOnSaved(state, onSaved);
+  useReportOnSaved(state);
 
   const [productId, setProductId] = useState(products[0]?.id ?? '');
   const [quantity, setQuantity] = useState('');
@@ -204,6 +269,22 @@ export function CreateProductionOrderForm({
     error: string | null;
     data: WorkOrderFeasibility | null;
   }>({ checking: false, error: null, data: null });
+
+  // The number this order would take. Asked once, when the form opens: it does
+  // not depend on anything typed here, and nothing is reserved by asking.
+  const [orderNumber, setOrderNumber] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void nextWorkOrderNumberAction().then((next) => {
+      if (!cancelled) setOrderNumber(next);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Debounced, because this fires on every keystroke in the quantity box and
   // each call is a database round trip. 400ms is long enough that typing
@@ -259,6 +340,20 @@ export function CreateProductionOrderForm({
     <form action={action} className="space-y-4 px-6 py-5">
       <Result state={state} pending={pending} />
 
+      {/* Ordered as the record reads, not as the inputs happen to be typed:
+          the number and the date identify the order, then what it is for, then
+          the formulation the requirement below is computed against. */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <ReadOnlyField label="Work order no." value={orderNumber ?? undefined} placeholder="…" />
+
+        <div>
+          <label htmlFor="plannedStartOn" className={LABEL}>
+            Planned start <span className="font-normal normal-case text-slate-400">(optional)</span>
+          </label>
+          <input id="plannedStartOn" name="plannedStartOn" type="date" className={FIELD} />
+        </div>
+      </div>
+
       <div className="grid gap-4 sm:grid-cols-3">
         <div className="sm:col-span-2">
           <label htmlFor="productId" className={LABEL}>
@@ -301,14 +396,14 @@ export function CreateProductionOrderForm({
         </div>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
-        <div>
-          <label htmlFor="plannedStartOn" className={LABEL}>
-            Planned start <span className="font-normal normal-case text-slate-400">(optional)</span>
-          </label>
-          <input id="plannedStartOn" name="plannedStartOn" type="date" className={FIELD} />
-        </div>
-      </div>
+      <ReadOnlyField
+        label="BOM reference"
+        value={
+          feasibility.data
+            ? `${feasibility.data.productCode} · formulation v${feasibility.data.bomVersion}`
+            : undefined
+        }
+      />
 
       <FeasibilityGrid state={feasibility} />
 
@@ -327,33 +422,109 @@ export function CreateProductionOrderForm({
  * Dispensing against a work order — US-PROD-02.
  *
  * FEFO is the default and needs no input at all: the button dispenses exactly
- * what the plan above shows. The override block exists because the criterion
- * says a different lot may be chosen WITH A REASON, and a rule with no way to
- * depart from it gets departed from outside the system instead — on paper, or
- * by someone editing the plan until it proposes what they wanted.
+ * what the plan shows. The override block exists because the criterion says a
+ * different lot may be chosen WITH A REASON, and a rule with no way to depart
+ * from it gets departed from outside the system instead — on paper, or by
+ * someone editing the plan until it proposes what they wanted.
  *
  * Overriding a material REPLACES the whole suggestion for it. The server
  * recomputes the shortfall from the lots named here and refuses the issue if
  * they do not cover the requirement, so a partial override is not a way to
  * dispense a partial charge.
+ *
+ * THE WORK ORDER IS CHOSEN HERE, and it used not to be. The panel computed one
+ * plan — for the oldest order awaiting material — and this form was wired to
+ * that order alone, so an officer with three orders on the floor could dispense
+ * against exactly one of them and nothing on screen explained why. The plan for
+ * whichever order is picked is fetched on demand rather than precomputed for
+ * all of them: a plan costs an allocation query per material.
  */
 export function IssueMaterialForm({
-  plan,
+  orders,
+  initialPlan = null,
   lots = [],
-  onSaved,
 }: {
-  plan: MaterialIssuePlan;
+  /** Every work order awaiting material. Never empty — the caller checks. */
+  orders: ProductionOrderSummary[];
+  /**
+   * The plan for `orders.at(-1)`, computed by the server so the form opens with
+   * something on screen. Null when that read failed; the form then fetches it.
+   */
+  initialPlan?: MaterialIssuePlan | null;
   /** Stock on hand, for the lot pickers. Only USABLE lots can be dispensed. */
   lots?: ProductionStockLot[];
-  onSaved?: () => void;
 }) {
   const [state, action, pending] = useActionState(issueMaterialAction, IDLE);
 
-  useCloseOnSaved(state, onSaved);
+  useReportOnSaved(state);
+
+  // Oldest first: the one most likely to be dispensed next, and the one the
+  // server preloaded a plan for.
+  const [orderId, setOrderId] = useState(orders.at(-1)?.id ?? '');
+
+  const [planState, setPlanState] = useState<{
+    loading: boolean;
+    error: string | null;
+    data: MaterialIssuePlan | null;
+  }>({ loading: false, error: null, data: initialPlan });
+
+  useEffect(() => {
+    // The preloaded plan already matches the order the form opened on, so the
+    // first render asks for nothing.
+    if (!orderId || planState.data?.productionOrderId === orderId) return;
+
+    setPlanState((current) => ({ ...current, loading: true, error: null }));
+
+    let cancelled = false;
+
+    void issuePlanAction(orderId).then((result) => {
+      if (cancelled) return;
+
+      setPlanState(
+        result.ok
+          ? { loading: false, error: null, data: result.data }
+          : { loading: false, error: result.message, data: null },
+      );
+    });
+
+    return () => {
+      cancelled = true;
+    };
+    // `planState.data` is deliberately not a dependency: this effect writes it,
+    // and reading it here would re-run the effect with every answer it stores.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderId]);
+
+  const plan = planState.data;
+  const order = orders.find((candidate) => candidate.id === orderId);
+
+  // The number this dispensing record would take. Asked once, when the form
+  // opens: it depends on nothing chosen here, and nothing is reserved by asking.
+  const [issueNumber, setIssueNumber] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void nextIssueNumberAction().then((next) => {
+      if (!cancelled) setIssueNumber(next);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // itemId -> how many lot rows are open for it. Absent means "use FEFO",
   // which is why this is a map of the exceptions rather than a flag per line.
   const [rows, setRows] = useState<Record<string, number>>({});
+
+  // `override.<itemId>.<row>.lotId` -> the lot currently chosen in that select.
+  //
+  // Tracked in state rather than read off the DOM because the Reason field's
+  // visibility depends on it: US-PROD-02 wants a reason only when the actual
+  // batch differs from the suggested one, so the form has to know what is
+  // selected as it changes, not merely on submit.
+  const [picked, setPicked] = useState<Record<string, string>>({});
 
   const overriding = Object.keys(rows).length > 0;
 
@@ -369,11 +540,61 @@ export function IssueMaterialForm({
 
   return (
     <form action={action} className="space-y-4 border-t border-slate-200 px-6 py-5">
-      <input type="hidden" name="orderId" value={plan.productionOrderId} />
+      <input type="hidden" name="orderId" value={orderId} />
 
       <Result state={state} pending={pending} />
 
-      {!plan.canIssue && (
+      {/* US-PROD-02's first two fields, plus the choice of what to dispense
+          against. The work order is a PICKER now: this form used to be handed
+          one order and no way to reach the others. */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <ReadOnlyField
+          label="Issue no."
+          value={issueNumber ? <span className="font-mono">{issueNumber}</span> : undefined}
+          placeholder="…"
+        />
+
+        <div>
+          <label htmlFor="issue-order" className={LABEL}>
+            Work order
+          </label>
+          <select
+            id="issue-order"
+            value={orderId}
+            onChange={(event) => setOrderId(event.target.value)}
+            className={`${FIELD} font-mono`}
+          >
+            {orders.map((candidate) => (
+              <option key={candidate.id} value={candidate.id}>
+                {candidate.orderNumber} — {candidate.product.code}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {order && (
+        <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+          <span className="font-mono font-semibold">{order.orderNumber}</span> ·{' '}
+          {order.product.name} · planned{' '}
+          <Quantity value={order.plannedQuantity} uom={order.product.uom} />
+        </div>
+      )}
+
+      {planState.loading && <p className="text-sm text-slate-500">Working out the plan…</p>}
+
+      {planState.error && (
+        <p
+          role="alert"
+          className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800"
+        >
+          Could not work out what this order would consume: {planState.error}
+        </p>
+      )}
+
+      {plan && <IssuePlanTable plan={plan} />}
+
+      {plan && !plan.canIssue && (
         <p className="text-sm text-amber-800">
           This plan cannot be issued as it stands — either material has already been dispensed
           against the order, or one or more lines are short. Dispensing is refused rather than
@@ -381,150 +602,282 @@ export function IssueMaterialForm({
         </p>
       )}
 
-      <details className="rounded-md border border-slate-200 bg-white">
-        <summary className="cursor-pointer px-4 py-2.5 text-sm font-medium text-slate-700">
-          Dispense a different lot
-        </summary>
+      {/* What FEFO proposed, so the action can tell a departure from a
+          confirmation without refetching the plan. Read-only information the
+          server re-derives and re-checks for itself; this only decides which
+          message the operator sees before the request is made. */}
+      {plan?.lines.map((line) => (
+        <input
+          key={line.item.id}
+          type="hidden"
+          name={`suggested.${line.item.id}`}
+          value={line.allocations.map((allocation) => allocation.lotId).join(',')}
+        />
+      ))}
 
-        <div className="space-y-4 border-t border-slate-200 px-4 py-3">
-          <p className="text-xs text-slate-500">
-            The plan above suggests the nearest-expiry usable lot of each material. Picking lots
-            yourself replaces that suggestion for the material entirely, so name enough to cover its
-            full requirement. Quarantined and rejected stock cannot be dispensed by any route.
-          </p>
+      {plan && (
+        <details className="rounded-md border border-slate-200 bg-white">
+          <summary className="cursor-pointer px-4 py-2.5 text-sm font-medium text-slate-700">
+            Dispense a different lot
+          </summary>
 
-          {plan.lines.map((line) => {
-            const candidates = usableLotsFor(line.item.id);
-            const suggested = new Set(line.allocations.map((allocation) => allocation.lotId));
-            const open = rows[line.item.id] ?? 0;
+          <div className="space-y-4 border-t border-slate-200 px-4 py-3">
+            <p className="text-xs text-slate-500">
+              The plan above suggests the nearest-expiry usable lot of each material. Picking lots
+              yourself replaces that suggestion for the material entirely, so name enough to cover
+              its full requirement. Quarantined and rejected stock cannot be dispensed by any route.
+            </p>
 
-            return (
-              <div
-                key={line.item.id}
-                className="border-t border-slate-100 pt-3 first:border-0 first:pt-0"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="text-sm">
-                    <span className="font-mono text-xs text-slate-700">{line.item.code}</span>{' '}
-                    <span className="text-slate-600">{line.item.name}</span>
-                    <span className="ml-2 text-xs text-slate-500">
-                      needs {line.quantityRequired} {line.item.uom}
-                    </span>
+            {plan.lines.map((line) => {
+              const candidates = usableLotsFor(line.item.id);
+              const suggested = new Set(line.allocations.map((allocation) => allocation.lotId));
+              const open = rows[line.item.id] ?? 0;
+
+              // Whether any open row names a lot FEFO did not propose. This is
+              // the "Actual Batch ≠ Suggested Batch" of US-PROD-02, and it is
+              // what decides whether a reason is asked for — mirroring the same
+              // comparison the API makes before it will accept the issue.
+              const deviates = Array.from({ length: open }, (_, row) => {
+                const chosen =
+                  picked[`override.${line.item.id}.${row}.lotId`] ??
+                  line.allocations[row]?.lotId ??
+                  '';
+
+                return chosen !== '' && !suggested.has(chosen);
+              }).some(Boolean);
+
+              return (
+                <div
+                  key={line.item.id}
+                  className="border-t border-slate-100 pt-3 first:border-0 first:pt-0"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="text-sm">
+                      <span className="font-mono text-xs text-slate-700">{line.item.code}</span>{' '}
+                      <span className="text-slate-600">{line.item.name}</span>
+                      <span className="ml-2 text-xs text-slate-500">
+                        needs {line.quantityRequired} {line.item.uom}
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setRows((current) => {
+                          const next = { ...current };
+
+                          if (open > 0) delete next[line.item.id];
+                          else next[line.item.id] = 1;
+
+                          return next;
+                        })
+                      }
+                      disabled={candidates.length === 0}
+                      className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {candidates.length === 0
+                        ? 'No usable lots'
+                        : open > 0
+                          ? 'Use the suggestion'
+                          : 'Choose lots myself'}
+                    </button>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setRows((current) => {
-                        const next = { ...current };
+                  {open > 0 && (
+                    <div className="mt-3 space-y-2">
+                      {Array.from({ length: open }, (_, row) => {
+                        const field = `override.${line.item.id}.${row}.lotId`;
+                        // The FEFO proposal for this row, which the select starts
+                        // on — "Actual Batch Issued, manually confirmed, defaults
+                        // to the suggestion". It used to start blank, so opening
+                        // the panel discarded the suggestion and made every issue
+                        // a from-scratch decision.
+                        const fallback = line.allocations[row]?.lotId ?? '';
+                        const current = picked[field] ?? fallback;
 
-                        if (open > 0) delete next[line.item.id];
-                        else next[line.item.id] = 1;
+                        return (
+                          <div key={row} className="flex flex-wrap items-end gap-2">
+                            <div className="min-w-[16rem] flex-1">
+                              <label htmlFor={`lot-${line.item.id}-${row}`} className="sr-only">
+                                Lot of {line.item.code}
+                              </label>
+                              <select
+                                id={`lot-${line.item.id}-${row}`}
+                                name={field}
+                                value={current}
+                                onChange={(event) =>
+                                  setPicked((now) => ({ ...now, [field]: event.target.value }))
+                                }
+                                className="block w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+                              >
+                                <option value="">Select a lot…</option>
+                                {candidates.map((lot) => (
+                                  <option key={lot.id} value={lot.id}>
+                                    {lot.lotNumber} · {lot.quantityAvailable} {line.item.uom} ·{' '}
+                                    {lot.expiryDate ? `exp ${lot.expiryDate}` : 'no expiry'}
+                                    {suggested.has(lot.id) ? ' · suggested' : ''}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
 
-                        return next;
-                      })
-                    }
-                    disabled={candidates.length === 0}
-                    className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {candidates.length === 0
-                      ? 'No usable lots'
-                      : open > 0
-                        ? 'Use the suggestion'
-                        : 'Choose lots myself'}
-                  </button>
-                </div>
+                            <div className="w-36">
+                              <label htmlFor={`qty-${line.item.id}-${row}`} className="sr-only">
+                                Quantity from this lot
+                              </label>
+                              <input
+                                id={`qty-${line.item.id}-${row}`}
+                                name={`override.${line.item.id}.${row}.quantity`}
+                                inputMode="decimal"
+                                placeholder={`0 ${line.item.uom}`}
+                                pattern="\d{1,11}(\.\d{1,3})?"
+                                title="A positive number, up to 3 decimal places"
+                                className="block w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+                              />
+                            </div>
 
-                {open > 0 && (
-                  <div className="mt-3 space-y-2">
-                    {Array.from({ length: open }, (_, row) => (
-                      <div key={row} className="flex flex-wrap items-end gap-2">
-                        <div className="min-w-[16rem] flex-1">
-                          <label htmlFor={`lot-${line.item.id}-${row}`} className="sr-only">
-                            Lot of {line.item.code}
-                          </label>
-                          <select
-                            id={`lot-${line.item.id}-${row}`}
-                            name={`override.${line.item.id}.${row}.lotId`}
-                            defaultValue=""
-                            className="block w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+                            {row === open - 1 && candidates.length > open && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setRows((current) => ({ ...current, [line.item.id]: open + 1 }))
+                                }
+                                className="rounded-md border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                              >
+                                Add a lot
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+
+                      {/* US-PROD-02: the reason is asked for ONLY when a lot other
+                        than the suggested one is actually chosen. It used to
+                        appear the moment the panel opened, so confirming the
+                        suggestion by hand demanded an explanation for agreeing
+                        with it — and the line was then recorded as a deviation
+                        that never happened. */}
+                      {deviates && (
+                        <div>
+                          <label
+                            htmlFor={`reason-${line.item.id}`}
+                            className="mb-1 block text-xs font-medium text-amber-900"
                           >
-                            <option value="">Select a lot…</option>
-                            {candidates.map((lot) => (
-                              <option key={lot.id} value={lot.id}>
-                                {lot.lotNumber} · {lot.quantityAvailable} {line.item.uom} ·{' '}
-                                {lot.expiryDate ? `exp ${lot.expiryDate}` : 'no expiry'}
-                                {suggested.has(lot.id) ? ' · suggested' : ''}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div className="w-36">
-                          <label htmlFor={`qty-${line.item.id}-${row}`} className="sr-only">
-                            Quantity from this lot
+                            Why not the suggested lot of {line.item.code}?
                           </label>
                           <input
-                            id={`qty-${line.item.id}-${row}`}
-                            name={`override.${line.item.id}.${row}.quantity`}
-                            inputMode="decimal"
-                            placeholder={`0 ${line.item.uom}`}
-                            pattern="\d{1,11}(\.\d{1,3})?"
-                            title="A positive number, up to 3 decimal places"
-                            className="block w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+                            id={`reason-${line.item.id}`}
+                            name={`override.${line.item.id}.reason`}
+                            // Deliberately not `required`: the field lives inside a
+                            // <details> the operator can collapse, and a browser
+                            // cannot focus a required control it is not showing —
+                            // the submit then fails silently. The action checks it.
+                            maxLength={500}
+                            placeholder="Damaged container, retained sample, held for investigation…"
+                            className="block w-full rounded-md border border-amber-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-amber-500 focus:outline-none focus:ring-1 focus:ring-amber-500"
                           />
                         </div>
-
-                        {row === open - 1 && candidates.length > open && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setRows((current) => ({ ...current, [line.item.id]: open + 1 }))
-                            }
-                            className="rounded-md border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                          >
-                            Add a lot
-                          </button>
-                        )}
-                      </div>
-                    ))}
-
-                    <div>
-                      <label htmlFor={`reason-${line.item.id}`} className="sr-only">
-                        Why not the suggested lot for {line.item.code}
-                      </label>
-                      <input
-                        id={`reason-${line.item.id}`}
-                        name={`override.${line.item.id}.reason`}
-                        // Deliberately not `required`: the field lives inside a
-                        // <details> the operator can collapse, and a browser
-                        // cannot focus a required control it is not showing —
-                        // the submit then fails silently. The action checks it.
-                        maxLength={500}
-                        placeholder={`Why not the suggested lot of ${line.item.code}?`}
-                        className="block w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
-                      />
+                      )}
                     </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </details>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </details>
+      )}
 
       {/* Enabled while overriding even when the plan itself is short: FEFO
           leaves out lots that expire before the batch would, and naming one of
           those is exactly the departure an override is for. The server
-          recomputes the shortfall and refuses if it is still not covered. */}
+          recomputes the shortfall and refuses if it is still not covered.
+          Disabled outright with no plan — there is nothing to dispense yet. */}
       <button
         type="submit"
-        disabled={pending || (!plan.canIssue && !overriding)}
+        disabled={pending || !plan || (!plan.canIssue && !overriding)}
         className={BUTTON}
       >
-        {pending ? 'Dispensing…' : `Dispense against ${plan.orderNumber}`}
+        {pending ? 'Dispensing…' : plan ? `Dispense against ${plan.orderNumber}` : 'Dispense'}
       </button>
     </form>
+  );
+}
+
+/** What issuing the chosen order would consume, and out of which lots. */
+function IssuePlanTable({ plan }: { plan: MaterialIssuePlan }) {
+  return (
+    <div className="overflow-x-auto rounded-md border border-slate-200">
+      <table className="w-full min-w-[42rem] text-left text-sm">
+        <thead>
+          <tr className="border-b border-slate-200 bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
+            <th scope="col" className="px-4 py-2.5 font-medium">
+              Material
+            </th>
+            <th scope="col" className="px-4 py-2.5 text-right font-medium">
+              Required
+            </th>
+            <th scope="col" className="px-4 py-2.5 font-medium">
+              Lots the plan will take
+            </th>
+            <th scope="col" className="px-4 py-2.5 text-right font-medium">
+              Short
+            </th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100">
+          {plan.lines.map((line) => (
+            <tr key={line.item.id} className="align-top">
+              <td className="px-4 py-3">
+                <span className="font-mono text-xs text-slate-700">{line.item.code}</span>
+                <div className="text-slate-800">{line.item.name}</div>
+              </td>
+              <td className="px-4 py-3 text-right">
+                <Quantity value={line.quantityRequired} uom={line.item.uom} />
+              </td>
+              <td className="px-4 py-3">
+                {line.allocations.length === 0 ? (
+                  <span className="text-red-700">No usable stock</span>
+                ) : (
+                  <ul className="space-y-1">
+                    {line.allocations.map((allocation) => (
+                      <li key={allocation.lotId} className="flex flex-wrap items-center gap-x-2">
+                        <span className="font-mono text-xs text-slate-700">
+                          {allocation.lotNumber}
+                        </span>
+                        {/* A stock lot's expiry is optional — cartons and
+                            leaflets usually have none. "no expiry" is the fact,
+                            and it differs from a missing value: FEFO
+                            deliberately keeps such lots until last. */}
+                        {allocation.expiryDate ? (
+                          <>
+                            <span className="text-xs text-slate-500">
+                              exp {allocation.expiryDate}
+                            </span>
+                            <ExpiryHint date={allocation.expiryDate} />
+                          </>
+                        ) : (
+                          <span className="text-xs text-slate-400">no expiry</span>
+                        )}
+                        <Quantity value={allocation.quantity} uom={line.item.uom} />
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </td>
+              <td className="px-4 py-3 text-right">
+                {line.quantityShort === '0' ? (
+                  <span className="text-slate-300">—</span>
+                ) : (
+                  <span className="font-semibold text-red-700">
+                    {line.quantityShort} {line.item.uom}
+                  </span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -532,16 +885,48 @@ export function IssueMaterialForm({
 // 4. Batch record
 // ---------------------------------------------------------------------------
 
-export function RecordBatchForm({
-  orders,
-  onSaved,
-}: {
-  orders: ProductionOrderSummary[];
-  onSaved?: () => void;
-}) {
+/**
+ * Expiry as the server will compute it — manufacturing date plus shelf life.
+ *
+ * Mirrors `addMonths` in the API's production mappers, including the clamp to
+ * the end of the target month: 31 August plus six months is 28 February, not
+ * 3 March, and a preview that disagreed with the value actually printed on the
+ * carton would be worse than showing nothing.
+ *
+ * Returns null when the product has no shelf life on file. The server falls
+ * back to 24 months there, but guessing that number on screen would present a
+ * default as though it were the product's own figure.
+ */
+function previewExpiry(manufacturedOn: string, shelfLifeMonths: number | null): string | null {
+  if (!manufacturedOn || shelfLifeMonths === null) return null;
+
+  const start = new Date(`${manufacturedOn}T00:00:00.000Z`);
+
+  if (Number.isNaN(start.getTime())) return null;
+
+  const year = start.getUTCFullYear();
+  const month = start.getUTCMonth() + shelfLifeMonths;
+  const day = start.getUTCDate();
+  const lastDayOfTargetMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+
+  return new Date(Date.UTC(year, month, Math.min(day, lastDayOfTargetMonth)))
+    .toISOString()
+    .slice(0, 10);
+}
+
+export function RecordBatchForm({ orders }: { orders: ProductionOrderSummary[] }) {
   const [state, action, pending] = useActionState(recordBatchAction, IDLE);
 
-  useCloseOnSaved(state, onSaved);
+  useReportOnSaved(state);
+
+  const [orderId, setOrderId] = useState(orders[0]?.id ?? '');
+  // Empty means "today", which is what the server uses when the field is not
+  // sent — so the expiry preview below has to assume the same thing.
+  const [manufacturedOn, setManufacturedOn] = useState('');
+
+  const order = orders.find((candidate) => candidate.id === orderId) ?? orders[0];
+  const effectiveDate = manufacturedOn || new Date().toISOString().slice(0, 10);
+  const expiry = order ? previewExpiry(effectiveDate, order.product.shelfLifeMonths) : null;
 
   if (orders.length === 0) {
     return (
@@ -561,10 +946,17 @@ export function RecordBatchForm({
           <label htmlFor="productionOrderId" className={LABEL}>
             Work order
           </label>
-          <select id="productionOrderId" name="productionOrderId" required className={FIELD}>
-            {orders.map((order) => (
-              <option key={order.id} value={order.id}>
-                {order.orderNumber} — {order.product.code}
+          <select
+            id="productionOrderId"
+            name="productionOrderId"
+            required
+            value={orderId}
+            onChange={(event) => setOrderId(event.target.value)}
+            className={FIELD}
+          >
+            {orders.map((candidate) => (
+              <option key={candidate.id} value={candidate.id}>
+                {candidate.orderNumber} — {candidate.product.code}
               </option>
             ))}
           </select>
@@ -572,7 +964,7 @@ export function RecordBatchForm({
 
         <div>
           <label htmlFor="actualQuantity" className={LABEL}>
-            Quantity manufactured
+            Actual quantity manufactured
           </label>
           <input
             id="actualQuantity"
@@ -587,17 +979,50 @@ export function RecordBatchForm({
 
         <div>
           <label htmlFor="manufacturedOn" className={LABEL}>
-            Manufactured on{' '}
+            Manufacturing date{' '}
             <span className="font-normal normal-case text-slate-400">(defaults to today)</span>
           </label>
-          <input id="manufacturedOn" name="manufacturedOn" type="date" className={FIELD} />
+          <input
+            id="manufacturedOn"
+            name="manufacturedOn"
+            type="date"
+            value={manufacturedOn}
+            onChange={(event) => setManufacturedOn(event.target.value)}
+            className={FIELD}
+          />
         </div>
       </div>
 
-      <p className="text-xs text-slate-500">
-        The batch number and expiry date are assigned automatically — expiry from the product&apos;s
-        shelf life, fixed at this moment because it is printed on the carton.
-      </p>
+      {/* US-PROD-03 names these as fields of the BMR, and all three are the
+          system's to supply. Shown rather than described in a sentence
+          underneath: the expiry is about to be printed on a carton, and the
+          moment to check it is before the record is opened, not after. */}
+      <div className="grid gap-4 sm:grid-cols-3">
+        <ReadOnlyField label="Batch no." hint="Per the company numbering convention." />
+
+        <ReadOnlyField
+          label="Planned material use"
+          value={
+            order ? (
+              <>
+                {order.plannedQuantity}
+                <span className="ml-1 text-xs text-slate-500">{order.product.uom}</span>
+              </>
+            ) : undefined
+          }
+          hint="Carried from the work order."
+        />
+
+        <ReadOnlyField
+          label="Expiry date"
+          value={expiry ?? undefined}
+          hint={
+            order && order.product.shelfLifeMonths !== null
+              ? `Manufacturing date plus ${order.product.shelfLifeMonths} months.`
+              : 'The product has no shelf life on file; the server applies its default.'
+          }
+        />
+      </div>
 
       <button type="submit" disabled={pending} className={BUTTON}>
         {pending ? 'Recording…' : 'Open batch record'}
@@ -665,10 +1090,21 @@ export function RecordPackingForm({
 
       <Result state={state} pending={pending} />
 
+      {/* Linked BMR, quantity and variant on one row — US-PROD-04 lists them
+          together and they are read together: what this packing is against,
+          how much came off the line, and which presentation was run. The BMR
+          link is structural (this form only exists inside a batch that has
+          one), but the story names it as a field and a packing record that
+          does not say which batch it belongs to is one nobody can check. */}
       <div className="grid gap-3 sm:grid-cols-3">
+        <ReadOnlyField
+          label="Linked BMR"
+          value={<span className="font-mono">{batchNumber}</span>}
+        />
+
         <div>
           <label htmlFor={`packed-${batchId}`} className={LABEL}>
-            Quantity packed
+            Finished pack quantity
           </label>
           <input
             id={`packed-${batchId}`}
@@ -677,21 +1113,6 @@ export function RecordPackingForm({
             inputMode="decimal"
             pattern="\d{1,11}(\.\d{1,3})?"
             title="A positive number, up to 3 decimal places"
-            className={FIELD}
-          />
-        </div>
-
-        <div>
-          <label htmlFor={`rejected-${batchId}`} className={LABEL}>
-            Rejects <span className="font-normal normal-case text-slate-400">(optional)</span>
-          </label>
-          <input
-            id={`rejected-${batchId}`}
-            name="rejectedQuantity"
-            inputMode="decimal"
-            placeholder="0"
-            pattern="\d{1,11}(\.\d{1,3})?"
-            title="A number, up to 3 decimal places"
             className={FIELD}
           />
         </div>
@@ -729,6 +1150,23 @@ export function RecordPackingForm({
               ))}
             </select>
           )}
+        </div>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div>
+          <label htmlFor={`rejected-${batchId}`} className={LABEL}>
+            Rejects <span className="font-normal normal-case text-slate-400">(optional)</span>
+          </label>
+          <input
+            id={`rejected-${batchId}`}
+            name="rejectedQuantity"
+            inputMode="decimal"
+            placeholder="0"
+            pattern="\d{1,11}(\.\d{1,3})?"
+            title="A number, up to 3 decimal places"
+            className={FIELD}
+          />
         </div>
       </div>
 
@@ -823,6 +1261,12 @@ export function ReleaseDecisionForm({
 }) {
   const [state, action, pending] = useActionState(releaseBatchAction, IDLE);
 
+  // Tracked so the Block button can honour the "(required to block)" its own
+  // label promises. The API refuses a reasonless block regardless — this is
+  // about saying so before the round trip rather than after it.
+  const [notes, setNotes] = useState('');
+  const canBlock = notes.trim().length > 0;
+
   return (
     <form action={action} className="space-y-3 rounded-md border border-slate-200 bg-slate-50 p-4">
       <input type="hidden" name="batchId" value={batchId} />
@@ -838,6 +1282,8 @@ export function ReleaseDecisionForm({
           id={`release-notes-${batchId}`}
           name="notes"
           rows={2}
+          value={notes}
+          onChange={(event) => setNotes(event.target.value)}
           className={FIELD}
           placeholder="e.g. Assay 99.2%, dissolution complies. QC report QC-2026-0142."
         />
@@ -858,7 +1304,8 @@ export function ReleaseDecisionForm({
           type="submit"
           name="decision"
           value="BLOCKED"
-          disabled={pending}
+          disabled={pending || !canBlock}
+          title={canBlock ? undefined : 'Give a reason above before blocking this batch.'}
           className="rounded-md bg-red-700 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-red-800 disabled:cursor-not-allowed disabled:bg-slate-400"
         >
           {pending ? 'Saving…' : 'Block'}
@@ -871,6 +1318,13 @@ export function ReleaseDecisionForm({
             <>
               Releasing adds <strong>{packedQuantity}</strong> {uom} of {batchNumber} to sellable
               stock. Blocking withholds it permanently. Neither can be undone here.
+            </>
+          )}
+          {!canBlock && (
+            <>
+              {' '}
+              A blocked batch with no recorded reason is the first thing an inspector asks about, so
+              blocking needs the box above filled in.
             </>
           )}
         </p>

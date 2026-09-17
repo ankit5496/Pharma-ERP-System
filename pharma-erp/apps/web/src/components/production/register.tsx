@@ -1,8 +1,34 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
 
 import { MasterDataDrawer } from '@/components/master-data-drawer';
+
+/**
+ * How a form tells the register it has saved, so the drawer can close.
+ *
+ * The CONFIRMATION is not this component's business — the application-wide
+ * toast raises that, from inside the form. This only puts the form away.
+ *
+ * CONTEXT RATHER THAN A PROP, and the reason is the server/client boundary.
+ * `form` is built by a SERVER component — it needs the session token to fetch
+ * what the form offers — so it arrives here as an already-constructed element.
+ * A server component cannot pass a function to a client one at all ("Functions
+ * cannot be passed directly to Client Components"), which rules out both
+ * handing `onSaved` to the form and taking `form` as a render prop.
+ *
+ * Context crosses that boundary the other way round: this client component
+ * provides the callback, and the client form inside reads it, with the server
+ * element passing through in between untouched.
+ *
+ * Defaults to a no-op so a form rendered outside a drawer — the packing and
+ * release forms sit inline on a batch card — simply reports into nothing.
+ */
+const SavedContext = createContext<(message: string) => void>(() => {});
+
+export function useReportSaved(): (message: string) => void {
+  return useContext(SavedContext);
+}
 
 /**
  * A Production step as a register: the records, and a button that opens the
@@ -31,6 +57,7 @@ export function ProductionRegister({
   newLabel,
   newTitle,
   newDescription,
+  formWidth,
   form,
   children,
 }: {
@@ -40,12 +67,34 @@ export function ProductionRegister({
   newLabel?: string;
   newTitle?: string;
   newDescription?: string;
-  /** The form, rendered only while the drawer is open. */
+  /** 'wide' for a form that carries a table; see MasterDataDrawer. */
+  formWidth?: 'default' | 'wide';
+  /**
+   * The form, rendered only while the drawer is open.
+   *
+   * A ready-made element, built on the server. It reports a save through
+   * SavedContext rather than a prop — see the note on that above for why a
+   * callback cannot travel this way.
+   */
   form?: ReactNode;
   /** The records. Rendered on the server and passed through. */
   children: ReactNode;
 }) {
   const [isOpen, setIsOpen] = useState(false);
+
+  // Stable across renders: the forms hold this in an effect's dependency list,
+  // and a new function each render would re-fire it on every keystroke.
+  const close = useCallback(() => setIsOpen(false), []);
+
+  /**
+   * Saved: put the form away.
+   *
+   * Only that. This briefly also raised a confirmation dialog of its own, until
+   * the application-wide toast arrived on main doing the same job everywhere —
+   * so the message is the toast's and the closing is this component's. The
+   * parameter is kept because the forms report it; it is deliberately unused.
+   */
+  const reportSaved = useCallback(() => setIsOpen(false), []);
 
   return (
     <>
@@ -78,12 +127,14 @@ export function ProductionRegister({
           // fields for a work order — and a short form pinned to the edge of a
           // wide screen sits a long way from where the eye already is.
           placement="center"
-          onClose={() => setIsOpen(false)}
+          width={formWidth}
+          onClose={close}
         >
-          {/* The form closes the drawer itself once its action succeeds; see
-              each form's `onSaved`. Closing on submit instead would hide the
-              refusal when the API says no. */}
-          {form}
+          {/* The form reports a SUCCESS through this, and the register decides
+              what follows. A failure is not reported — it stays in the form,
+              beside the fields it is about, which is the case that most needs
+              reading. */}
+          <SavedContext.Provider value={reportSaved}>{form}</SavedContext.Provider>
         </MasterDataDrawer>
       )}
     </>

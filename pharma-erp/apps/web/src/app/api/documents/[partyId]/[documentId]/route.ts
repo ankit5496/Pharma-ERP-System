@@ -18,20 +18,30 @@ import { getSessionToken } from '@/lib/session';
  *
  * TWO MODES, and the difference is a security one.
  *
- *   `?preview=1` renders the file in place. That means the browser executes it
- *   in SOME origin, and by default that origin would be this application's —
- *   where the session cookie lives. A PDF can carry JavaScript. So the preview
- *   response is sandboxed into a unique opaque origin: no cookies, no storage,
- *   no access to anything of ours. Without that this route would be a way to
- *   run an uploaded file against the signed-in session.
+ *   `?preview=1` marks the file as one that will be rendered in place. That
+ *   means the browser executes it in SOME origin, and by default that origin
+ *   would be this application's — where the session cookie lives. A PDF can
+ *   carry JavaScript, so the file must end up in an opaque origin with no
+ *   cookies, no storage and no access to anything of ours.
  *
- *   `allow-scripts` is in the sandbox list, and has to be: Chrome renders PDFs
- *   with an internal viewer that is itself scripted, so a bare `sandbox` with
- *   no directives blocks the viewer along with everything else and the frame
- *   shows "This page has been blocked by Chrome". What matters is that
- *   `allow-same-origin` is ABSENT — that is the directive that would hand the
- *   file our origin, and without it scripts run walled off from our cookies,
- *   our storage and our DOM.
+ *   WHERE THAT IS ENFORCED DIFFERS BY TYPE, and the reason is Chrome.
+ *
+ *   An IMAGE is sandboxed by the response header below. It is not scripted,
+ *   the header costs nothing, and belt-and-braces is free.
+ *
+ *   A PDF cannot be. Chrome does not render PDFs itself; it hands them to an
+ *   internal viewer extension, and that viewer cannot be instantiated inside a
+ *   CSP-sandboxed origin — not even with `allow-scripts`. Chrome does not fall
+ *   back, it refuses the navigation and paints "This page has been blocked by
+ *   Chrome". So DocumentPreview fetches the PDF instead and renders it from a
+ *   blob URL inside an iframe whose own `sandbox` attribute omits
+ *   `allow-same-origin`. Same opaque origin, same isolation; enforced by the
+ *   embedder rather than by a header the viewer cannot survive.
+ *
+ *   The header below is still sent on that fetch and is simply inert: CSP
+ *   sandbox governs document navigation, not a subresource `fetch()`. It is
+ *   left in place so a direct hit on this URL — pasted into the address bar,
+ *   say — is still sandboxed rather than rendered in our origin.
  *
  *   Without the flag it is a download, and an attachment is never executed at
  *   all — the browser hands it to the operating system.

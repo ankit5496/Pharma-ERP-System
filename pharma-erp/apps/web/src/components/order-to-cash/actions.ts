@@ -81,13 +81,13 @@ function revalidateFlow(): void {
 // create action here on purpose: a customer is added on the Master Data screen,
 // where the register is maintained for every desk that reads it.
 //
-// Both of these WRITE TO SHARED MASTER DATA. Blocking or retiring a customer
-// here changes the same row Master Data shows, under the same roles the Master
-// Data screen enforces (PATCH: ADMIN / PURCHASE_MANAGER / SALES_MANAGER,
-// DELETE: ADMIN). That is deliberate — but it is why they are the only writes
-// this screen offers.
+// Only ONE action remains. Block and Remove were taken out of this screen:
+// halting or withdrawing a customer reaches past the sales desk to purchasing
+// and job work, which read the same row, so both belong on the Master Data
+// screen. Amending one still WRITES TO SHARED MASTER DATA, under the roles the
+// Master Data screen enforces (ADMIN / PURCHASE_MANAGER / SALES_MANAGER).
 
-/** Blocks, unblocks or otherwise amends a customer on the shared party register. */
+/** Amends a customer on the shared party register. */
 export async function updateCustomerAction(
   customerId: string,
   patch: Record<string, unknown>,
@@ -102,22 +102,6 @@ export async function updateCustomerAction(
 
   return toResult(result);
 }
-
-/**
- * Retires a customer. A soft delete on the shared register, refused by the API
- * while money is owed or orders are open.
- */
-export async function deleteCustomerAction(customerId: string): Promise<ActionResult> {
-  const result = await apiFetch<void>(`/api/v1/parties/${customerId}`, {
-    method: 'DELETE',
-    authenticated: true,
-  });
-
-  if (result.ok) revalidateStep('customers');
-
-  return toResult(result);
-}
-
 
 // ---------------------------------------------------------------------------
 // Sales orders
@@ -145,6 +129,13 @@ export async function createSalesOrderAction(input: {
     method: 'POST',
     authenticated: true,
     json: input,
+    // Creating an order is now FOUR steps server-side — the released-stock
+    // check, the order itself, the licence/credit gate, then FEFO allocation.
+    // Against a remote database each step is several round trips, so the
+    // default 30s budget expires while the work is still succeeding. Timing out
+    // here is the worst outcome available: the order is created and allocated,
+    // and the screen says it failed, which invites a duplicate.
+    timeoutMs: 90_000,
   });
 
   if (result.ok) revalidateStep('sales-orders');
@@ -202,20 +193,6 @@ export async function allocateOrderAction(salesOrderId: string): Promise<ActionR
   return result.ok ? { ok: true } : { ok: false, error: result.error };
 }
 
-export async function recordComplianceCheckAction(
-  allocationId: string,
-  notes?: string,
-): Promise<ActionResult> {
-  const result = await apiFetch<unknown>(
-    `/api/v1/order-to-cash/allocation/${allocationId}/compliance-check`,
-    { method: 'POST', authenticated: true, json: { notes } },
-  );
-
-  if (result.ok) revalidateStep('allocation');
-
-  return result.ok ? { ok: true } : { ok: false, error: result.error };
-}
-
 export async function releaseAllocationAction(allocationId: string): Promise<ActionResult> {
   const result = await apiFetch<unknown>(
     `/api/v1/order-to-cash/allocation/${allocationId}/release`,
@@ -232,7 +209,18 @@ export async function releaseAllocationAction(allocationId: string): Promise<Act
 // ---------------------------------------------------------------------------
 
 /**
- * Raises the invoice for an order's allocations.
+ * Raises the tax invoice for a CONFIRMED DISPATCH.
+ *
+ * The dispatch, not the order, is what the API bills — `CreateSalesInvoiceDto`
+ * takes `{ dispatchId, invoiceDate, notes? }` and the service reads the lines
+ * from what actually shipped. Posting `salesOrderId` is what produced
+ * "property salesOrderId should not exist": the DTO uses a whitelisting
+ * validation pipe, so an unknown field is a refusal rather than an ignored key.
+ *
+ * `invoiceDate` is REQUIRED and must parse as ISO 8601. It is defaulted here
+ * rather than made optional on the API: an invoice with no date is not a
+ * document anyone can file, and the server should not have to guess which day
+ * the user meant.
  *
  * A DPCO/NLEM ceiling breach comes back as a 409 whose body carries a
  * `priceCeilingBreaches` array. `apiFetch` flattens an error body to its
@@ -241,14 +229,21 @@ export async function releaseAllocationAction(allocationId: string): Promise<Act
  * sentence the user has to unpick.
  */
 export async function issueInvoiceAction(input: {
-  salesOrderId: string;
+  dispatchId: string;
   invoiceDate?: string;
   notes?: string;
 }): Promise<ActionResult<SalesInvoiceDetail>> {
   const result = await apiFetch<SalesInvoiceDetail>('/api/v1/order-to-cash/sales-invoices', {
     method: 'POST',
     authenticated: true,
-    json: input,
+    json: {
+      dispatchId: input.dispatchId,
+      // Full ISO 8601 with offset. `new Date().toISOString()` satisfies
+      // @IsISO8601(); a bare "YYYY-MM-DD" would too, but sending the instant
+      // keeps the client and server agreeing on which day it is near midnight.
+      invoiceDate: input.invoiceDate ?? new Date().toISOString(),
+      ...(input.notes ? { notes: input.notes } : {}),
+    },
     timeoutMs: 30_000,
   });
 
@@ -278,22 +273,73 @@ export async function cancelInvoiceAction(
 // Dispatch
 // ---------------------------------------------------------------------------
 
+/**
+ * Records a dispatch against an order's ALLOCATIONS.
+ *
+ * The allocation is what is shipped, not an invoice — the invoice is raised
+ * afterwards, against what actually left (see WORKFLOWS: step 4 is Dispatch,
+ * step 5 is "Tax invoices raised against a dispatch"). `CreateDispatchDto`
+ * takes `{ dispatchDate, lines: [{ batchAllocationId, quantityDispatched }] }`.
+ *
+ * Quantities are not typed by the user: each line ships what remains allocated
+ * on that batch, which is what makes "cannot dispatch more than allocated"
+ * structural rather than a rule someone could get around. The API re-checks it
+ * anyway, along with the allocated ceiling.
+ */
 export async function createDispatchAction(input: {
-  salesInvoiceId: string;
-  dispatchDate?: string;
+  dispatchDate: string;
+  lines: readonly { batchAllocationId: string; quantityDispatched: string }[];
   transporterName?: string;
   vehicleNumber?: string;
   lrNumber?: string;
   ewayBillNumber?: string;
   notes?: string;
 }): Promise<ActionResult<DispatchDetail>> {
+  if (input.lines.length === 0) {
+    return { ok: false, error: 'Nothing is left to ship on that order.' };
+  }
+
   const result = await apiFetch<DispatchDetail>('/api/v1/order-to-cash/dispatch', {
     method: 'POST',
     authenticated: true,
-    json: input,
+    json: {
+      // Full ISO 8601: the date input gives "YYYY-MM-DD", which @IsISO8601
+      // accepts, but sending the instant keeps client and server agreeing on
+      // the day near midnight.
+      dispatchDate: new Date(`${input.dispatchDate}T00:00:00.000Z`).toISOString(),
+      lines: input.lines.map((line) => ({
+        batchAllocationId: line.batchAllocationId,
+        quantityDispatched: line.quantityDispatched,
+      })),
+      ...(input.transporterName ? { transporterName: input.transporterName } : {}),
+      ...(input.vehicleNumber ? { vehicleNumber: input.vehicleNumber } : {}),
+      ...(input.lrNumber ? { lrNumber: input.lrNumber } : {}),
+      ...(input.ewayBillNumber ? { ewayBillNumber: input.ewayBillNumber } : {}),
+      ...(input.notes ? { notes: input.notes } : {}),
+    },
     // Moves stock and writes a ledger entry per line, inside one transaction.
     timeoutMs: 40_000,
   });
+
+  if (result.ok) revalidateFlow();
+
+  return toResult(result);
+}
+
+/**
+ * Confirms a draft dispatch: stock leaves the lot and the allocations advance.
+ *
+ * Separate from creating it because creating writes the picking list and
+ * confirming is what actually moves inventory — and it is the point at which
+ * the API re-checks the allocated ceiling.
+ */
+export async function confirmDispatchAction(
+  dispatchId: string,
+): Promise<ActionResult<DispatchDetail>> {
+  const result = await apiFetch<DispatchDetail>(
+    `/api/v1/order-to-cash/dispatch/${dispatchId}/confirm`,
+    { method: 'POST', authenticated: true, timeoutMs: 40_000 },
+  );
 
   if (result.ok) revalidateFlow();
 
@@ -445,6 +491,100 @@ export async function createItemAction(formData: FormData): Promise<ActionResult
   });
 
   if (result.ok) revalidateStep('sales-orders');
+
+  return toResult(result);
+}
+
+// ---------------------------------------------------------------------------
+// Edits
+// ---------------------------------------------------------------------------
+// Every one of these is guarded server-side by state, and the field lists below
+// are exactly what each DTO whitelists. Nothing here decides what may change —
+// the API does, and it refuses the rest. These exist to turn a form into a
+// request and a refusal into a sentence.
+
+export async function updateSalesOrderAction(
+  salesOrderId: string,
+  patch: Record<string, unknown>,
+): Promise<ActionResult<SalesOrderDetail>> {
+  const result = await apiFetch<SalesOrderDetail>(
+    `/api/v1/order-to-cash/sales-orders/${salesOrderId}`,
+    { method: 'PATCH', authenticated: true, json: patch },
+  );
+
+  if (result.ok) revalidateFlow();
+
+  return toResult(result);
+}
+
+export async function updateAllocationAction(
+  allocationId: string,
+  patch: Record<string, unknown>,
+): Promise<ActionResult> {
+  const result = await apiFetch<unknown>(
+    `/api/v1/order-to-cash/allocation/${allocationId}`,
+    { method: 'PATCH', authenticated: true, json: patch },
+  );
+
+  if (result.ok) revalidateFlow();
+
+  return result.ok ? { ok: true } : { ok: false, error: result.error };
+}
+
+export async function updateDispatchAction(
+  dispatchId: string,
+  patch: Record<string, unknown>,
+): Promise<ActionResult<DispatchDetail>> {
+  const result = await apiFetch<DispatchDetail>(`/api/v1/order-to-cash/dispatch/${dispatchId}`, {
+    method: 'PATCH',
+    authenticated: true,
+    json: patch,
+  });
+
+  if (result.ok) revalidateFlow();
+
+  return toResult(result);
+}
+
+export async function updateInvoiceAction(
+  invoiceId: string,
+  patch: Record<string, unknown>,
+): Promise<ActionResult<SalesInvoiceDetail>> {
+  const result = await apiFetch<SalesInvoiceDetail>(
+    `/api/v1/order-to-cash/sales-invoices/${invoiceId}`,
+    { method: 'PATCH', authenticated: true, json: patch },
+  );
+
+  if (result.ok) revalidateFlow();
+
+  return toResult(result);
+}
+
+export async function updateReceiptAction(
+  receiptId: string,
+  patch: Record<string, unknown>,
+): Promise<ActionResult<ReceiptListItem>> {
+  const result = await apiFetch<ReceiptListItem>(`/api/v1/order-to-cash/receipts/${receiptId}`, {
+    method: 'PATCH',
+    authenticated: true,
+    json: patch,
+  });
+
+  if (result.ok) revalidateFlow();
+
+  return toResult(result);
+}
+
+export async function updateSalesReturnAction(
+  salesReturnId: string,
+  patch: Record<string, unknown>,
+): Promise<ActionResult<SalesReturnDetail>> {
+  const result = await apiFetch<SalesReturnDetail>(
+    `/api/v1/order-to-cash/sales-returns/${salesReturnId}`,
+    { method: 'PATCH', authenticated: true, json: patch },
+  );
+
+  if (result.ok) revalidateFlow();
 
   return toResult(result);
 }

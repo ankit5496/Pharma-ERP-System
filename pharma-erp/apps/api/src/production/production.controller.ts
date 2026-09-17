@@ -164,6 +164,20 @@ export class ProductionController {
    * A GET, because it writes nothing: the form asks it on every change to the
    * quantity, and asking twice must cost nothing and change nothing.
    */
+  /**
+   * The number the next work order would take — US-PROD-01's "Work Order No.
+   * (auto-generated)", so the form can show it before anything is saved.
+   *
+   * A prediction rather than a reservation: nothing is held, and a work order
+   * saved between this call and the create takes the number instead. Declared
+   * before `orders/:id` so the literal segment wins over the UUID parameter.
+   */
+  @Get('orders/next-number')
+  @SkipAudit('Reads a number; reserves nothing.')
+  async nextOrderNumber(): Promise<{ orderNumber: string }> {
+    return this.production.previewOrderNumber();
+  }
+
   @Get('orders/feasibility')
   @SkipAudit('Computes nothing persistent.')
   async feasibility(
@@ -194,6 +208,16 @@ export class ProductionController {
   @SkipAudit('Read-only listing.')
   async listAllIssues(): Promise<MaterialIssueView[]> {
     return this.materialIssue.list();
+  }
+
+  /**
+   * The number the next dispensing record would take — US-PROD-02, so the form
+   * can show it before saving. A prediction; nothing is reserved.
+   */
+  @Get('issues/next-number')
+  @SkipAudit('Reads a number; reserves nothing.')
+  async nextIssueNumber(): Promise<{ issueNumber: string }> {
+    return this.materialIssue.previewIssueNumber();
   }
 
   @Get('orders/:id/issue-plan')

@@ -3,23 +3,21 @@
 import { useMemo, useState, useTransition } from 'react';
 import {
   SCHEDULE_CATEGORY_LABELS,
-  requiresAllocationRecheck,
   type CustomerListItem,
   type ItemListItem,
-  type OrderCheckResult,
   type SalesOrderListItem,
 } from '@pharma-erp/types';
 
 import {
   cancelSalesOrderAction,
   createSalesOrderAction,
-  runOrderChecksAction,
+  updateSalesOrderAction,
   type NewOrderLine,
 } from './actions';
+import { EditButton, EditDialog } from './edit-kit';
 import {
   Badge,
   DANGER_BUTTON,
-  Money,
   Note,
   PRIMARY_BUTTON,
   SECONDARY_BUTTON,
@@ -65,7 +63,10 @@ export function NewSalesOrderForm({
   const [requestedDeliveryDate, setRequestedDeliveryDate] = useState('');
   const [notes, setNotes] = useState('');
   const [lines, setLines] = useState<DraftLine[]>([]);
-  const [message, setMessage] = useState<{ kind: 'error' | 'success'; text: string } | null>(null);
+  // Only failures are surfaced. A created-and-allocated order says so by
+  // appearing in the list below with its status; repeating that in a banner
+  // over an empty form is noise.
+  const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
   const itemsById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
@@ -143,7 +144,7 @@ export function NewSalesOrderForm({
           type="button"
           onClick={() => {
             setOpen(false);
-            setMessage(null);
+            setError(null);
           }}
           className={SECONDARY_BUTTON}
         >
@@ -167,19 +168,6 @@ export function NewSalesOrderForm({
               <p key={blocker}>{blocker}</p>
             ))}
           </Note>
-        </div>
-      )}
-
-      {message && (
-        <div
-          role={message.kind === 'error' ? 'alert' : 'status'}
-          className={`mt-5 rounded-md border p-3 text-sm ${
-            message.kind === 'error'
-              ? 'border-red-200 bg-red-50 text-red-800'
-              : 'border-green-200 bg-green-50 text-green-900'
-          }`}
-        >
-          {message.text}
         </div>
       )}
 
@@ -309,12 +297,32 @@ export function NewSalesOrderForm({
 
                     {item && (
                       <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
-                        <span>
-                          {item.availableQuantity} saleable · GST {item.gstRatePercent ?? '0'}%
+                        <span
+                          title={
+                            `${item.quantityOnHand} on hand from released batches, ` +
+                            `${item.quantityReserved} already reserved for other orders.`
+                          }
+                        >
+                          <span
+                            className={
+                              item.availableQuantity === '0.000'
+                                ? 'font-semibold text-red-700'
+                                : undefined
+                            }
+                          >
+                            {item.availableQuantity} saleable
+                          </span>
+                          {/* Shown whenever stock is held: the batch-release
+                              screen reports on-hand, so without this the two
+                              screens disagree with no explanation. */}
+                          {item.quantityReserved !== '0.000' && (
+                            <> ({item.quantityOnHand} on hand − {item.quantityReserved} reserved)</>
+                          )}{' '}
+                          · GST {item.gstRatePercent ?? '0'}%
                         </span>
                         {item.scheduleCategory !== 'NONE' && (
                           <Badge
-                            tone={requiresAllocationRecheck(item.scheduleCategory) ? 'amber' : 'slate'}
+                            tone="slate"
                           >
                             {SCHEDULE_CATEGORY_LABELS[item.scheduleCategory]}
                           </Badge>
@@ -443,18 +451,18 @@ export function NewSalesOrderForm({
           type="button"
           disabled={pending || !customerId || lines.length === 0}
           onClick={() => {
-            setMessage(null);
+            setError(null);
 
             const payload: NewOrderLine[] = [];
 
             for (const line of lines) {
               if (!line.itemId) {
-                setMessage({ kind: 'error', text: 'Every line needs a product.' });
+                setError('Every line needs a product.');
                 return;
               }
 
               if (!line.quantityOrdered.trim()) {
-                setMessage({ kind: 'error', text: 'Every line needs a quantity.' });
+                setError('Every line needs a quantity.');
                 return;
               }
 
@@ -476,64 +484,76 @@ export function NewSalesOrderForm({
               });
 
               if (result.ok) {
-                setMessage({
-                  kind: 'success',
-                  text: `Order ${result.data?.orderNumber ?? ''} created as a draft. Run the licence and credit check to approve it.`,
-                });
+                const order = result.data;
+                const allocated =
+                  order?.status === 'ALLOCATED' || order?.status === 'PARTIALLY_ALLOCATED';
+
                 reset();
+
+                // Silent when the order was created AND allocated — it is in
+                // the list below, with its status, which says it better.
+                //
+                // NOT silent when the gate blocked it. The request succeeded,
+                // but the order is sitting BLOCKED with no stock reserved, and
+                // swallowing that would leave someone believing an order is on
+                // its way when nothing has been set aside for it.
+                setError(
+                  allocated
+                    ? null
+                    : `Order ${order?.orderNumber ?? ''} was created but NOT allocated — ${
+                        order?.checkFailureReason ?? 'the licence or credit check did not pass'
+                      }`,
+                );
               } else {
-                setMessage({ kind: 'error', text: result.error ?? 'That did not work.' });
+                setError(result.error ?? 'That did not work.');
               }
             });
           }}
           className={PRIMARY_BUTTON}
         >
-          {pending ? 'Saving…' : 'Create order'}
+          {pending ? 'Checking stock…' : 'Create order'}
         </button>
       </div>
+
+      {/* The ONLY message this form shows, and only on failure. It sits beside
+          the button because a stock refusal names a quantity the user must now
+          correct, and it is no use to them off-screen. Form values survive —
+          only a successful create resets them. */}
+      {error && (
+        <p role="alert" className="mt-3 max-w-2xl text-sm font-medium text-red-700">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
 
 /**
- * Row actions: run the gate, view its reasoning, cancel.
+ * Row actions: edit a draft, cancel.
  *
- * "Run check" is offered on a blocked order too, and deliberately: the usual fix
- * is to raise the limit or take a payment and check again, and hiding the button
- * would leave no way to re-test from the screen.
+ * "Run check" used to live here. The licence and credit gate now runs
+ * automatically as part of creating the order, so a separate button would only
+ * re-ask a question already answered. The rules themselves are unchanged — the
+ * verdict and its figures are still recorded on the order, and the list shows
+ * them in the licence and credit columns.
+ *
+ * `POST :id/check` is deliberately left on the API: re-testing a BLOCKED order
+ * after a limit is raised or a payment lands is a real need, and removing the
+ * endpoint would take that away as well as the button.
  */
 export function SalesOrderRowActions({ order }: { order: SalesOrderListItem }) {
-  const [check, setCheck] = useState<OrderCheckResult | null>(null);
+  const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
-
-  const canCheck = !['ALLOCATED', 'PARTIALLY_ALLOCATED', 'DISPATCHED', 'COMPLETED', 'CANCELLED'].includes(
-    order.status,
-  );
 
   const canCancel = !['COMPLETED', 'CANCELLED'].includes(order.status);
 
   return (
     <div className="min-w-[10rem]">
       <div className="flex flex-wrap gap-1.5">
-        {canCheck && (
-          <button
-            type="button"
-            disabled={pending}
-            onClick={() => {
-              setError(null);
-              startTransition(async () => {
-                const result = await runOrderChecksAction(order.id);
-
-                if (result.ok) setCheck(result.data?.check ?? null);
-                else setError(result.error ?? 'That did not work.');
-              });
-            }}
-            className={SECONDARY_BUTTON}
-          >
-            {pending ? 'Checking…' : 'Run check'}
-          </button>
-        )}
+        {/* DRAFT only: once the gate has run the order carries a verdict, and
+            once allocated it has stock reserved. The API refuses either. */}
+        {order.status === 'DRAFT' && <EditButton onClick={() => setEditing(true)} />}
 
         {canCancel && (
           <button
@@ -559,72 +579,32 @@ export function SalesOrderRowActions({ order }: { order: SalesOrderListItem }) {
         )}
       </div>
 
+      {editing && (
+        <EditDialog
+          title={`Edit ${order.orderNumber}`}
+          description={order.customerName}
+          note="Lines and pricing are not edited here — changing them re-opens the credit gate. Cancel and raise a new order to re-price."
+          fields={[
+            { name: 'orderDate', label: 'Order date', value: order.orderDate, type: 'date' },
+            {
+              name: 'requestedDeliveryDate',
+              label: 'Requested delivery',
+              value: order.requestedDeliveryDate ?? '',
+              type: 'date',
+            },
+            { name: 'notes', label: 'Notes', value: '', wide: true },
+          ]}
+          onClose={() => setEditing(false)}
+          onSave={(patch) => updateSalesOrderAction(order.id, patch)}
+        />
+      )}
+
       {error && (
         <p role="alert" className="mt-2 max-w-xs text-xs text-red-700">
           {error}
         </p>
       )}
 
-      {check && (
-        <div className="mt-2 w-64 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs">
-          <p className="font-semibold uppercase tracking-wide text-slate-500">Check result</p>
-
-          <dl className="mt-2 space-y-1 text-slate-700">
-            <div className="flex justify-between gap-2">
-              <dt>Licence</dt>
-              <dd className={check.licenceCheck === 'PASS' ? 'text-green-700' : 'text-red-700'}>
-                {check.licenceCheck}
-              </dd>
-            </div>
-            <div className="flex justify-between gap-2">
-              <dt>Credit</dt>
-              <dd className={check.creditCheck === 'PASS' ? 'text-green-700' : 'text-red-700'}>
-                {check.creditCheck}
-              </dd>
-            </div>
-            {check.creditLimit && (
-              <>
-                <div className="flex justify-between gap-2">
-                  <dt>Limit</dt>
-                  <dd>
-                    <Money value={check.creditLimit} />
-                  </dd>
-                </div>
-                <div className="flex justify-between gap-2">
-                  <dt>Outstanding</dt>
-                  <dd>
-                    <Money value={check.outstandingAmount ?? '0.00'} />
-                  </dd>
-                </div>
-                <div className="flex justify-between gap-2">
-                  <dt>Available</dt>
-                  <dd>
-                    <Money value={check.availableCredit ?? '0.00'} />
-                  </dd>
-                </div>
-              </>
-            )}
-            {check.creditShortfall && (
-              <div className="flex justify-between gap-2 font-semibold text-red-700">
-                <dt>Over by</dt>
-                <dd>
-                  <Money value={check.creditShortfall} />
-                </dd>
-              </div>
-            )}
-          </dl>
-
-          {check.failureReason && <p className="mt-2 text-red-700">{check.failureReason}</p>}
-
-          <button
-            type="button"
-            onClick={() => setCheck(null)}
-            className="mt-2 text-[11px] font-semibold text-slate-500 hover:underline"
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
     </div>
   );
 }

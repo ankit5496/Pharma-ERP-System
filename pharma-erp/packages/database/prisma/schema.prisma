@@ -550,14 +550,20 @@ model MaterialIssue {
   tenantId          String @map("tenant_id") @db.Uuid
   productionOrderId String @map("production_order_id") @db.Uuid
 
-  /// The dispensing note number, MI-YYYY-NNNN.
+  /// US-PROD-02's "Issue No. (auto-generated)", as MI-YYYY-NNNN.
   ///
-  /// DECLARED LATE, and the delay was a live defect rather than an omission.
-  /// The column was added to the hosted database by a migration that never
-  /// reached this schema, so Prisma issued every INSERT without it and Postgres
-  /// rejected the NOT NULL — every material issue against that database failed
-  /// with a 500, and `material_issues` held no rows at all. Declared here and
-  /// allocated by NumberingService, the two agree again.
+  /// A dispensing record is a document somebody writes on a slip and carries to
+  /// the shop floor, and "the issue at 14:32 against WO-2026-0003" is not a
+  /// thing anyone can say. Allocated from DocumentSequence inside the issuing
+  /// transaction, the same way batch numbers are.
+  ///
+  /// IT WAS ALSO A LIVE DEFECT until this landed, which is worth recording
+  /// because the symptom looked like something else entirely. The column
+  /// reached the hosted database ahead of this schema, so Prisma issued every
+  /// INSERT without it and Postgres rejected the NOT NULL: dispensing returned
+  /// a 500 and `material_issues` held no rows at all. Migration
+  /// 20260917010000_material_issue_number_reconcile brings a fresh database to
+  /// the same shape, so the two cannot disagree again.
   issueNumber String @map("issue_number") @db.VarChar(32)
 
   issuedAt   DateTime @default(now()) @map("issued_at") @db.Timestamptz(6)

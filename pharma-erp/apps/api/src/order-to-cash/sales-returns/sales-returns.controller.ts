@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
 } from '@nestjs/common';
@@ -15,7 +16,7 @@ import type { SalesReturnDetail, SalesReturnListItem } from '@pharma-erp/types';
 import { Roles } from '../../auth/auth.decorators';
 import { SkipAudit } from '../../common/audit/audit.decorators';
 
-import { CreateSalesReturnDto } from './dto/sales-return.dto';
+import { CreateSalesReturnDto, UpdateSalesReturnDto } from './dto/sales-return.dto';
 import { SalesReturnsService } from './sales-returns.service';
 
 /**
@@ -47,6 +48,16 @@ export class SalesReturnsController {
   @Roles('ADMIN', 'SALES_MANAGER', 'STORE_OFFICER')
   async create(@Body() dto: CreateSalesReturnDto): Promise<SalesReturnDetail> {
     return this.returns.create(dto);
+  }
+
+  /** Amends a DRAFT return. Refused once the goods have been received. */
+  @Patch(':id')
+  @Roles('ADMIN', 'SALES_MANAGER', 'STORE_OFFICER')
+  async update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateSalesReturnDto,
+  ): Promise<SalesReturnDetail> {
+    return this.returns.update(id, dto);
   }
 
   /** Goods physically back; only RESTOCK lines re-enter saleable stock. */

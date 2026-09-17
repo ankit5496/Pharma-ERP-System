@@ -194,7 +194,6 @@ export function PartyMasterForm({
             required
             options={TYPE_OPTIONS}
             value={partyType}
-            placeholder="Supplier, customer, or principal…"
             onChange={setPartyType}
             hint="Decides which of the sections below apply."
           />

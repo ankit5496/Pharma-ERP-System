@@ -7,7 +7,7 @@ import {
 
 import { apiFetch } from '@/lib/api';
 
-import { NewReturnForm } from './return-actions';
+import { NewReturnForm, SalesReturnRowActions } from './return-actions';
 import {
   Cell,
   EmptyState,
@@ -29,6 +29,7 @@ const COLUMNS = [
   'Amount',
   'Reason',
   'Status',
+  'Actions',
 ] as const;
 
 /**
@@ -174,6 +175,10 @@ function ReturnRow({ salesReturn }: { salesReturn: SalesReturnListItem }) {
 
       <Cell>
         <StatusBadge status={salesReturn.status} />
+      </Cell>
+
+      <Cell>
+        <SalesReturnRowActions salesReturn={salesReturn} />
       </Cell>
     </tr>
   );
