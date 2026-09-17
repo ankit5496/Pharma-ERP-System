@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
 
 import type { AllocationPlan, AllocationRow } from '@pharma-erp/types';
 
@@ -6,12 +6,13 @@ import { Roles } from '../../auth/auth.decorators';
 import { SkipAudit } from '../../common/audit/audit.decorators';
 
 import { AllocationService } from './allocation.service';
+import { UpdateAllocationDto } from './dto/allocation.dto';
 
 /**
  * Allocation — reserving released batches against an order.
  *
- * `plan` is a GET because it only previews. `commit`, the compliance check and
- * `release` all write, and are POSTs. The plan is never posted back: commit
+ * `plan` is a GET because it only previews. `commit` and `release` both write,
+ * and are POSTs. The plan is never posted back: commit
  * recomputes FEFO server-side, so the rule cannot be edited in transit.
  */
 @Controller('order-to-cash/allocation')
@@ -39,6 +40,16 @@ export class AllocationController {
     return this.allocation.listForOrder(id);
   }
 
+  /** Adjusts a live allocation's quantity. The batch is FEFO's, not the caller's. */
+  @Patch(':id')
+  @Roles('ADMIN', 'SALES_MANAGER', 'STORE_OFFICER')
+  async update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateAllocationDto,
+  ): Promise<AllocationRow> {
+    return this.allocation.update(id, dto);
+  }
+
   /**
    * Commits FEFO for one order. The id in the path is the SALES ORDER, not an
    * allocation — allocations are what this creates.
@@ -47,16 +58,6 @@ export class AllocationController {
   @Roles('ADMIN', 'SALES_MANAGER', 'STORE_OFFICER')
   async commit(@Param('id', ParseUUIDPipe) id: string): Promise<AllocationRow[]> {
     return this.allocation.commit(id);
-  }
-
-  /** The second look a Schedule H1 / H1X / X line needs before stock moves. */
-  @Post(':id/compliance-check')
-  @Roles('ADMIN', 'QUALITY_OFFICER', 'SALES_MANAGER')
-  async complianceCheck(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body('notes') notes?: string,
-  ): Promise<AllocationRow> {
-    return this.allocation.recordComplianceCheck(id, notes);
   }
 
   @Post(':id/release')

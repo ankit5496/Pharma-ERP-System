@@ -8,7 +8,8 @@ import {
   type SalesInvoiceListItem,
 } from '@pharma-erp/types';
 
-import { bounceReceiptAction, createReceiptAction } from './actions';
+import { bounceReceiptAction, createReceiptAction, updateReceiptAction } from './actions';
+import { EditButton, EditDialog } from './edit-kit';
 import { DANGER_BUTTON, Money, Note, PRIMARY_BUTTON, SECONDARY_BUTTON, formatDate } from './ui';
 
 /**
@@ -37,6 +38,13 @@ export function NewReceiptForm({
   const [pending, startTransition] = useTransition();
 
   const selected = invoices.find((invoice) => invoice.id === selectedId) ?? null;
+
+  // A warning only — the API is what actually refuses an over-payment, and it
+  // re-reads the balance when it does. This just saves a round trip to find out.
+  const over =
+    selected !== null &&
+    amount.trim() !== '' &&
+    Number(amount) > Number(selected.amountOutstanding);
 
   if (!open) {
     return (
@@ -192,6 +200,38 @@ export function NewReceiptForm({
           />
         </div>
 
+        {/* Sits between the amount and the method because it is what the amount
+            is checked against: the API refuses a receipt larger than this, so
+            seeing it beside the field is what stops the refusal happening. */}
+        <div>
+          <p className="field-label">Outstanding balance</p>
+          <div className="mt-1.5 rounded-md border border-slate-200 bg-slate-50 px-3 py-2.5">
+            {selected ? (
+              <>
+                <p className="text-sm font-semibold text-slate-900">
+                  <Money value={selected.amountOutstanding} />
+                </p>
+                <p className="mt-0.5 text-[11px] text-slate-500">
+                  {selected.invoiceNumber} · total <Money value={selected.grandTotal} />, paid{' '}
+                  <Money value={selected.amountPaid} />
+                  {selected.amountCredited !== '0.00' && (
+                    <>
+                      , credited <Money value={selected.amountCredited} />
+                    </>
+                  )}
+                </p>
+                {over && (
+                  <p className="mt-1 text-[11px] font-semibold text-red-700">
+                    This receipt is more than is outstanding.
+                  </p>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-slate-400">Choose an invoice first.</p>
+            )}
+          </div>
+        </div>
+
         <div>
           <label htmlFor="rcp-method" className="field-label">
             Payment method <span className="text-red-600">*</span>
@@ -258,6 +298,7 @@ export function NewReceiptForm({
  */
 export function ReceiptRowActions({ receipt }: { receipt: ReceiptListItem }) {
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
   const [pending, startTransition] = useTransition();
 
   if (receipt.status === 'BOUNCED') {
@@ -270,6 +311,14 @@ export function ReceiptRowActions({ receipt }: { receipt: ReceiptListItem }) {
 
   return (
     <div className="min-w-[6rem]">
+      {/* RECORDED only: once cleared or bounced the receipt is part of a
+          settled position. The amount is never editable — see the service. */}
+      {receipt.status === 'RECORDED' && (
+        <div className="mb-1.5">
+          <EditButton onClick={() => setEditing(true)} />
+        </div>
+      )}
+
       <button
         type="button"
         disabled={pending}
@@ -297,6 +346,38 @@ export function ReceiptRowActions({ receipt }: { receipt: ReceiptListItem }) {
         <p role="alert" className="mt-2 max-w-xs text-xs text-red-700">
           {error}
         </p>
+      )}
+
+      {editing && (
+        <EditDialog
+          title={`Edit ${receipt.receiptNumber}`}
+          description={`${receipt.customerName} · ${receipt.invoiceNumber}`}
+          note="The AMOUNT cannot be changed here. Money moved, and both the invoice balance and the receivable ledger followed it — correcting it is a bounce plus a new receipt, so the ledger shows the credit and its reversal."
+          fields={[
+            { name: 'receiptDate', label: 'Receipt date', value: receipt.receiptDate, type: 'date' },
+            {
+              name: 'paymentMethod',
+              label: 'Method',
+              value: receipt.paymentMethod,
+              options: [
+                { value: 'BANK_TRANSFER', label: 'Bank transfer' },
+                { value: 'UPI', label: 'UPI' },
+                { value: 'CHEQUE', label: 'Cheque' },
+                { value: 'CASH', label: 'Cash' },
+                { value: 'OTHER', label: 'Other' },
+              ],
+            },
+            {
+              name: 'referenceNumber',
+              label: 'Reference',
+              value: receipt.referenceNumber ?? '',
+              hint: 'Cheque number, UPI reference, bank transaction id.',
+            },
+            { name: 'notes', label: 'Notes', value: receipt.notes ?? '', wide: true },
+          ]}
+          onClose={() => setEditing(false)}
+          onSave={(patch) => updateReceiptAction(receipt.id, patch)}
+        />
       )}
     </div>
   );

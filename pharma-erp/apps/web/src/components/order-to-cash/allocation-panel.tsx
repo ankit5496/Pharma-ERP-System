@@ -28,7 +28,6 @@ const COLUMNS = [
   'Expiry',
   'Qty ordered',
   'Qty allocated',
-  'Compliance',
   'Status',
   'Actions',
 ] as const;
@@ -137,10 +136,8 @@ function StatusBadgeInline({ status }: { status: string }) {
 }
 
 function AllocationTableRow({ allocation }: { allocation: AllocationRow }) {
-  const needsCheck = allocation.complianceRecheckRequired && !allocation.complianceCheckedAt;
-
   return (
-    <tr className={needsCheck ? 'bg-amber-50/40' : undefined}>
+    <tr>
       <Cell>
         <p className="font-mono text-xs font-medium text-slate-900">{allocation.orderNumber}</p>
         <p className="mt-0.5 text-[11px] text-slate-500">{allocation.customerName}</p>
@@ -151,7 +148,7 @@ function AllocationTableRow({ allocation }: { allocation: AllocationRow }) {
         <p className="mt-0.5 font-mono text-[11px] text-slate-500">{allocation.itemCode}</p>
         {allocation.scheduleCategory !== 'NONE' && (
           <span className="mt-1 inline-block">
-            <Badge tone={allocation.complianceRecheckRequired ? 'amber' : 'slate'}>
+            <Badge tone="slate">
               {SCHEDULE_CATEGORY_LABELS[allocation.scheduleCategory]}
             </Badge>
           </span>
@@ -178,25 +175,6 @@ function AllocationTableRow({ allocation }: { allocation: AllocationRow }) {
           <p className="mt-0.5 text-[11px] text-slate-500">
             {allocation.quantityDispatched} out
           </p>
-        )}
-      </Cell>
-
-      <Cell>
-        {!allocation.complianceRecheckRequired ? (
-          <span className="text-xs text-slate-400">Not required</span>
-        ) : allocation.complianceCheckedAt ? (
-          <>
-            <Badge tone="green">Checked</Badge>
-            {allocation.complianceCheckedByName && (
-              <p className="mt-1 text-[11px] text-slate-500">
-                {allocation.complianceCheckedByName}
-              </p>
-            )}
-          </>
-        ) : (
-          <Badge tone="amber" title="Dispatch is refused until this is recorded">
-            Re-check due
-          </Badge>
         )}
       </Cell>
 

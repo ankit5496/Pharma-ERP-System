@@ -7,7 +7,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NumberingService } from '../../procurement/numbering.service';
 import { TenantContextService } from '../../tenant/tenant-context.service';
 
-import type { CreateReceiptDto } from './dto/receipt.dto';
+import type { CreateReceiptDto, UpdateReceiptDto } from './dto/receipt.dto';
 
 /**
  * Receipts — money collected and applied to an invoice.
@@ -132,6 +132,39 @@ export class ReceiptsService {
     });
 
     return this.get(created.id);
+  }
+
+  /**
+   * Corrects how a RECORDED receipt is described. Never the amount.
+   *
+   * A receipt for the wrong amount is not a form typo — money moved, and both
+   * the invoice balance and the receivable ledger followed it. Correcting that
+   * is `bounce` plus a new receipt, which leaves the credit and its reversal
+   * where an auditor can see both. Everything editable here is description:
+   * the reference off the cheque, the method, the date it cleared, the note.
+   */
+  async update(id: string, dto: UpdateReceiptDto): Promise<ReceiptListItem> {
+    const receipt = await this.prisma.scoped.receipt.findFirst({ where: { id } });
+
+    if (!receipt) throw new NotFoundException('Receipt not found.');
+
+    if (receipt.status !== 'RECORDED') {
+      throw new BadRequestException(
+        `Only a recorded receipt can be corrected — this one is ${receipt.status.toLowerCase()}.`,
+      );
+    }
+
+    await this.prisma.scoped.receipt.update({
+      where: { id },
+      data: {
+        ...(dto.receiptDate ? { receiptDate: new Date(dto.receiptDate) } : {}),
+        ...(dto.paymentMethod ? { paymentMethod: dto.paymentMethod } : {}),
+        ...(dto.referenceNumber === undefined ? {} : { referenceNumber: dto.referenceNumber.trim() || null }),
+        ...(dto.notes === undefined ? {} : { notes: dto.notes.trim() || null }),
+      },
+    });
+
+    return this.get(id);
   }
 
   /**

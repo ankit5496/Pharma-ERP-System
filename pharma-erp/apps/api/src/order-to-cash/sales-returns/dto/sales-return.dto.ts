@@ -78,3 +78,27 @@ export class CreateSalesReturnDto {
   @Type(() => CreateSalesReturnLineDto)
   items!: CreateSalesReturnLineDto[];
 }
+
+/**
+ * Amends a DRAFT sales return.
+ *
+ * DRAFT ONLY. Once received, the stock has been put somewhere — quarantined,
+ * destroyed or restocked — and once credited the customer's ledger has moved.
+ * Neither is undone by editing a form.
+ *
+ * Header fields only. Changing the returned quantities would have to unwind
+ * `quantityReturned` on the invoice lines it already incremented, so a wrong
+ * line is cancelled and re-raised rather than edited underneath the invoice.
+ */
+export class UpdateSalesReturnDto {
+  @IsOptional()
+  @IsISO8601()
+  returnDate?: string;
+
+  @IsOptional()
+  @IsIn(RETURN_REASONS)
+  reason?: ReturnReason;
+
+  @IsOptional() @IsString() @MaxLength(1000) reasonNotes?: string;
+  @IsOptional() @IsString() @MaxLength(1000) notes?: string;
+}

@@ -1,4 +1,8 @@
-import type { SalesInvoiceListItem, SalesOrderListItem } from '@pharma-erp/types';
+import type {
+  DispatchListItem,
+  SalesInvoiceListItem,
+  SalesOrderListItem,
+} from '@pharma-erp/types';
 
 import { apiFetch } from '@/lib/api';
 
@@ -16,6 +20,16 @@ import {
   Table,
 } from './ui';
 
+const READY_COLUMNS = [
+  'Order #',
+  'Customer',
+  'Order date',
+  'Order value',
+  'Status',
+  'Dispatch',
+  'Actions',
+] as const;
+
 const COLUMNS = [
   'Invoice #',
   'Customer',
@@ -23,6 +37,7 @@ const COLUMNS = [
   'Subtotal',
   'GST',
   'Total',
+  'Paid',
   'Payment status',
   'Status',
   'Actions',
@@ -39,11 +54,12 @@ const COLUMNS = [
 export async function InvoicesPanel({ search }: { search?: string }) {
   const query = search ? `?search=${encodeURIComponent(search)}` : '';
 
-  const [invoices, orders] = await Promise.all([
+  const [invoices, orders, dispatches] = await Promise.all([
     apiFetch<SalesInvoiceListItem[]>(`/api/v1/order-to-cash/sales-invoices${query}`, {
       authenticated: true,
     }),
     apiFetch<SalesOrderListItem[]>('/api/v1/order-to-cash/sales-orders', { authenticated: true }),
+    apiFetch<DispatchListItem[]>('/api/v1/order-to-cash/dispatch', { authenticated: true }),
   ]);
 
   const readyToInvoice = orders.ok
@@ -51,6 +67,26 @@ export async function InvoicesPanel({ search }: { search?: string }) {
         ['ALLOCATED', 'PARTIALLY_ALLOCATED', 'DISPATCHED'].includes(order.status),
       )
     : [];
+
+  // The API bills a DISPATCH, so each order is matched to the consignment that
+  // can still be invoiced: one that has actually left (not a draft) and has no
+  // invoice against it yet. An order with none is shown, but its button says
+  // what is missing rather than posting a request the API would refuse.
+  const billableByOrder = new Map<string, { id: string; number: string; status: string }>();
+
+  if (dispatches.ok) {
+    for (const dispatch of dispatches.data) {
+      const shipped = dispatch.status === 'DISPATCHED' || dispatch.status === 'DELIVERED';
+
+      if (shipped && !dispatch.salesInvoiceId && !billableByOrder.has(dispatch.salesOrderId)) {
+        billableByOrder.set(dispatch.salesOrderId, {
+          id: dispatch.id,
+          number: dispatch.dispatchNumber,
+          status: dispatch.status,
+        });
+      }
+    }
+  }
 
   return (
     <>
@@ -69,31 +105,64 @@ export async function InvoicesPanel({ search }: { search?: string }) {
               hint="An order appears here once batches have been reserved against it on the Allocation tab."
             />
           ) : (
-            <ul className="divide-y divide-slate-100">
-              {readyToInvoice.map((order) => (
-                <li
-                  key={order.id}
-                  className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5"
-                >
-                  <div>
-                    <p className="font-mono text-xs font-medium text-slate-900">
-                      {order.orderNumber}
-                    </p>
-                    <p className="mt-0.5 text-sm text-slate-700">{order.customerName}</p>
-                    <p className="mt-0.5 text-[11px] text-slate-500">
-                      Order value <Money value={order.grandTotal} /> ·{' '}
-                      <span className="align-middle">
-                        <StatusBadge status={order.status} />
+            <Table columns={READY_COLUMNS}>
+              {readyToInvoice.map((order) => {
+                const billable = billableByOrder.get(order.id) ?? null;
+
+                return (
+                  <tr key={order.id}>
+                    <Cell>
+                      <span className="font-mono text-xs font-medium text-slate-900">
+                        {order.orderNumber}
                       </span>
-                    </p>
-                  </div>
-                  <IssueInvoiceButton
-                    salesOrderId={order.id}
-                    orderNumber={order.orderNumber}
-                  />
-                </li>
-              ))}
-            </ul>
+                    </Cell>
+
+                    <Cell>
+                      <p className="text-sm text-slate-800">{order.customerName}</p>
+                    </Cell>
+
+                    <Cell>
+                      <span className="whitespace-nowrap text-xs text-slate-700">
+                        {formatDate(order.orderDate)}
+                      </span>
+                    </Cell>
+
+                    <Cell align="right">
+                      <Money value={order.grandTotal} />
+                    </Cell>
+
+                    <Cell>
+                      <StatusBadge status={order.status} />
+                    </Cell>
+
+                    <Cell>
+                      {/* The invoice bills a DISPATCH, so this column is the
+                          precondition: what it names is what would be billed. */}
+                      {billable ? (
+                        <>
+                          <p className="font-mono text-[11px] text-slate-700">{billable.number}</p>
+                          <p className="mt-0.5 text-[11px] text-slate-500">{billable.status}</p>
+                        </>
+                      ) : (
+                        <span
+                          className="text-[11px] text-slate-500"
+                          title="An invoice bills what shipped, not what is reserved"
+                        >
+                          Not dispatched yet
+                        </span>
+                      )}
+                    </Cell>
+
+                    <Cell>
+                      <IssueInvoiceButton
+                        dispatchId={billable?.id ?? null}
+                        orderNumber={order.orderNumber}
+                      />
+                    </Cell>
+                  </tr>
+                );
+              })}
+            </Table>
           )}
         </Panel>
       </div>
@@ -169,6 +238,13 @@ function InvoiceRow({ invoice }: { invoice: SalesInvoiceListItem }) {
 
       <Cell align="right">
         <Money value={invoice.grandTotal} bold />
+      </Cell>
+
+      <Cell align="right">
+        {/* Receipts only. What a credit note wrote off is shown beside the
+            payment status instead — money received and money forgiven settle
+            the same balance but are not the same fact. */}
+        <Money value={invoice.amountPaid} bold={invoice.amountPaid !== '0.00'} />
       </Cell>
 
       <Cell>

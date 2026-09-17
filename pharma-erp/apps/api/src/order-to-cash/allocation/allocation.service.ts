@@ -9,9 +9,9 @@ import type {
   AllocationStatus,
   ScheduleCategory,
 } from '@pharma-erp/types';
-import { requiresAllocationRecheck } from '@pharma-erp/types';
 
 import { PrismaService } from '../../prisma/prisma.service';
+import type { UpdateAllocationDto } from './dto/allocation.dto';
 import { TenantContextService } from '../../tenant/tenant-context.service';
 
 /**
@@ -114,7 +114,6 @@ export class AllocationService {
       let remaining = outstanding;
 
       const schedule = toScheduleCategory(line.item.scheduleClassification);
-      const needsRecheck = requiresAllocationRecheck(schedule);
 
       for (const lot of lots) {
         if (remaining.lessThanOrEqualTo(0)) break;
@@ -128,7 +127,9 @@ export class AllocationService {
           expiryDate: toIsoDate(lot.expiryDate),
           quantityAvailable: lot.available.toFixed(3),
           quantityToAllocate: take.toFixed(3),
-          requiresComplianceRecheck: needsRecheck,
+          // The scheduled-drug re-check was removed from the flow; nothing is
+          // held back at allocation any more.
+          requiresComplianceRecheck: false,
         });
 
         remaining = remaining.sub(take);
@@ -204,7 +205,6 @@ export class AllocationService {
               batchId: pick.batchId,
               quantityAllocated: quantity,
               expiryDateAtAllocation: new Date(pick.expiryDate),
-              complianceRecheckRequired: pick.requiresComplianceRecheck,
               allocatedById: userId,
             },
           });
@@ -248,30 +248,143 @@ export class AllocationService {
   }
 
   /**
-   * Records the second compliance look a scheduled drug needs before stock moves.
+   * Adjusts a live allocation's quantity.
    *
-   * Clearing the flag is the ONLY way it comes down — nothing else in the flow
-   * sets it false, so despatch cannot proceed on an unchecked Schedule X line
-   * because somebody edited around it.
+   * THE BATCH IS NOT CHANGEABLE. Which batch is reserved is FEFO's decision;
+   * editing it by hand would make the rule advisory. Reserving a different
+   * batch is a release and a re-allocation, which leaves the release on record.
+   *
+   * The quantity is bounded on three sides, all checked here against live
+   * figures rather than trusted from the caller:
+   *
+   *   never below what has already been dispatched from this allocation
+   *   never above what the order line still needs
+   *   never above what the batch actually has free
+   *
+   * ALLOCATED only. Once any part has shipped, the row records a movement.
    */
-  async recordComplianceCheck(id: string, notes?: string): Promise<AllocationRow> {
-    const userId = this.tenantContext.getUserId();
+  async update(id: string, dto: UpdateAllocationDto): Promise<AllocationRow> {
+    const allocation = await this.prisma.scoped.batchAllocation.findFirst({
+      where: { id },
+      include: { salesOrderItem: true },
+    });
 
-    const allocation = await this.prisma.scoped.batchAllocation.findFirst({ where: { id } });
     if (!allocation) throw new NotFoundException('Allocation not found.');
 
-    if (!allocation.complianceRecheckRequired) {
-      throw new BadRequestException('This allocation does not need a compliance re-check.');
+    if (allocation.status !== 'ALLOCATED') {
+      throw new BadRequestException(
+        `Only a live allocation can be adjusted — this one is ${allocation.status.toLowerCase().replace(/_/g, ' ')}.`,
+      );
     }
 
-    await this.prisma.scoped.batchAllocation.update({
-      where: { id },
-      data: {
-        complianceRecheckRequired: false,
-        complianceCheckedAt: new Date(),
-        complianceCheckedById: userId,
-        complianceNotes: notes?.trim() || null,
-      },
+    if (dto.quantityAllocated === undefined) {
+      if (dto.notes !== undefined) {
+        await this.prisma.scoped.batchAllocation.update({
+          where: { id },
+          data: { complianceNotes: dto.notes.trim() || null },
+        });
+      }
+
+      return this.getRow(id);
+    }
+
+    const next = new Prisma.Decimal(dto.quantityAllocated);
+    const current = allocation.quantityAllocated;
+    const delta = next.sub(current);
+
+    if (next.lessThanOrEqualTo(0)) {
+      throw new BadRequestException('Release the allocation instead of setting it to zero.');
+    }
+
+    if (next.lessThan(allocation.quantityDispatched)) {
+      throw new BadRequestException(
+        `${allocation.quantityDispatched.toFixed(3)} has already been dispatched from this allocation, so it cannot be reduced below that.`,
+      );
+    }
+
+    const line = allocation.salesOrderItem;
+    const otherLinesHold = line.quantityAllocated.sub(current);
+
+    if (otherLinesHold.add(next).greaterThan(line.quantityOrdered)) {
+      throw new BadRequestException(
+        `That would reserve more than the ${line.quantityOrdered.toFixed(3)} ordered on this line.`,
+      );
+    }
+
+    await this.prisma.transaction(async (tx) => {
+      if (delta.greaterThan(0)) {
+        // Increasing has to fit in what the batch still has free — the same
+        // "on hand less already reserved" the planner uses, read inside this
+        // transaction so two adjustments cannot both claim the last of it.
+        const lot = await tx.finishedGoodsLot.findFirst({ where: { batchId: allocation.batchId } });
+
+        if (!lot) {
+          throw new BadRequestException('That batch no longer has a finished-goods lot.');
+        }
+
+        const held = await tx.batchAllocation.aggregate({
+          where: {
+            batchId: allocation.batchId,
+            status: { in: ['ALLOCATED', 'PARTIALLY_DISPATCHED'] },
+            id: { not: id },
+          },
+          _sum: { quantityAllocated: true, quantityDispatched: true },
+        });
+
+        const reservedElsewhere = (held._sum.quantityAllocated ?? new Prisma.Decimal(0)).sub(
+          held._sum.quantityDispatched ?? new Prisma.Decimal(0),
+        );
+        const free = lot.quantityAvailable.sub(reservedElsewhere);
+
+        if (next.greaterThan(free)) {
+          throw new BadRequestException(
+            `Only ${free.toFixed(3)} of that batch is free — it cannot be raised to ${next.toFixed(3)}.`,
+          );
+        }
+      }
+
+      await tx.batchAllocation.update({
+        where: { id },
+        data: {
+          quantityAllocated: next,
+          ...(dto.notes === undefined ? {} : { complianceNotes: dto.notes.trim() || null }),
+        },
+      });
+
+      await tx.salesOrderItem.update({
+        where: { id: allocation.salesOrderItemId },
+        data: { quantityAllocated: { increment: delta } },
+      });
+
+      const updatedLine = await tx.salesOrderItem.findUniqueOrThrow({
+        where: { id: allocation.salesOrderItemId },
+      });
+
+      await tx.salesOrderItem.update({
+        where: { id: updatedLine.id },
+        data: {
+          status: updatedLine.quantityAllocated.greaterThanOrEqualTo(updatedLine.quantityOrdered)
+            ? 'ALLOCATED'
+            : updatedLine.quantityAllocated.greaterThan(0)
+              ? 'PARTIALLY_ALLOCATED'
+              : 'PENDING',
+        },
+      });
+
+      // The order header follows its lines, as it does on commit and release.
+      const orderLines = await tx.salesOrderItem.findMany({
+        where: { salesOrderId: allocation.salesOrderId },
+      });
+
+      const allFull = orderLines.every((orderLine) =>
+        orderLine.quantityAllocated.greaterThanOrEqualTo(orderLine.quantityOrdered),
+      );
+      const anyHeld = orderLines.some((orderLine) => orderLine.quantityAllocated.greaterThan(0));
+
+      await tx.salesOrder.update({
+        where: { id: allocation.salesOrderId },
+        data: { status: allFull ? 'ALLOCATED' : anyHeld ? 'PARTIALLY_ALLOCATED' : 'APPROVED' },
+      });
     });
 
     return this.getRow(id);
@@ -313,6 +426,25 @@ export class AllocationService {
               : 'PENDING',
         },
       });
+
+      // The ORDER header has to follow the lines back down, which `commit`
+      // already does on the way up. Without this an order whose only
+      // allocation was released stayed ALLOCATED with nothing reserved — it
+      // still offered itself for dispatch and invoicing, and neither could
+      // succeed because there was no stock held for it.
+      const orderLines = await tx.salesOrderItem.findMany({
+        where: { salesOrderId: allocation.salesOrderId },
+      });
+
+      const allFull = orderLines.every((orderLine) =>
+        orderLine.quantityAllocated.greaterThanOrEqualTo(orderLine.quantityOrdered),
+      );
+      const anyHeld = orderLines.some((orderLine) => orderLine.quantityAllocated.greaterThan(0));
+
+      await tx.salesOrder.update({
+        where: { id: allocation.salesOrderId },
+        data: { status: allFull ? 'ALLOCATED' : anyHeld ? 'PARTIALLY_ALLOCATED' : 'APPROVED' },
+      });
     });
 
     return this.getRow(id);
@@ -349,6 +481,24 @@ export class AllocationService {
     if (!row) throw new NotFoundException('Allocation not found.');
 
     return toAllocationRow(row);
+  }
+
+  /**
+   * How much of an item can actually be sold right now.
+   *
+   * The SAME rule allocation itself uses — released, in date, and net of what
+   * other orders already hold — because it is the same question asked earlier.
+   * Order entry calls this to refuse an order it could never fill, and if the
+   * two ever disagreed the order would be accepted and then fail to allocate,
+   * which is the state this exists to prevent.
+   *
+   * Merely manufactured stock does NOT count. A batch that has not passed the
+   * quality gate is not sellable, whatever the shelf says.
+   */
+  async availableForItem(itemId: string): Promise<Prisma.Decimal> {
+    const lots = await this.eligibleLots(itemId);
+
+    return lots.reduce((sum, lot) => sum.add(lot.available), new Prisma.Decimal(0));
   }
 
   /**
