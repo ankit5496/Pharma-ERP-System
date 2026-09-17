@@ -32,10 +32,28 @@ interface FieldShell {
   label: string;
   required?: boolean;
   hint?: string;
+  /**
+   * The refusal about THIS field, shown under it and used to redden the
+   * control. Replaces the hint while it is present: the hint explains what to
+   * type and the error says what is wrong with what was typed, and showing
+   * both makes the person read two lines to find the one that matters.
+   */
+  error?: string;
   /** Span both columns of the grid — for addresses and long names. */
   wide?: boolean;
   /** Smaller control, for the line-item rows where a full-height field is too tall. */
   compact?: boolean;
+}
+
+/**
+ * The control's own classes plus the invalid state.
+ *
+ * A red ring AND a message, never colour alone: about one man in twelve cannot
+ * reliably distinguish the red from the grey, and a field that is only
+ * differently-coloured is a field they cannot find.
+ */
+function fieldClass(base: string, error?: string): string {
+  return error ? `${base} border-red-400 focus:border-red-500 focus:ring-red-500` : base;
 }
 
 function Shell({
@@ -43,6 +61,7 @@ function Shell({
   label,
   required,
   hint,
+  error,
   wide,
   compact,
   children,
@@ -57,7 +76,15 @@ function Shell({
         {required && <RequiredMark />}
       </label>
       {children}
-      {hint && <p className="field-hint">{hint}</p>}
+      {error ? (
+        // `id` matches the control's aria-describedby, and role="alert" is what
+        // makes a screen reader announce it when it appears after a save.
+        <p id={`${name}-error`} role="alert" className="mt-1 text-xs text-red-700">
+          {error}
+        </p>
+      ) : (
+        hint && <p className="field-hint">{hint}</p>
+      )}
     </div>
   );
 }
@@ -81,10 +108,15 @@ export function TextField({
    * copyable.
    */
   readOnly?: boolean;
-  type?: 'text' | 'number' | 'date';
+  /**
+   * `email` and `tel` are here for the keyboard and the browser's own
+   * autofill, not for validation: the form carries `noValidate`, so the
+   * server's answer is the only one that counts.
+   */
+  type?: 'text' | 'number' | 'date' | 'email' | 'tel';
   placeholder?: string;
   pattern?: string;
-  inputMode?: 'text' | 'numeric' | 'decimal';
+  inputMode?: 'text' | 'numeric' | 'decimal' | 'tel' | 'email';
   maxLength?: number;
   min?: string;
   step?: string;
@@ -111,27 +143,49 @@ export function TextField({
         step={step}
         defaultValue={defaultValue}
         readOnly={readOnly}
+        aria-invalid={shell.error ? true : undefined}
+        aria-describedby={shell.error ? `${shell.name}-error` : undefined}
         // Off everywhere: a browser offering someone's home address for
         // "Issuing authority" is worse than no help at all.
         autoComplete="off"
-        className={`${shell.compact ? 'field-sm mt-1 w-full' : 'field mt-1.5'} ${
-          readOnly ? 'cursor-not-allowed bg-slate-100 text-slate-500' : ''
-        }`}
+        className={`${fieldClass(
+          shell.compact ? 'field-sm mt-1 w-full' : 'field mt-1.5',
+          shell.error,
+        )} ${readOnly ? 'cursor-not-allowed bg-slate-100 text-slate-500' : ''}`}
       />
     </Shell>
   );
 }
 
+/**
+ * A dropdown, uncontrolled by default and controlled when `value` is given.
+ *
+ * WHY THE CONTROLLED MODE EXISTS. React 19 resets an uncontrolled form once its
+ * action resolves. A text input picks its new `defaultValue` up from the
+ * re-render, so a rejected save re-renders what was typed. A `<select>` does
+ * NOT: React applies `defaultValue` by marking an option `defaultSelected` at
+ * mount, and does not re-apply it afterwards — so the reset returns the select
+ * to the option it had on FIRST mount, which is the placeholder.
+ *
+ * The visible symptom is a form that comes back after a failed save with every
+ * text field preserved and every dropdown blank, which is worse than losing
+ * both: it looks like the dropdowns were never filled in.
+ *
+ * Pass `value` + `onChange` from state to hold a dropdown across a refusal.
+ */
 export function SelectField({
   options,
   placeholder = 'Choose…',
   defaultValue,
+  value,
   onChange,
   ...shell
 }: FieldShell & {
   options: readonly { value: string; label: string }[];
   placeholder?: string;
   defaultValue?: string;
+  /** Controlled value. When given, `onChange` must be given too. */
+  value?: string;
   onChange?: (value: string) => void;
 }) {
   return (
@@ -140,19 +194,101 @@ export function SelectField({
         id={shell.name}
         name={shell.name}
         required={shell.required}
-        defaultValue={defaultValue ?? ''}
+        {...(value === undefined ? { defaultValue: defaultValue ?? '' } : { value })}
         onChange={onChange ? (event) => onChange(event.target.value) : undefined}
-        className={shell.compact ? 'field-sm mt-1 w-full' : 'field mt-1.5'}
+        aria-invalid={shell.error ? true : undefined}
+        aria-describedby={shell.error ? `${shell.name}-error` : undefined}
+        className={fieldClass(shell.compact ? 'field-sm mt-1 w-full' : 'field mt-1.5', shell.error)}
       >
-        <option value="" disabled>
-          {placeholder}
-        </option>
+        {/* NOT `disabled`, deliberately. A disabled option cannot hold the
+            selection, so a select whose value is "" fell through to the first
+            real option — the Item form opened already showing "Raw material"
+            and "kg", submitted them for someone who had chosen neither, and
+            the required-field check passed because the values were genuinely
+            there. QA reported it as "the dropdowns select themselves on save".
+
+            Selectable-and-empty is what makes "nothing chosen" a real state.
+            `required` on the select is what refuses it, and the browser then
+            says so before the request is ever made. */}
+        <option value="">{placeholder}</option>
         {options.map((option) => (
           <option key={option.value} value={option.value}>
             {option.label}
           </option>
         ))}
       </select>
+    </Shell>
+  );
+}
+
+/**
+ * A phone number: the country code and the national number as ONE control.
+ *
+ * Two separate form fields were the first attempt and read as two unrelated
+ * questions — "Country code" sitting above "Contact number" looks like a field
+ * somebody forgot to fill in. They are one value, so they share one label, one
+ * border and one focus ring; the seam between them is a divider, not a gap.
+ *
+ * A native `<select>` rather than a custom dropdown. It gives keyboard
+ * behaviour, type-ahead and screen-reader support for nothing, and the only
+ * thing it costs is that the flag has to be an emoji rather than an SVG.
+ *
+ * The two inputs submit separately — `<name>Dial` and `<name>National` — and
+ * the server action joins them into E.164. Joining on the server rather than in
+ * a hidden input means a request made without this form still has to supply a
+ * country code.
+ */
+export function PhoneField({
+  dialOptions,
+  dialValue,
+  onDialChange,
+  defaultNational,
+  placeholder,
+  ...shell
+}: FieldShell & {
+  /** `label` is what the control shows; `title` is the full country on hover. */
+  dialOptions: readonly { value: string; label: string; title?: string }[];
+  dialValue: string;
+  onDialChange: (value: string) => void;
+  defaultNational?: string;
+  placeholder?: string;
+}) {
+  return (
+    <Shell {...shell}>
+      {/* focus-within puts the ring on the group, so tabbing between the two
+          halves does not make the control look like it is jumping. */}
+      <div className="mt-1.5 flex rounded-md border border-slate-300 bg-white shadow-sm transition focus-within:border-slate-900 focus-within:ring-2 focus-within:ring-slate-900/15">
+        <select
+          id={`${shell.name}Dial`}
+          name={`${shell.name}Dial`}
+          value={dialValue}
+          onChange={(event) => onDialChange(event.target.value)}
+          aria-label="Country code"
+          // Sized to "IN +91" rather than a country name, so the number beside
+          // it keeps the width. Its own right border is the divider; no outer
+          // ring, because the group already has one.
+          className="w-[6rem] shrink-0 rounded-l-md border-r border-slate-300 bg-slate-50 px-2 py-2 text-sm tabular-nums text-slate-900 focus:outline-none"
+        >
+          {dialOptions.map((option) => (
+            // `title` gives the full country name on hover, which is the only
+            // place a native select has room for it.
+            <option key={option.value} value={option.value} title={option.title}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <input
+          id={shell.name}
+          name={`${shell.name}National`}
+          type="tel"
+          inputMode="tel"
+          maxLength={20}
+          placeholder={placeholder}
+          defaultValue={defaultNational}
+          autoComplete="off"
+          className="w-full min-w-0 rounded-r-md px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none"
+        />
+      </div>
     </Shell>
   );
 }
@@ -312,7 +448,39 @@ export function SubmitActions({
 }
 
 /** What the API said when it refused. Shown above the fields, not below. */
-export function FormError({ message }: { message: string }) {
+/**
+ * The refusal, above the form.
+ *
+ * SUPPRESSED when every failed field is marked on its own control. Saying
+ * "Item code, Category and GST rate are required" at the top AND under each of
+ * the three fields is the same sentence four times, and it pushes the form
+ * down so the marked fields are further from the eye that just read it.
+ *
+ * Still shown when the refusal has no control to point at — a duplicate that
+ * names a field the form does not render, a role check, a rule about the state
+ * of a document — because that is exactly when a person has nowhere else to
+ * look.
+ */
+export function FormError({
+  message,
+  fieldErrors,
+}: {
+  message: string;
+  /** What is already marked inline; the banner hides when this covers it. */
+  fieldErrors?: Record<string, string>;
+}) {
+  // Anything marked on a control is already said where it can be acted on, so
+  // the banner has nothing left to add. Hidden on the presence of field errors
+  // rather than by comparing the sentences: the banner's wording is a combined
+  // list — "Party code, Party name and Status are required" — and no substring
+  // of it matches the per-field "Party code is required.", so matching was
+  // never going to suppress the case it was written for.
+  //
+  // A refusal with no field attached still shows: a role check, an expired
+  // session, a rule about the state of a document. Those have no control to
+  // point at, which is exactly when a banner is the only place to put them.
+  if (fieldErrors && Object.keys(fieldErrors).length > 0) return null;
+
   return (
     <div
       role="alert"
@@ -332,8 +500,12 @@ export function FormError({ message }: { message: string }) {
  * are reused for the wrong data.
  */
 export function useLineRows(initial = 1) {
-  const nextId = useRef(initial);
-  const [ids, setIds] = useState<number[]>(() => Array.from({ length: initial }, (_, i) => i));
+  // At least one row always: `initial` of 0 would render a section with no
+  // line and no way to add one back except the Add button, which reads as a
+  // broken form on the edit path when a formulation has no packing material.
+  const count = Math.max(initial, 1);
+  const nextId = useRef(count);
+  const [ids, setIds] = useState<number[]>(() => Array.from({ length: count }, (_, i) => i));
 
   return {
     ids,

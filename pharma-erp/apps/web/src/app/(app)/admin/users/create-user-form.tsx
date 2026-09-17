@@ -106,9 +106,13 @@ export function CreateUserForm() {
             defaultValue={state.values?.role ?? ''}
             className="field mt-1.5"
           >
-            <option value="" disabled>
-              Choose a role…
-            </option>
+            {/* NOT `disabled`: a disabled option cannot hold the selection, so
+                the select fell through to the first real role and quietly
+                submitted it for someone who had chosen none. On this form that
+                would grant a role nobody picked. `required` is what refuses an
+                empty choice. Same fix as SelectField in the master-data
+                form kit. */}
+            <option value="">Choose a role…</option>
             {USER_ROLES.map((role) => (
               <option key={role} value={role}>
                 {USER_ROLE_LABELS[role]}

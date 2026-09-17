@@ -271,6 +271,12 @@ export interface PartySummary {
   creditPeriodDays: number | null;
   /** Computed by the API so every screen agrees on today. */
   licenceExpired: boolean;
+  /**
+   * How many documents are on file. A count, not the documents themselves —
+   * the register renders one line per party and the bytes live in the database,
+   * so listing them here would pull every customer's paperwork to draw a link.
+   */
+  documentCount: number;
 }
 
 /**
@@ -589,6 +595,60 @@ export interface CreateGoodsReceiptRequest {
 // ---------------------------------------------------------------------------
 // 4. Stock lots and incoming QC
 // ---------------------------------------------------------------------------
+
+/**
+ * Whether a lot may still be used, as the inventory view reports it.
+ *
+ * DERIVED, never stored — the same reasoning as PAYMENT_STATUSES' OVERDUE. A
+ * lot that expires tonight is usable now and expired tomorrow, and nothing
+ * happens in between: a stored flag would be wrong from midnight until
+ * something rewrote it, and "something rewrote it" is a job nobody runs at
+ * midnight. The API computes it per request from the expiry date.
+ */
+export const INVENTORY_STATUSES = ['USABLE', 'EXPIRED'] as const;
+export type InventoryStatus = (typeof INVENTORY_STATUSES)[number];
+
+export const INVENTORY_STATUS_LABELS: Record<InventoryStatus, string> = {
+  USABLE: 'Usable',
+  EXPIRED: 'Expired',
+};
+
+/**
+ * One lot of an item, as the Item register's Inventory view shows it.
+ *
+ * ONLY LOTS INCOMING QC ACCEPTED. A goods receipt creates a lot in QUARANTINE
+ * and QC is what releases it, so quarantined and rejected stock is deliberately
+ * absent — this view answers "what do we hold", and material nobody has passed
+ * is not held in any sense that matters.
+ */
+export interface InventoryLot {
+  id: string;
+  lotNumber: string;
+  vendorBatchNumber: string | null;
+  /** ISO date. Null when the material does not expire — cartons, leaflets. */
+  expiryDate: string | null;
+  quantityReceived: string;
+  quantityAvailable: string;
+  storageLocation: string | null;
+  /** Derived from `expiryDate` against today; see INVENTORY_STATUSES. */
+  status: InventoryStatus;
+  /** Whole days until expiry. Negative once past it, null when there is none. */
+  daysToExpiry: number | null;
+  /** Where it came from, so a lot can be traced without leaving the dialog. */
+  goodsReceiptNumber: string | null;
+  receivedOn: string | null;
+  vendorName: string | null;
+}
+
+export interface ItemInventory {
+  item: ItemSummary;
+  /** Sum of `quantityAvailable` across lots that are not expired. */
+  usableQuantity: string;
+  /** Sum across lots that are. */
+  expiredQuantity: string;
+  /** Soonest expiry first, undated lots last — the order FEFO consumes them. */
+  lots: InventoryLot[];
+}
 
 export interface StockLotSummary {
   id: string;

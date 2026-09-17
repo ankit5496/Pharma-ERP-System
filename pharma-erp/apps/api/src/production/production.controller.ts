@@ -19,8 +19,9 @@ import type {
   ItemSummary,
   MaterialIssuePlan,
   MaterialIssueView,
-  MaterialLotSummary,
+  ProductionStockLot,
   ProductionOrderSummary,
+  WorkOrderFeasibility,
 } from '@pharma-erp/types';
 
 import { Roles } from '../auth/auth.decorators';
@@ -31,9 +32,11 @@ import {
   CreateBomDto,
   CreateItemDto,
   CreateProductionOrderDto,
+  IssueMaterialDto,
   RecordBatchDto,
   RecordPackingDto,
   ReleaseDecisionDto,
+  UpdateBomDto,
   UpdateItemDto,
 } from './dto/production.dto';
 import { MaterialIssueService } from './material-issue.service';
@@ -112,10 +115,10 @@ export class ProductionController {
     return this.production.deleteItem(id);
   }
 
-  @Get('material-lots')
+  @Get('stock-lots')
   @SkipAudit('Read-only stock listing.')
-  async listMaterialLots(): Promise<MaterialLotSummary[]> {
-    return this.production.listMaterialLots();
+  async listStockLots(): Promise<ProductionStockLot[]> {
+    return this.production.listStockLots();
   }
 
   // -------------------------------------------------------------------------
@@ -139,10 +142,35 @@ export class ProductionController {
   // 2. Production orders
   // -------------------------------------------------------------------------
 
+  @Patch('boms/:id')
+  @Roles('ADMIN', 'PRODUCTION_OFFICER', 'QUALITY_OFFICER')
+  async updateBom(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateBomDto,
+  ): Promise<BomView> {
+    return this.production.updateBom(id, dto);
+  }
+
   @Get('orders')
   @SkipAudit('Read-only listing.')
   async listOrders(): Promise<ProductionOrderSummary[]> {
     return this.production.listProductionOrders();
+  }
+
+  /**
+   * What a batch of this size would consume, and whether it can be raised —
+   * US-PROD-01.
+   *
+   * A GET, because it writes nothing: the form asks it on every change to the
+   * quantity, and asking twice must cost nothing and change nothing.
+   */
+  @Get('orders/feasibility')
+  @SkipAudit('Computes nothing persistent.')
+  async feasibility(
+    @Query('productId', new ParseUUIDPipe()) productId: string,
+    @Query('batchQuantity') batchQuantity?: string,
+  ): Promise<WorkOrderFeasibility> {
+    return this.production.workOrderFeasibility(productId, batchQuantity ?? '0');
   }
 
   @Post('orders')
@@ -157,6 +185,17 @@ export class ProductionController {
   // -------------------------------------------------------------------------
 
   /** What issuing would consume. Writes nothing. */
+  /**
+   * Every dispensing record. Declared BEFORE `orders/:id/issues` so the literal
+   * segment is matched first — `issues` would otherwise be read as an order id
+   * and fail the UUID pipe.
+   */
+  @Get('issues')
+  @SkipAudit('Read-only listing.')
+  async listAllIssues(): Promise<MaterialIssueView[]> {
+    return this.materialIssue.list();
+  }
+
   @Get('orders/:id/issue-plan')
   @SkipAudit('A preview; it changes no state.')
   async issuePlan(@Param('id', new ParseUUIDPipe()) id: string): Promise<MaterialIssuePlan> {
@@ -172,8 +211,11 @@ export class ProductionController {
   @Post('orders/:id/issue')
   @HttpCode(HttpStatus.CREATED)
   @Roles('ADMIN', 'STORE_OFFICER', 'PRODUCTION_OFFICER')
-  async issue(@Param('id', new ParseUUIDPipe()) id: string): Promise<MaterialIssueView> {
-    return this.materialIssue.issue(id);
+  async issue(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: IssueMaterialDto,
+  ): Promise<MaterialIssueView> {
+    return this.materialIssue.issue(id, dto.overrides ?? []);
   }
 
   // -------------------------------------------------------------------------

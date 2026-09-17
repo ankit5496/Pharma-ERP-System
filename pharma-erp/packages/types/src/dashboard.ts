@@ -1,3 +1,5 @@
+import type { LicenceSummary } from './licences';
+import type { PackagingShortageAlert } from './packaging';
 import type { UserRole } from './roles';
 
 /**
@@ -68,6 +70,37 @@ export interface TenantDashboard {
   recentActivity: ActivityItem[];
   /** Present only for roles allowed to see it (ADMIN, MANAGEMENT). */
   companyStats?: CompanyStats;
+  /**
+   * Licences at or past their renewal window — US-MD-04.
+   *
+   * Present only for ADMIN and QUALITY_OFFICER. ABSENT, not empty, for every
+   * other role: an empty array would say "you may see this, there is nothing
+   * to see", and the criterion restricts the records themselves. Absent means
+   * the question was never answered for you.
+   */
+  licenceAlert?: LicenceAlert;
+  /**
+   * Planned batches that will not pack cleanly — US-MD-06.
+   *
+   * Present only for roles whose dashboard carries the production or purchase
+   * sections, which is the criterion's "Production/Purchase dashboard".
+   * ABSENT, not empty, for everyone else — an empty alert would claim the
+   * question was asked and answered for a role it was never asked for.
+   */
+  packagingShortages?: PackagingShortageAlert;
+}
+
+/**
+ * The renewal warning.
+ *
+ * `leadDays` is echoed so the page can say WHY a licence is listed — "within
+ * 60 days" — rather than showing a date and leaving the reader to work out
+ * the threshold. Licences already lapsed are included and sort first; see
+ * LicencesService.expiring for why.
+ */
+export interface LicenceAlert {
+  leadDays: number;
+  licences: LicenceSummary[];
 }
 
 export interface DashboardSection {

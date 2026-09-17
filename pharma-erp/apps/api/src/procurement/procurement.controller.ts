@@ -17,6 +17,7 @@ import type {
   BomSummary,
   ProductionPlanSummary,
   ReorderCheckResult,
+  ItemInventory,
   ItemStockPosition,
   ItemSummary,
   LowStockItem,
@@ -130,6 +131,20 @@ export class ProcurementController {
   @SkipAudit('Read-only.')
   async stockPositions(): Promise<ItemStockPosition[]> {
     return this.stock.stockPositions();
+  }
+
+  /**
+   * What one item is actually holding, lot by lot — the Item register's
+   * Inventory view.
+   *
+   * Under `items/` rather than `stock/` because it is addressed by the item,
+   * and read-only: it computes the expired/usable standing per request and
+   * stores nothing.
+   */
+  @Get('items/:id/inventory')
+  @SkipAudit('Read-only stock listing.')
+  async itemInventory(@Param('id', ParseUUIDPipe) id: string): Promise<ItemInventory> {
+    return this.stock.itemInventory(id);
   }
 
   @Get('stock/ledger')

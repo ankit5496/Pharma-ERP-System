@@ -1,14 +1,32 @@
 'use client';
 
+import { useActionState, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import {
+  PACKAGING_COMPONENT_REQUIREMENT_DESCRIPTIONS,
+  PACKAGING_COMPONENT_REQUIREMENT_LABELS,
+  PACKAGING_LEVEL_DESCRIPTIONS,
+  PACKAGING_LEVEL_LABELS,
+  PACKAGING_QUANTITY_BASIS_LABELS,
+  type ItemSummary,
+  type PackagingComponentRequirement,
+  type PackagingLevel,
+  type PackagingQuantityBasis,
+  type PackagingRequirementView,
+} from '@pharma-erp/types';
+
+import { savePackagingAction, type ActionResult } from './actions';
 import {
   AddLineButton,
-  FormActions,
+  CheckboxField,
+  FormError,
   FormGrid,
   FormSection,
   LineList,
   LineRow,
-  NotWiredNotice,
   SelectField,
+  SubmitActions,
+  TextAreaField,
   TextField,
   useLineRows,
 } from './form-kit';
@@ -20,55 +38,193 @@ import {
  * carton and in a 500-count jar needs a completely different component list,
  * and folding them into one record makes every shortage check ambiguous.
  *
- * The mandatory flag is the field that does real work. Short of a carton, the
- * line stops; short of an outer shipper, it can usually run and be shipped
- * later. Recording which is which is what lets the system block one and only
- * warn on the other.
+ * Two fields do the real work:
+ *
+ *   UNITS PER PACK is what makes a per-pack quantity scalable. A batch of
+ *   100,000 tablets needs 1,000 cartons only because something records that a
+ *   carton holds 100. Without it the availability check cannot run at all.
+ *
+ *   IF SHORT AT PACKING decides whether a shortage stops the line. Short of a
+ *   carton, packing halts; short of an outer shipper, it can usually run and be
+ *   shipped later. Recording which is which is what lets the system block one
+ *   and merely warn on the other.
+ *
+ * Components are PICKED and restricted to packing materials — a pack is made of
+ * packing materials, and the formulation is where raw materials belong.
  */
 
-const PACKAGING_LEVEL_OPTIONS = [
-  { value: 'PRIMARY', label: 'Primary — touches the product' },
-  { value: 'SECONDARY', label: 'Secondary — carton, insert' },
-  { value: 'TERTIARY', label: 'Tertiary — shipper, pallet' },
-] as const;
+const LEVEL_OPTIONS = (Object.keys(PACKAGING_LEVEL_LABELS) as PackagingLevel[]).map((key) => ({
+  value: key,
+  label: `${PACKAGING_LEVEL_LABELS[key]} — ${PACKAGING_LEVEL_DESCRIPTIONS[key]}`,
+}));
 
-const QUANTITY_BASIS_OPTIONS = [
-  { value: 'PER_PACK', label: 'per pack' },
-  { value: 'PER_BATCH', label: 'per batch' },
-] as const;
+const BASIS_OPTIONS = (
+  Object.keys(PACKAGING_QUANTITY_BASIS_LABELS) as PackagingQuantityBasis[]
+).map((key) => ({ value: key, label: PACKAGING_QUANTITY_BASIS_LABELS[key] }));
 
-const REQUIREMENT_OPTIONS = [
-  { value: 'MANDATORY', label: 'Mandatory — block if short' },
-  { value: 'OPTIONAL', label: 'Optional — warn if short' },
-] as const;
+const REQUIREMENT_OPTIONS = (
+  Object.keys(PACKAGING_COMPONENT_REQUIREMENT_LABELS) as PackagingComponentRequirement[]
+).map((key) => ({
+  value: key,
+  label: `${PACKAGING_COMPONENT_REQUIREMENT_LABELS[key]} — ${PACKAGING_COMPONENT_REQUIREMENT_DESCRIPTIONS[key]}`,
+}));
 
-export function PackagingRequirementMasterForm() {
-  const components = useLineRows(2);
+const INITIAL: ActionResult = { ok: false };
+
+export function PackagingRequirementMasterForm({
+  requirement,
+  items,
+  onSaved,
+}: {
+  requirement?: PackagingRequirementView;
+  items: readonly ItemSummary[];
+  onSaved?: () => void;
+}) {
+  const [state, formAction, isPending] = useActionState(
+    savePackagingAction.bind(null, requirement?.id ?? null),
+    INITIAL,
+  );
+  const router = useRouter();
+
+  const components = useLineRows(Math.max(requirement?.lines.length ?? 0, 2));
+
+  // Dropdowns are CONTROLLED. React 19 resets an uncontrolled form once its
+  // action resolves, and a <select> does not pick up a changed defaultValue on
+  // that reset the way an <input> does — so a rejected save would come back
+  // with every text field preserved and every dropdown blank. With four
+  // dropdowns per component line, this form is the worst place for that.
+  const [productId, setProductId] = useState(requirement?.product.id ?? '');
+  const [rows, setRows] = useState<Record<string, Record<string, string>>>(() =>
+    Object.fromEntries(
+      (requirement?.lines ?? []).map((line, index) => [
+        String(index),
+        {
+          itemId: line.item.id,
+          level: line.level,
+          quantityBasis: line.quantityBasis,
+          requirement: line.requirement,
+        },
+      ]),
+    ),
+  );
+
+  useEffect(() => {
+    if (!state.ok) return;
+
+    router.refresh();
+    onSaved?.();
+  }, [state.ok, router, onSaved]);
+
+  // Re-seed from what was submitted whenever a save comes back refused.
+  useEffect(() => {
+    const values = state.values;
+    if (!values) return;
+
+    setProductId(values.productId ?? '');
+
+    const next: Record<string, Record<string, string>> = {};
+    for (const [key, value] of Object.entries(values)) {
+      const match = /^component\.(\d+)\.(itemId|level|quantityBasis|requirement)$/.exec(key);
+      if (!match) continue;
+      const row = match[1]!;
+      next[row] = { ...(next[row] ?? {}), [match[2]!]: value };
+    }
+    setRows(next);
+  }, [state]);
+
+  const typed = (field: string, stored?: string | number | null) =>
+    state.values?.[field] ?? (stored === null || stored === undefined ? undefined : String(stored));
+
+  /** The refusal about one control, when the save named it. */
+  const errorFor = (field: string) => state.fieldErrors?.[field];
+
+  const cell = (row: number, field: string, fallback?: string) =>
+    rows[String(row)]?.[field] ?? fallback ?? '';
+
+  const products = items.filter((item) => item.type === 'FINISHED_GOOD');
+  const packingMaterials = items.filter((item) => item.type === 'PACKING_MATERIAL');
+
+  const productOptions = products.map((item) => ({
+    value: item.id,
+    label: `${item.code} — ${item.name}`,
+  }));
+
+  const componentOptions = packingMaterials.map((item) => ({
+    value: item.id,
+    label: `${item.code} — ${item.name} (${item.uom})`,
+  }));
+
+  const unitOfProduct = products.find((item) => item.id === productId)?.uom;
 
   return (
-    <form onSubmit={(event) => event.preventDefault()} className="flex flex-col gap-8">
-      <NotWiredNotice>
-        There is no packaging-requirement table yet, and nothing checks these quantities at packing.
-        This form is the specification for both.
-      </NotWiredNotice>
+    <form action={formAction} className="flex flex-col gap-8" noValidate>
+      {!state.ok && state.message && (
+        <FormError message={state.message} fieldErrors={state.fieldErrors} />
+      )}
+
+      {(products.length === 0 || packingMaterials.length === 0) && (
+        <p className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          {products.length === 0 && packingMaterials.length === 0
+            ? 'There are no finished goods and no packing materials in the item master yet. Add both under Item / Product before specifying a pack.'
+            : products.length === 0
+              ? 'There are no finished goods in the item master yet. A pack specification is for a product that gets packed.'
+              : 'There are no packing materials in the item master yet. Add the cartons, foil and labels under Item / Product first.'}
+        </p>
+      )}
 
       <FormSection title="Pack">
         <FormGrid>
-          <TextField
-            name="finishedProduct"
-            label="Finished product"
-            required
-            maxLength={32}
-            placeholder="FG-0142"
-            hint="Item code of the product being packed."
-          />
+          {/* On an edit the product is shown, not offered. A specification is
+              FOR a product, and the update endpoint does not accept a new one —
+              moving it would silently re-point every shortage check that ever
+              cited it. A disabled dropdown would imply it might be changeable. */}
+          {requirement ? (
+            <TextField
+              name="productLabel"
+              label="Finished product"
+              readOnly
+              defaultValue={`${requirement.product.code} — ${requirement.product.name}`}
+              hint="Fixed once created. Retire this specification and write one for the other product."
+            />
+          ) : (
+            <SelectField
+              name="productId"
+              error={errorFor('productId')}
+              label="Finished product"
+              required
+              options={productOptions}
+              value={productId}
+              onChange={setProductId}
+              placeholder="Choose a finished product…"
+              hint="Only finished goods appear here."
+            />
+          )}
           <TextField
             name="packVariant"
+            error={errorFor('packVariant')}
             label="Pack variant"
             required
             maxLength={128}
             placeholder="10 x 10 blister carton"
+            defaultValue={typed('packVariant', requirement?.packVariant)}
             hint="One record per variant — a strip and a bottle of the same product need separate component lists."
+          />
+          <TextField
+            name="unitsPerPack"
+            error={errorFor('unitsPerPack')}
+            label="Units per pack"
+            required
+            type="number"
+            min="0.001"
+            step="0.001"
+            defaultValue={typed('unitsPerPack', requirement?.unitsPerPack)}
+            hint={`How many${unitOfProduct ? ` ${unitOfProduct}` : ''} one pack holds — 100 for a 10x10 carton. This is what scales a per-pack quantity to a batch.`}
+          />
+          <CheckboxField
+            name="isActive"
+            label="Active"
+            defaultChecked={requirement ? requirement.isActive : true}
+            hint="A work order cannot be raised for a product with no active pack specification. Deactivate a superseded pack rather than deleting it."
           />
         </FormGrid>
       </FormSection>
@@ -78,62 +234,111 @@ export function PackagingRequirementMasterForm() {
         description="Caps, labels, cartons, inserts, shippers — everything the pack consumes, and whether the line may run without it."
       >
         <LineList>
-          {components.ids.map((id, index) => (
-            <LineRow
-              key={id}
-              index={index}
-              columns={4}
-              canRemove={components.ids.length > 1}
-              onRemove={() => components.remove(id)}
-            >
-              <TextField
-                name={`component.${id}.itemCode`}
-                label="Component"
-                compact
-                required
-                maxLength={32}
-                placeholder="PM-0007"
-              />
-              <SelectField
-                name={`component.${id}.level`}
-                label="Level"
-                compact
-                required
-                options={PACKAGING_LEVEL_OPTIONS}
-                placeholder="Level…"
-              />
-              <TextField
-                name={`component.${id}.quantity`}
-                label="Quantity"
-                compact
-                required
-                type="number"
-                min="0"
-                step="0.001"
-              />
-              <SelectField
-                name={`component.${id}.quantityBasis`}
-                label="Charged"
-                compact
-                required
-                options={QUANTITY_BASIS_OPTIONS}
-                placeholder="Basis…"
-              />
-              <SelectField
-                name={`component.${id}.requirement`}
-                label="If short at packing"
-                compact
-                required
-                options={REQUIREMENT_OPTIONS}
-                placeholder="Block or warn…"
-              />
-            </LineRow>
-          ))}
+          {components.ids.map((id, index) => {
+            const existing = requirement?.lines[index];
+
+            return (
+              <LineRow
+                key={id}
+                index={index}
+                columns={4}
+                canRemove={components.ids.length > 1}
+                onRemove={() => components.remove(id)}
+              >
+                <SelectField
+                  name={`component.${id}.itemId`}
+                  label="Component"
+                  compact
+                  required
+                  options={componentOptions}
+                  value={cell(id, 'itemId', existing?.item.id)}
+                  onChange={(value) =>
+                    setRows((current) => ({
+                      ...current,
+                      [String(id)]: { ...(current[String(id)] ?? {}), itemId: value },
+                    }))
+                  }
+                  placeholder="Choose a packing material…"
+                />
+                <SelectField
+                  name={`component.${id}.level`}
+                  label="Level"
+                  compact
+                  required
+                  options={LEVEL_OPTIONS}
+                  value={cell(id, 'level', existing?.level)}
+                  onChange={(value) =>
+                    setRows((current) => ({
+                      ...current,
+                      [String(id)]: { ...(current[String(id)] ?? {}), level: value },
+                    }))
+                  }
+                  placeholder="Level…"
+                />
+                <TextField
+                  name={`component.${id}.quantityPer`}
+                  label="Quantity"
+                  compact
+                  required
+                  type="number"
+                  min="0.001"
+                  step="0.001"
+                  defaultValue={typed(`component.${id}.quantityPer`, existing?.quantityPer)}
+                />
+                <SelectField
+                  name={`component.${id}.quantityBasis`}
+                  label="Charged"
+                  compact
+                  required
+                  options={BASIS_OPTIONS}
+                  value={cell(id, 'quantityBasis', existing?.quantityBasis)}
+                  onChange={(value) =>
+                    setRows((current) => ({
+                      ...current,
+                      [String(id)]: { ...(current[String(id)] ?? {}), quantityBasis: value },
+                    }))
+                  }
+                  placeholder="Basis…"
+                />
+                <SelectField
+                  name={`component.${id}.requirement`}
+                  label="If short at packing"
+                  compact
+                  required
+                  options={REQUIREMENT_OPTIONS}
+                  value={cell(id, 'requirement', existing?.requirement)}
+                  onChange={(value) =>
+                    setRows((current) => ({
+                      ...current,
+                      [String(id)]: { ...(current[String(id)] ?? {}), requirement: value },
+                    }))
+                  }
+                  placeholder="Block or warn…"
+                />
+              </LineRow>
+            );
+          })}
         </LineList>
         <AddLineButton onClick={components.add}>+ Add packaging component</AddLineButton>
       </FormSection>
 
-      <FormActions label="Save packaging requirement" />
+      <FormSection
+        title="Notes"
+        description="Anything the next person needs — artwork references, special handling at packing."
+      >
+        <TextAreaField
+          name="notes"
+          label="Notes"
+          rows={3}
+          defaultValue={typed('notes', requirement?.notes)}
+        />
+      </FormSection>
+
+      <SubmitActions
+        label={requirement ? 'Save pack specification' : 'Add pack specification'}
+        pending={isPending}
+        onCancel={onSaved}
+      />
     </form>
   );
 }

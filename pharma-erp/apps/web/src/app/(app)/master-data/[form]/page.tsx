@@ -2,8 +2,12 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import {
   findMasterDataForm,
+  LICENCE_VISIBLE_TO,
   type BomView,
   type ItemSummary,
+  type JobWorkAgreementSummary,
+  type LicenceRegister,
+  type PackagingRequirementView,
   type PartySummary,
 } from '@pharma-erp/types';
 
@@ -51,17 +55,41 @@ export default async function MasterDataFormPage({ params }: PageProps) {
 
   if (!form) notFound();
 
-  // Both live registers are fetched here, whichever one is open, because
+  // US-MD-04: licence records are for Admin and Quality/Compliance only. The
+  // check is here as well as on the API because this page FETCHES — an
+  // unauthorised role must not have the rows travel to their browser at all,
+  // which is a different thing from not rendering them.
+  const maySeeLicences = LICENCE_VISIBLE_TO.includes(
+    user.role as (typeof LICENCE_VISIBLE_TO)[number],
+  );
+
+  // Every live register is fetched here, whichever one is open, because
   // switching between them is client-side and must not touch the network.
-  // In parallel, so the two reads cost one round trip rather than two —
-  // against a cross-region database that is the difference worth having.
-  const [items, boms, parties] = await Promise.all([
+  // In parallel, so the reads cost one round trip rather than four — against
+  // a cross-region database that is the difference worth having.
+  const [items, boms, parties, licences, agreements, packaging] = await Promise.all([
     apiFetch<ItemSummary[]>('/api/v1/production/items', {
       authenticated: true,
       timeoutMs: 20_000,
     }),
     apiFetch<BomView[]>('/api/v1/production/boms', { authenticated: true, timeoutMs: 20_000 }),
     apiFetch<PartySummary[]>('/api/v1/parties', { authenticated: true, timeoutMs: 20_000 }),
+    maySeeLicences
+      ? apiFetch<LicenceRegister>('/api/v1/licences', { authenticated: true, timeoutMs: 20_000 })
+      : Promise.resolve(null),
+    // Not role-gated: US-MD-05 states no visibility rule, and a Production
+    // Officer needs the principal's brand and pack design to put the right
+    // carton on the line. Writes are narrower; that is the API's business.
+    apiFetch<JobWorkAgreementSummary[]>('/api/v1/job-work/agreements', {
+      authenticated: true,
+      timeoutMs: 20_000,
+    }),
+    // Also not role-gated: US-MD-06 states no visibility rule, and the packing
+    // line and the buyer both need to know what a pack consumes.
+    apiFetch<PackagingRequirementView[]>('/api/v1/packaging/requirements', {
+      authenticated: true,
+      timeoutMs: 20_000,
+    }),
   ]);
 
   return (
@@ -85,9 +113,13 @@ export default async function MasterDataFormPage({ params }: PageProps) {
           <MasterDataWorkspace
             key={form.key}
             initialKey={form.key}
+            role={user.role}
             items={items}
             boms={boms}
             parties={parties}
+            licences={licences}
+            agreements={agreements}
+            packaging={packaging}
           />
         </div>
       </main>

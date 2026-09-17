@@ -22,12 +22,17 @@ export type WorkflowKey = 'procure-to-pay' | 'production-quality' | 'order-to-ca
 /**
  * Whether a step has a real screen behind it.
  *
- * Mirrors `WidgetState` in ./dashboard and exists for the same reason: the
- * domain tables (Item, Party, Bom, Batch, purchase/production/sales) are not
- * built yet, and a step that renders an honest "not built yet" panel beats one
- * that shows an empty table. An empty table is a claim — "there are no open
+ * Mirrors `WidgetState` in ./dashboard and exists for the same reason: a step
+ * whose domain tables do not exist yet renders an honest "not built yet" panel
+ * rather than an empty table. An empty table is a claim — "there are no open
  * purchase orders" — and in a pharma system a wrong claim is worse than a
  * visible gap.
+ *
+ * All seven Order-to-Cash steps are 'ready': their screens are built and wired
+ * through @/components/order-to-cash. Their API endpoints are NOT built yet, so
+ * each panel renders its heading, its create form and its table chrome, then an
+ * ErrorState where the rows would be. That is deliberate — the failure is shown
+ * where the data would have been, not disguised as an empty register.
  */
 export type WorkflowStepState = 'ready' | 'planned';
 
@@ -153,18 +158,23 @@ export const WORKFLOWS: readonly Workflow[] = [
         purpose: 'The batch manufacturing record: every stage, signed as it happens.',
         state: 'ready',
       },
-      {
-        key: 'in-process-checks',
-        label: 'In-process checks',
-        purpose: 'Quality checks taken during manufacture, at defined control points.',
-        state: 'planned',
-      },
-      {
-        key: 'finished-goods-testing',
-        label: 'Finished-goods testing',
-        purpose: 'Final analytical testing against the product specification.',
-        state: 'planned',
-      },
+      // REMOVED, NOT BUILT: 'in-process-checks' and 'finished-goods-testing'
+      // sat here between the batch record and the release gate. They were
+      // withdrawn from the navigation on 2026-09-15 at the product owner's
+      // request, because a tab that only ever showed "not built yet" read as a
+      // broken screen rather than as a gap.
+      //
+      // The gap itself is still real, and withdrawing the tabs does not close
+      // it: a Quality Officer can release a batch with NO recorded test
+      // results. The release decision captures who, when and why, but nothing
+      // requires that in-process checks passed or that finished-goods testing
+      // happened. Building them needs tables that do not exist — a product
+      // specification master (what to test, and the acceptance limits), a
+      // results table per batch per control point — and then the release gate
+      // has to refuse a batch whose required tests have not passed.
+      //
+      // Restore them here when that work is scheduled; the placeholder
+      // mechanism they used is still in place for the other workflows.
       {
         key: 'batch-release',
         label: 'Batch release',
@@ -182,43 +192,43 @@ export const WORKFLOWS: readonly Workflow[] = [
         key: 'customers',
         label: 'Customers',
         purpose: 'Distributors and stockists, with their drug licence details.',
-        state: 'planned',
+        state: 'ready',
       },
       {
         key: 'sales-orders',
         label: 'Sales orders',
         purpose: 'Orders received from a distributor, priced and confirmed.',
-        state: 'planned',
+        state: 'ready',
       },
       {
         key: 'allocation',
         label: 'Allocation',
         purpose: 'Reserving released batches against an order, respecting expiry order.',
-        state: 'planned',
+        state: 'ready',
       },
       {
         key: 'dispatch',
         label: 'Dispatch',
         purpose: 'Picking, packing and shipping, recorded down to the batch.',
-        state: 'planned',
+        state: 'ready',
       },
       {
         key: 'invoices',
         label: 'Invoices',
         purpose: 'Tax invoices raised against a dispatch.',
-        state: 'planned',
+        state: 'ready',
       },
       {
         key: 'receipts',
         label: 'Receipts',
         purpose: 'Payments collected and applied to outstanding invoices.',
-        state: 'planned',
+        state: 'ready',
       },
       {
         key: 'returns',
         label: 'Returns',
         purpose: 'Sales returns and recalls, traced back to the batch that shipped.',
-        state: 'planned',
+        state: 'ready',
       },
     ],
   },

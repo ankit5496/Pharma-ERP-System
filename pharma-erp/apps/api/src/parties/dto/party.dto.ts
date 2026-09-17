@@ -1,8 +1,10 @@
 import {
+  IsEmail,
   IsIn,
   IsInt,
   IsISO8601,
   IsOptional,
+  IsPhoneNumber,
   IsString,
   Matches,
   Max,
@@ -19,7 +21,7 @@ import type { PartyStatus, PartyType } from '@pharma-erp/types';
  * work that lives outside this repository.
  */
 const PARTY_TYPES = ['VENDOR', 'CUSTOMER', 'JOB_WORK_PRINCIPAL'] as const;
-const PARTY_STATUSES = ['ACTIVE', 'INACTIVE'] as const;
+const PARTY_STATUSES = ['ACTIVE', 'INACTIVE', 'BLOCKED'] as const;
 
 type AssertSame<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
 
@@ -44,6 +46,24 @@ const MONEY = /^\d{1,12}(\.\d{1,2})?$/;
 
 const MONEY_MESSAGE = 'must be an amount with at most 2 decimal places, sent as a string';
 
+const EMAIL_MESSAGE = 'must be a valid email address, e.g. purchasing@vendor.co.in';
+
+/**
+ * A phone number must carry its country code.
+ *
+ * `@IsPhoneNumber()` with NO region argument is the whole point: passing a
+ * default region would let a bare "9876543210" through and silently assume a
+ * country, which is how a supplier in Dubai ends up stored as an Indian number
+ * nobody can dial. With no default, the number must say which country it is
+ * from, and libphonenumber then validates the national part AGAINST that
+ * country — the right length and prefix for +91 are not the right ones for +971.
+ *
+ * Stored in E.164 ("+919876543210"), which is what the form submits: the
+ * country code is chosen from a list and the national number typed beside it.
+ */
+const PHONE_MESSAGE =
+  'must include the country code and be a real number for that country, e.g. +91 98765 43210';
+
 export class CreatePartyDto {
   @IsString()
   @MaxLength(64)
@@ -67,12 +87,12 @@ export class CreatePartyDto {
   gstin?: string;
 
   @IsOptional()
-  @IsString()
+  @IsEmail({}, { message: `email ${EMAIL_MESSAGE}` })
   @MaxLength(320)
   email?: string;
 
   @IsOptional()
-  @IsString()
+  @IsPhoneNumber(undefined, { message: `phone ${PHONE_MESSAGE}` })
   @MaxLength(32)
   phone?: string;
 
@@ -135,12 +155,12 @@ export class UpdatePartyDto {
   gstin?: string | null;
 
   @IsOptional()
-  @IsString()
+  @IsEmail({}, { message: `email ${EMAIL_MESSAGE}` })
   @MaxLength(320)
   email?: string | null;
 
   @IsOptional()
-  @IsString()
+  @IsPhoneNumber(undefined, { message: `phone ${PHONE_MESSAGE}` })
   @MaxLength(32)
   phone?: string | null;
 

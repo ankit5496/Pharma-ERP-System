@@ -3,15 +3,42 @@
 import { useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import {
+  AGREEMENT_STATUS_LABELS,
+  BILLING_MODEL_LABELS,
+  CONVERSION_RATE_BASIS_LABELS,
   ITEM_TYPE_LABELS,
+  LICENCE_STATUS_LABELS,
+  LICENCE_TYPE_LABELS,
+  PACKAGING_LEVEL_LABELS,
+  PACKAGING_QUANTITY_BASIS_LABELS,
   PARTY_TYPE_LABELS,
   SCHEDULE_CLASSIFICATION_LABELS,
+  type AgreementStatus,
+  type BillingModel,
   type BomView,
   type ItemSummary,
+  type JobWorkAgreementSummary,
+  type JobWorkMappingView,
+  type LicenceRegister,
+  type LicenceStatus,
+  type LicenceSummary,
+  type PackagingLevel,
+  type PackagingLineView,
+  type PackagingRequirementView,
+  type CustomerDocumentSummary,
   type PartySummary,
 } from '@pharma-erp/types';
 
-import { deleteItemAction, deletePartyAction } from '@/app/(app)/master-data/actions';
+import {
+  deleteAgreementAction,
+  listCustomerDocumentsAction,
+  deleteItemAction,
+  deleteLicenceAction,
+  deletePackagingAction,
+  deletePartyAction,
+  setLicenceAlertAction,
+} from '@/app/(app)/master-data/actions';
+import { DocumentIcon, DocumentPreview } from '@/components/document-preview';
 import type { ApiResult } from '@/lib/api';
 
 /**
@@ -465,6 +492,7 @@ function RowActions({
   onEdit,
   onDelete,
   onError,
+  extra,
 }: {
   /** Names the row in the confirmation and the button's accessible name. */
   label: string;
@@ -472,6 +500,12 @@ function RowActions({
   /** The register's own delete action. Returns the API's refusal, if any. */
   onDelete: () => Promise<{ ok: boolean; message?: string }>;
   onError: (message: string | null) => void;
+  /**
+   * A register-specific entry, above Edit. Only the Item register uses one
+   * today (Inventory), and it sits first because looking at stock is a read
+   * and the two below it are writes.
+   */
+  extra?: { label: string; onClick: () => void };
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -614,6 +648,18 @@ function RowActions({
           style={{ top: anchor.top, right: anchor.right }}
           className="fixed z-50 w-40 rounded-md border border-slate-200 bg-white p-1 text-left shadow-lg"
         >
+          {extra && (
+            <button
+              type="button"
+              onClick={() => {
+                setIsOpen(false);
+                extra.onClick();
+              }}
+              className="block w-full rounded px-3 py-1.5 text-left text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+            >
+              {extra.label}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -641,10 +687,12 @@ export function ItemGrid({
   result,
   onNew,
   onEdit,
+  onInventory,
 }: {
   result: ApiResult<ItemSummary[]>;
   onNew: () => void;
   onEdit: (item: ItemSummary) => void;
+  onInventory: (item: ItemSummary) => void;
 }) {
   // Declared before the early return: hooks cannot sit behind a condition.
   const [actionError, setActionError] = useState<string | null>(null);
@@ -664,6 +712,7 @@ export function ItemGrid({
           onEdit={() => onEdit(item)}
           onDelete={() => deleteItemAction(item.id)}
           onError={setActionError}
+          extra={{ label: 'Inventory', onClick: () => onInventory(item) }}
         />
       ),
     },
@@ -752,13 +801,47 @@ const BOM_COLUMNS: readonly GridColumn<BomView>[] = [
   { key: 'from', label: 'Effective', align: 'right', render: (bom) => bom.effectiveFrom },
 ];
 
-export function BomGrid({ result, onNew }: { result: ApiResult<BomView[]>; onNew: () => void }) {
+export function BomGrid({
+  result,
+  onNew,
+  onEdit,
+}: {
+  result: ApiResult<BomView[]>;
+  onNew: () => void;
+  onEdit: (bom: BomView) => void;
+}) {
   if (!result.ok) return <LoadFailed error={result.error} />;
+
+  // A plain button rather than the RowActions menu the other registers use:
+  // that menu pairs Edit with Delete, and a formulation has no delete endpoint.
+  // A menu offering one action is a menu nobody wants to open.
+  const columns: GridColumn<BomView>[] = [
+    ...BOM_COLUMNS,
+    {
+      key: 'actions',
+      label: '',
+      align: 'right',
+      pinned: true,
+      render: (bom) => (
+        <button
+          type="button"
+          onClick={() => onEdit(bom)}
+          className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+        >
+          Edit
+          <span className="sr-only">
+            {' '}
+            {bom.product.code} v{bom.version}
+          </span>
+        </button>
+      ),
+    },
+  ];
 
   return (
     <Grid
       rows={result.data}
-      columns={BOM_COLUMNS}
+      columns={columns}
       rowKey={(bom) => bom.id}
       searchText={(bom) => `${bom.product.code} ${bom.product.name} v${bom.version}`}
       noun="formulations"
@@ -813,6 +896,20 @@ const PARTY_COLUMNS: readonly GridColumn<PartySummary>[] = [
     key: 'gstin',
     label: 'GSTIN',
     render: (party) => (party.gstin ? <Code>{party.gstin}</Code> : <Blank />),
+  },
+  {
+    key: 'documents',
+    label: 'Documents',
+    // The count, not a link, in the SHARED column definition: opening one needs
+    // its id, and the register holds only a count — the bytes stay in the
+    // database until somebody asks for a specific file. PartyGrid replaces this
+    // with a clickable version; see there.
+    render: (party) =>
+      party.documentCount > 0 ? (
+        <span className="text-slate-700">{party.documentCount}</span>
+      ) : (
+        <Blank />
+      ),
   },
   {
     key: 'licence',
@@ -877,6 +974,115 @@ const PARTY_COLUMNS: readonly GridColumn<PartySummary>[] = [
   },
 ];
 
+/**
+ * The Documents cell: the paperwork on file, as icons.
+ *
+ * An icon per document rather than a count in words, because the useful fact at
+ * a glance is WHAT is on file — a PDF licence reads differently from a
+ * photographed one — and "1 document" says neither.
+ *
+ * Clicking opens a preview rather than downloading. Checking a licence number
+ * is the common reason to open one, and a download makes that a detour through
+ * the file manager; the preview carries its own Download button for when the
+ * file really is wanted.
+ *
+ * The ids are fetched on first click, not with the register: the listing
+ * carries a count precisely so drawing it does not touch the documents table
+ * for every row. Until then the count is all there is to draw, so the icons
+ * start as neutral placeholders and take their real type once loaded.
+ */
+function PartyDocumentsCell({ party }: { party: PartySummary }) {
+  const [documents, setDocuments] = useState<CustomerDocumentSummary[] | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(false);
+  const [previewing, setPreviewing] = useState<CustomerDocumentSummary | null>(null);
+
+  const load = async (): Promise<CustomerDocumentSummary[] | null> => {
+    if (documents) return documents;
+
+    setIsLoading(true);
+    setError(false);
+
+    const result = await listCustomerDocumentsAction(party.id);
+
+    setIsLoading(false);
+
+    if (!result.ok) {
+      setError(true);
+      return null;
+    }
+
+    setDocuments(result.data);
+    return result.data;
+  };
+
+  const open = async (index: number) => {
+    const loaded = await load();
+    const chosen = loaded?.[index];
+
+    if (chosen) setPreviewing(chosen);
+  };
+
+  // Before the first click the types are unknown, so one neutral button per
+  // document stands in — the count is known, which is what the register was
+  // given.
+  const entries: (CustomerDocumentSummary | null)[] =
+    documents ?? Array.from({ length: party.documentCount }, () => null);
+
+  return (
+    <>
+      <div className="flex items-center gap-1.5">
+        {entries.map((document, index) => (
+          <button
+            key={document?.id ?? index}
+            type="button"
+            disabled={isLoading}
+            onClick={() => void open(index)}
+            title={document?.fileName ?? 'Open document'}
+            aria-label={document ? `Open ${document.fileName}` : `Open document ${index + 1}`}
+            className="rounded p-0.5 text-slate-400 transition hover:bg-slate-100 disabled:opacity-50"
+          >
+            {document ? (
+              <DocumentIcon contentType={document.contentType} />
+            ) : (
+              <svg
+                viewBox="0 0 20 20"
+                aria-hidden="true"
+                className="h-5 w-5 shrink-0"
+                fill="none"
+                stroke="currentColor"
+              >
+                <path
+                  d="M5 2.5h6.5L16 7v10.5H5z"
+                  strokeWidth="1.3"
+                  strokeLinejoin="round"
+                  className="stroke-slate-400"
+                />
+                <path
+                  d="M11.5 2.5V7H16"
+                  strokeWidth="1.3"
+                  strokeLinejoin="round"
+                  className="stroke-slate-400"
+                />
+              </svg>
+            )}
+          </button>
+        ))}
+
+        {error && <span className="text-xs text-red-700">could not load</span>}
+      </div>
+
+      {previewing && (
+        <DocumentPreview
+          partyId={party.id}
+          document={previewing}
+          onClose={() => setPreviewing(null)}
+        />
+      )}
+    </>
+  );
+}
+
 export function PartyGrid({
   result,
   onNew,
@@ -891,7 +1097,18 @@ export function PartyGrid({
   if (!result.ok) return <LoadFailed error={result.error} />;
 
   const columns: GridColumn<PartySummary>[] = [
-    ...PARTY_COLUMNS,
+    // The shared definition renders a bare count; here it becomes a control
+    // that opens the paperwork. Replaced rather than appended so the column
+    // keeps its position between GSTIN and the licence.
+    ...PARTY_COLUMNS.map((column) =>
+      column.key === 'documents'
+        ? {
+            ...column,
+            render: (party: PartySummary) =>
+              party.documentCount > 0 ? <PartyDocumentsCell party={party} /> : <Blank />,
+          }
+        : column,
+    ),
     {
       key: 'actions',
       label: '',
@@ -937,8 +1154,630 @@ export function PartyGrid({
 }
 
 // ---------------------------------------------------------------------------
-// The four registers with no table behind them
+// Licence & Compliance — US-MD-04
 // ---------------------------------------------------------------------------
+
+const LICENCE_STATUS_TONE: Record<LicenceStatus, string> = {
+  VALID: 'bg-emerald-50 text-emerald-800 ring-emerald-200',
+  EXPIRING: 'bg-amber-50 text-amber-900 ring-amber-200',
+  EXPIRED: 'bg-red-50 text-red-800 ring-red-200',
+};
+
+/**
+ * Days remaining, phrased the way someone would say it.
+ *
+ * "-5d" is arithmetic; "5 days ago" is the thing that has happened. A lapsed
+ * manufacturing licence is a stop-work condition and the column should read
+ * like one.
+ */
+function daysLabel(days: number): string {
+  if (days < 0) return `${Math.abs(days)} ${Math.abs(days) === 1 ? 'day' : 'days'} ago`;
+  if (days === 0) return 'today';
+  return `${days} ${days === 1 ? 'day' : 'days'}`;
+}
+
+const LICENCE_COLUMNS: readonly GridColumn<LicenceSummary>[] = [
+  {
+    key: 'type',
+    label: 'Type',
+    render: (licence) => (
+      <span className="font-medium text-slate-900">{LICENCE_TYPE_LABELS[licence.licenceType]}</span>
+    ),
+  },
+  { key: 'number', label: 'Number', render: (licence) => <Code>{licence.licenceNumber}</Code> },
+  {
+    key: 'authority',
+    label: 'Issuing authority',
+    render: (licence) => <Truncated text={licence.issuingAuthority} />,
+  },
+  {
+    key: 'issuedOn',
+    label: 'Issued',
+    align: 'right',
+    render: (licence) => licence.issuedOn ?? <Blank />,
+  },
+  { key: 'expiry', label: 'Expires', align: 'right', render: (licence) => licence.expiryDate },
+  {
+    key: 'status',
+    label: 'Status',
+    render: (licence) => (
+      <Pill tone={LICENCE_STATUS_TONE[licence.status]}>
+        {LICENCE_STATUS_LABELS[licence.status]}
+      </Pill>
+    ),
+  },
+  {
+    key: 'daysLeft',
+    label: 'Days left',
+    align: 'right',
+    // The only column that changes meaning by sign, so it is the only one that
+    // gets emphasis rather than colour on every row.
+    render: (licence) => (
+      <span
+        className={
+          licence.status === 'EXPIRED'
+            ? 'font-semibold text-red-800'
+            : licence.status === 'EXPIRING'
+              ? 'font-semibold text-amber-900'
+              : 'text-slate-700'
+        }
+      >
+        {daysLabel(licence.daysUntilExpiry)}
+      </span>
+    ),
+  },
+  {
+    key: 'notes',
+    label: 'Notes',
+    render: (licence) => (licence.notes ? <Truncated text={licence.notes} /> : <Blank />),
+  },
+];
+
+/**
+ * The alert threshold, set from the register itself — US-MD-04's "configurable
+ * number of days".
+ *
+ * It lives here rather than on a settings screen because this is where someone
+ * thinking about licence renewals already is, and because the number only
+ * means anything next to the rows it reclassifies: change it and the Status
+ * column moves under your hand.
+ */
+function AlertLeadDays({
+  value,
+  onError,
+}: {
+  value: number;
+  onError: (message: string | null) => void;
+}) {
+  const [days, setDays] = useState(String(value));
+  const [isPending, startTransition] = useTransition();
+  const router = useRouter();
+
+  // The saved value is the source of truth. Re-syncing on change keeps the box
+  // honest when a save is refused, or when another tab moves it.
+  useEffect(() => setDays(String(value)), [value]);
+
+  function commit() {
+    const parsed = Number(days);
+
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 365) {
+      onError('The renewal warning must be a whole number of days between 1 and 365.');
+      setDays(String(value));
+      return;
+    }
+
+    if (parsed === value) return;
+
+    onError(null);
+    startTransition(async () => {
+      const result = await setLicenceAlertAction(parsed);
+
+      if (!result.ok) {
+        onError(result.message ?? 'That change could not be saved.');
+        setDays(String(value));
+        return;
+      }
+
+      router.refresh();
+    });
+  }
+
+  return (
+    <label className="flex items-center gap-2 whitespace-nowrap text-xs text-slate-600">
+      Warn
+      <input
+        type="number"
+        min={1}
+        max={365}
+        value={days}
+        disabled={isPending}
+        onChange={(event) => setDays(event.target.value)}
+        onBlur={commit}
+        // Enter commits without submitting anything — this control is not in a
+        // form, and leaving Enter to bubble would do nothing at all.
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            event.currentTarget.blur();
+          }
+          if (event.key === 'Escape') setDays(String(value));
+        }}
+        aria-label="Days before expiry to warn"
+        className="w-16 rounded-md border border-slate-300 px-2 py-1 text-right text-xs tabular-nums text-slate-900 disabled:bg-slate-100"
+      />
+      days before expiry
+      {isPending && <span className="text-slate-400">saving…</span>}
+    </label>
+  );
+}
+
+export function LicenceGrid({
+  result,
+  onNew,
+  onEdit,
+}: {
+  result: ApiResult<LicenceRegister>;
+  onNew: () => void;
+  onEdit: (licence: LicenceSummary) => void;
+}) {
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  if (!result.ok) return <LoadFailed error={result.error} />;
+
+  const { licences, alertLeadDays } = result.data;
+
+  const columns: GridColumn<LicenceSummary>[] = [
+    ...LICENCE_COLUMNS,
+    {
+      key: 'actions',
+      label: '',
+      align: 'right',
+      pinned: true,
+      render: (licence) => (
+        <RowActions
+          label={`${LICENCE_TYPE_LABELS[licence.licenceType]} — ${licence.licenceNumber}`}
+          onEdit={() => onEdit(licence)}
+          onDelete={() => deleteLicenceAction(licence.id)}
+          onError={setActionError}
+        />
+      ),
+    },
+  ];
+
+  const overdue = licences.filter((licence) => licence.status !== 'VALID').length;
+
+  return (
+    <Grid
+      rows={licences}
+      columns={columns}
+      rowKey={(licence) => licence.id}
+      searchText={(licence) =>
+        [
+          licence.licenceNumber,
+          licence.issuingAuthority,
+          LICENCE_TYPE_LABELS[licence.licenceType],
+          licence.notes,
+        ]
+          .filter(Boolean)
+          .join(' ')
+      }
+      noun="licences"
+      singular="licence"
+      onNew={onNew}
+      notice={
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50/60 px-4 py-2">
+            <AlertLeadDays value={alertLeadDays} onError={setActionError} />
+            {overdue > 0 && (
+              <span className="text-xs font-medium text-amber-900">
+                {overdue} {overdue === 1 ? 'licence needs' : 'licences need'} attention — also shown
+                on the dashboard.
+              </span>
+            )}
+          </div>
+          {actionError && (
+            <p
+              role="alert"
+              className="border-b border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-800"
+            >
+              {actionError}
+            </p>
+          )}
+        </>
+      }
+      empty={
+        <>
+          No licences on file yet. Add the manufacturing licence first — it is the one that stops
+          production when it lapses.
+        </>
+      }
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Principal & Job-Work agreements — US-MD-05
+// ---------------------------------------------------------------------------
+
+const AGREEMENT_STATUS_TONE: Record<AgreementStatus, string> = {
+  IN_FORCE: 'bg-emerald-50 text-emerald-800 ring-emerald-200',
+  NOT_YET_STARTED: 'bg-sky-50 text-sky-800 ring-sky-200',
+  EXPIRED: 'bg-red-50 text-red-800 ring-red-200',
+};
+
+const BILLING_MODEL_TONE: Record<BillingModel, string> = {
+  OWN_PROCUREMENT: 'bg-violet-50 text-violet-800 ring-violet-200',
+  PURE_CONVERSION: 'bg-amber-50 text-amber-900 ring-amber-200',
+};
+
+/**
+ * The product-to-brand mapping, in the cell where it belongs — US-MD-05.
+ *
+ * Shown inline rather than behind an expander: the mapping IS the agreement.
+ * An agreement row without it says who you have a contract with but not what
+ * it covers, which is the question the register exists to answer.
+ *
+ * Our formulation on the left, their brand on the right, an arrow between. The
+ * direction matters — it is our recipe sold under their name, not the reverse.
+ */
+function MappingCell({ mappings }: { mappings: readonly JobWorkMappingView[] }) {
+  if (mappings.length === 0) return <Blank />;
+
+  return (
+    <ul className="flex flex-col gap-1">
+      {mappings.map((mapping) => (
+        <li key={mapping.id} className="flex flex-wrap items-baseline gap-1.5 whitespace-nowrap">
+          <Code>{mapping.bomLabel}</Code>
+          <span aria-hidden className="text-slate-400">
+            →
+          </span>
+          <span className="font-medium text-slate-900">{mapping.principalBrandName}</span>
+          {mapping.packDesignRef && (
+            <span className="font-mono text-[11px] text-slate-500">{mapping.packDesignRef}</span>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+const AGREEMENT_COLUMNS: readonly GridColumn<JobWorkAgreementSummary>[] = [
+  {
+    key: 'principal',
+    label: 'Principal',
+    render: (agreement) => (
+      <span className="whitespace-nowrap">
+        <span className="font-medium text-slate-900">{agreement.principalName}</span>{' '}
+        <Code>{agreement.principalCode}</Code>
+      </span>
+    ),
+  },
+  {
+    key: 'reference',
+    label: 'Reference',
+    render: (agreement) =>
+      agreement.agreementReference ? <Code>{agreement.agreementReference}</Code> : <Blank />,
+  },
+  {
+    key: 'billingModel',
+    label: 'Billing model',
+    // The mandatory field of US-MD-05, and the one that decides what gets
+    // invoiced — so it reads as a state, not as text in a row of text.
+    render: (agreement) => (
+      <Pill tone={BILLING_MODEL_TONE[agreement.billingModel]}>
+        {BILLING_MODEL_LABELS[agreement.billingModel]}
+      </Pill>
+    ),
+  },
+  {
+    key: 'rate',
+    label: 'Conversion charge',
+    align: 'right',
+    render: (agreement) =>
+      agreement.conversionChargeRate === null ? (
+        <Blank />
+      ) : (
+        <span className="whitespace-nowrap tabular-nums">
+          ₹{agreement.conversionChargeRate}
+          {agreement.conversionRateBasis && (
+            <span className="ml-1 text-xs text-slate-500">
+              {CONVERSION_RATE_BASIS_LABELS[agreement.conversionRateBasis]}
+            </span>
+          )}
+        </span>
+      ),
+  },
+  {
+    key: 'products',
+    label: 'Products — our formulation → their brand',
+    render: (agreement) => <MappingCell mappings={agreement.mappings} />,
+  },
+  {
+    key: 'status',
+    label: 'Status',
+    render: (agreement) => (
+      <Pill tone={AGREEMENT_STATUS_TONE[agreement.status]}>
+        {AGREEMENT_STATUS_LABELS[agreement.status]}
+      </Pill>
+    ),
+  },
+  {
+    key: 'validFrom',
+    label: 'From',
+    align: 'right',
+    render: (agreement) => agreement.validFrom ?? <Blank />,
+  },
+  {
+    key: 'validTo',
+    label: 'Until',
+    align: 'right',
+    // An open-ended agreement is a real arrangement, not a missing value, so it
+    // says so rather than showing the dash that means "not recorded".
+    render: (agreement) =>
+      agreement.validTo ?? <span className="text-xs text-slate-500">open-ended</span>,
+  },
+  {
+    key: 'notes',
+    label: 'Notes',
+    render: (agreement) => (agreement.notes ? <Truncated text={agreement.notes} /> : <Blank />),
+  },
+];
+
+export function AgreementGrid({
+  result,
+  onNew,
+  onEdit,
+}: {
+  result: ApiResult<JobWorkAgreementSummary[]>;
+  onNew: () => void;
+  onEdit: (agreement: JobWorkAgreementSummary) => void;
+}) {
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  if (!result.ok) return <LoadFailed error={result.error} />;
+
+  const columns: GridColumn<JobWorkAgreementSummary>[] = [
+    ...AGREEMENT_COLUMNS,
+    {
+      key: 'actions',
+      label: '',
+      align: 'right',
+      pinned: true,
+      render: (agreement) => (
+        <RowActions
+          label={`${agreement.principalName}${
+            agreement.agreementReference ? ` — ${agreement.agreementReference}` : ''
+          }`}
+          onEdit={() => onEdit(agreement)}
+          onDelete={() => deleteAgreementAction(agreement.id)}
+          onError={setActionError}
+        />
+      ),
+    },
+  ];
+
+  return (
+    <Grid
+      rows={result.data}
+      columns={columns}
+      rowKey={(agreement) => agreement.id}
+      // Searchable by the principal's brand too: "which agreement covers
+      // Dolotab?" is the question somebody on the packing line actually asks.
+      searchText={(agreement) =>
+        [
+          agreement.principalName,
+          agreement.principalCode,
+          agreement.agreementReference,
+          BILLING_MODEL_LABELS[agreement.billingModel],
+          agreement.notes,
+          ...agreement.mappings.flatMap((mapping) => [
+            mapping.bomLabel,
+            mapping.productName,
+            mapping.principalBrandName,
+            mapping.packDesignRef,
+          ]),
+        ]
+          .filter(Boolean)
+          .join(' ')
+      }
+      noun="agreements"
+      singular="agreement"
+      onNew={onNew}
+      notice={
+        actionError && (
+          <p
+            role="alert"
+            className="border-b border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-800"
+          >
+            {actionError}
+          </p>
+        )
+      }
+      empty={
+        <>
+          No job-work agreements yet. Add one to record what a principal is billed and which of our
+          formulations carry their brand.
+        </>
+      }
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Packaging requirements — US-MD-06
+// ---------------------------------------------------------------------------
+
+const PACKAGING_LEVEL_TONE: Record<PackagingLevel, string> = {
+  PRIMARY: 'bg-sky-50 text-sky-800 ring-sky-200',
+  SECONDARY: 'bg-violet-50 text-violet-800 ring-violet-200',
+  TERTIARY: 'bg-slate-100 text-slate-700 ring-slate-200',
+};
+
+/**
+ * The component list, inline — the specification IS the component list.
+ *
+ * A mandatory component is marked, an optional one is not: that flag decides
+ * whether a shortage stops the line, and it is the one thing on the row that
+ * changes what happens rather than merely describing it.
+ */
+function ComponentCell({ lines }: { lines: readonly PackagingLineView[] }) {
+  if (lines.length === 0) return <Blank />;
+
+  return (
+    <ul className="flex flex-col gap-1">
+      {lines.map((line) => (
+        <li key={line.id} className="flex flex-wrap items-baseline gap-1.5 whitespace-nowrap">
+          <Code>{line.item.code}</Code>
+          <span className="tabular-nums text-slate-900">
+            {trimQuantity(line.quantityPer)}
+            <span className="ml-1 text-xs text-slate-500">
+              {line.item.uom} {PACKAGING_QUANTITY_BASIS_LABELS[line.quantityBasis]}
+            </span>
+          </span>
+          <Pill tone={PACKAGING_LEVEL_TONE[line.level]}>{PACKAGING_LEVEL_LABELS[line.level]}</Pill>
+          {line.requirement === 'MANDATORY' && (
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-red-700">
+              blocks
+            </span>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+const PACKAGING_COLUMNS: readonly GridColumn<PackagingRequirementView>[] = [
+  {
+    key: 'product',
+    label: 'Product',
+    render: (row) => (
+      <span className="whitespace-nowrap">
+        <Code>{row.product.code}</Code>{' '}
+        <span className="font-medium text-slate-900">{row.product.name}</span>
+      </span>
+    ),
+  },
+  {
+    key: 'variant',
+    label: 'Pack variant',
+    render: (row) => <span className="font-medium text-slate-900">{row.packVariant}</span>,
+  },
+  {
+    key: 'unitsPerPack',
+    label: 'Units / pack',
+    align: 'right',
+    // The number that makes every per-pack quantity scalable, so it earns a
+    // column rather than hiding in the drawer.
+    render: (row) => (
+      <span className="tabular-nums">
+        {trimQuantity(row.unitsPerPack)}
+        <span className="ml-1 text-xs text-slate-500">{row.product.uom}</span>
+      </span>
+    ),
+  },
+  {
+    key: 'components',
+    label: 'Components',
+    render: (row) => <ComponentCell lines={row.lines} />,
+  },
+  {
+    key: 'status',
+    label: 'Status',
+    // Not a soft-delete flag: an inactive specification still exists, and its
+    // being inactive is what stops a work order being raised for the product.
+    render: (row) =>
+      row.isActive ? (
+        <Pill tone="bg-emerald-50 text-emerald-800 ring-emerald-200">Active</Pill>
+      ) : (
+        <Pill tone="bg-slate-100 text-slate-600 ring-slate-200">Inactive</Pill>
+      ),
+  },
+  {
+    key: 'notes',
+    label: 'Notes',
+    render: (row) => (row.notes ? <Truncated text={row.notes} /> : <Blank />),
+  },
+];
+
+export function PackagingGrid({
+  result,
+  onNew,
+  onEdit,
+}: {
+  result: ApiResult<PackagingRequirementView[]>;
+  onNew: () => void;
+  onEdit: (requirement: PackagingRequirementView) => void;
+}) {
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  if (!result.ok) return <LoadFailed error={result.error} />;
+
+  const columns: GridColumn<PackagingRequirementView>[] = [
+    ...PACKAGING_COLUMNS,
+    {
+      key: 'actions',
+      label: '',
+      align: 'right',
+      pinned: true,
+      render: (row) => (
+        <RowActions
+          label={`${row.product.code} — ${row.packVariant}`}
+          onEdit={() => onEdit(row)}
+          onDelete={() => deletePackagingAction(row.id)}
+          onError={setActionError}
+        />
+      ),
+    },
+  ];
+
+  const inactive = result.data.filter((row) => !row.isActive).length;
+
+  return (
+    <Grid
+      rows={result.data}
+      columns={columns}
+      rowKey={(row) => row.id}
+      searchText={(row) =>
+        [
+          row.product.code,
+          row.product.name,
+          row.packVariant,
+          row.notes,
+          ...row.lines.flatMap((line) => [line.item.code, line.item.name]),
+        ]
+          .filter(Boolean)
+          .join(' ')
+      }
+      noun="pack specifications"
+      singular="pack specification"
+      onNew={onNew}
+      notice={
+        <>
+          {inactive > 0 && (
+            <p className="border-b border-slate-200 bg-slate-50/60 px-4 py-2 text-xs text-slate-600">
+              {inactive} inactive {inactive === 1 ? 'specification' : 'specifications'}. A product
+              with no active specification cannot have a work order raised for it.
+            </p>
+          )}
+          {actionError && (
+            <p
+              role="alert"
+              className="border-b border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-800"
+            >
+              {actionError}
+            </p>
+          )}
+        </>
+      }
+      empty={
+        <>
+          No pack specifications yet. Add one before raising a work order — a product cannot go into
+          production without a pack to put it in.
+        </>
+      }
+    />
+  );
+}
 
 /**
  * Column names for a register that does not exist yet.

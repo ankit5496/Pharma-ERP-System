@@ -1,7 +1,12 @@
 import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 
 import { Prisma } from '@pharma-erp/database';
-import type { MaterialIssuePlan, MaterialIssuePlanLine, MaterialIssueView } from '@pharma-erp/types';
+import type {
+  MaterialIssueOverride,
+  MaterialIssuePlan,
+  MaterialIssuePlanLine,
+  MaterialIssueView,
+} from '@pharma-erp/types';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
@@ -72,7 +77,7 @@ export class MaterialIssueService {
         allocations: allocations.map((allocation) => ({
           lotId: allocation.lot.id,
           lotNumber: allocation.lot.lotNumber,
-          expiryDate: toIsoDate(allocation.lot.expiryDate),
+          expiryDate: allocation.lot.expiryDate ? toIsoDate(allocation.lot.expiryDate) : null,
           quantity: this.round(allocation.quantity).toString(),
           quantityAvailable: allocation.lot.quantityAvailable.toString(),
         })),
@@ -98,7 +103,10 @@ export class MaterialIssueService {
    * read the same availability and both succeed, leaving negative stock — which
    * the CHECK constraint would then reject with a message nobody can act on.
    */
-  async issue(productionOrderId: string): Promise<MaterialIssueView> {
+  async issue(
+    productionOrderId: string,
+    overrides: readonly MaterialIssueOverride[] = [],
+  ): Promise<MaterialIssueView> {
     const tenantId = this.tenantContext.requireTenantId();
     const userId = this.tenantContext.getUserId();
 
@@ -112,7 +120,7 @@ export class MaterialIssueService {
       );
     }
 
-    const plan = await this.plan(productionOrderId);
+    const plan = await this.applyOverrides(await this.plan(productionOrderId), overrides);
     const short = plan.lines.filter((line) => line.quantityShort !== ZERO.toString());
 
     if (short.length > 0) {
@@ -133,11 +141,10 @@ export class MaterialIssueService {
 
       for (const line of plan.lines) {
         for (const allocation of line.allocations) {
-          const claimed = await tx.materialLot.updateMany({
+          const claimed = await tx.stockLot.updateMany({
             where: {
               id: allocation.lotId,
               status: 'USABLE',
-              deletedAt: null,
               // The guard: only decrement if the stock is still there.
               quantityAvailable: { gte: new Prisma.Decimal(allocation.quantity) },
             },
@@ -159,6 +166,8 @@ export class MaterialIssueService {
               itemId: line.item.id,
               lotId: allocation.lotId,
               quantityIssued: new Prisma.Decimal(allocation.quantity),
+              isFefoOverride: allocation.isFefoOverride ?? false,
+              overrideReason: allocation.overrideReason ?? null,
             },
           });
         }
@@ -172,6 +181,7 @@ export class MaterialIssueService {
       const saved = await tx.materialIssue.findUniqueOrThrow({
         where: { id: issue.id },
         include: {
+          productionOrder: { select: { orderNumber: true } },
           issuedBy: { select: { fullName: true } },
           lines: { include: { item: true, lot: true } },
         },
@@ -181,10 +191,18 @@ export class MaterialIssueService {
     });
   }
 
-  async listForOrder(productionOrderId: string): Promise<MaterialIssueView[]> {
+  /**
+   * Every dispensing record, newest first — the Material issue register.
+   *
+   * Unbounded deliberately, for now: one row per work order that has been
+   * dispensed against, and a company running a few batches a week takes years
+   * to make this a page worth splitting. When it is, the fix is a cursor, not a
+   * filter that hides older records from the register that exists to show them.
+   */
+  async list(): Promise<MaterialIssueView[]> {
     const issues = await this.prisma.scoped.materialIssue.findMany({
-      where: { productionOrderId },
       include: {
+        productionOrder: { select: { orderNumber: true } },
         issuedBy: { select: { fullName: true } },
         lines: { include: { item: true, lot: true } },
       },
@@ -192,6 +210,123 @@ export class MaterialIssueService {
     });
 
     return issues.map((issue) => this.toView(issue));
+  }
+
+  async listForOrder(productionOrderId: string): Promise<MaterialIssueView[]> {
+    const issues = await this.prisma.scoped.materialIssue.findMany({
+      where: { productionOrderId },
+      include: {
+        productionOrder: { select: { orderNumber: true } },
+        issuedBy: { select: { fullName: true } },
+        lines: { include: { item: true, lot: true } },
+      },
+      orderBy: { issuedAt: 'desc' },
+    });
+
+    return issues.map((issue) => this.toView(issue));
+  }
+
+  /**
+   * Replaces the FEFO proposal for the materials an override names — US-PROD-02.
+   *
+   * The criterion is that the screen always PROPOSES the nearest-expiry lot,
+   * not that it forbids anything else: a container damaged in the store, or one
+   * held back for a retained sample, is a real reason to reach past it. What it
+   * cannot be is silent, so every line this produces is marked as an override
+   * and carries the reason, which the CHECK constraint on the column then makes
+   * impossible to omit.
+   *
+   * An override REPLACES that material's allocation rather than adding to it.
+   * Merging a hand-picked lot into a FEFO plan would issue more than the
+   * requirement, and deciding which of the two to trim is a question with no
+   * good answer — so the person who picks a lot picks the whole line.
+   */
+  private async applyOverrides(
+    plan: MaterialIssuePlan,
+    overrides: readonly MaterialIssueOverride[],
+  ): Promise<MaterialIssuePlan> {
+    if (overrides.length === 0) return plan;
+
+    const known = new Set(plan.lines.map((line) => line.item.id));
+
+    for (const override of overrides) {
+      if (!known.has(override.itemId)) {
+        throw new BadRequestException(
+          'One of the overrides names a material this formulation does not use. ' +
+            'Refresh the plan and try again.',
+        );
+      }
+
+      if (!override.reason?.trim()) {
+        throw new BadRequestException(
+          'Choosing a lot other than the one suggested needs a reason. The suggestion is ' +
+            'the nearest-expiry lot, and departing from it has to be explainable later.',
+        );
+      }
+    }
+
+    const byItem = new Map<string, MaterialIssueOverride[]>();
+    for (const override of overrides) {
+      byItem.set(override.itemId, [...(byItem.get(override.itemId) ?? []), override]);
+    }
+
+    const lines = await Promise.all(
+      plan.lines.map(async (line) => {
+        const chosen = byItem.get(line.item.id);
+
+        if (!chosen) return line;
+
+        const lots = await this.prisma.scoped.stockLot.findMany({
+          where: { id: { in: chosen.map((entry) => entry.lotId) }, itemId: line.item.id },
+        });
+
+        const lotsById = new Map(lots.map((lot) => [lot.id, lot]));
+
+        const allocations = chosen.map((entry) => {
+          const lot = lotsById.get(entry.lotId);
+
+          if (!lot) {
+            throw new BadRequestException(
+              `A chosen lot is not a lot of ${line.item.code}. Pick from the lots listed for ` +
+                'that material.',
+            );
+          }
+
+          if (lot.status !== 'USABLE') {
+            throw new BadRequestException(
+              `Lot ${lot.lotNumber} is ${lot.status.toLowerCase()}, so it cannot be dispensed. ` +
+                'Only stock released by incoming QC may be issued — that rule is not one an ' +
+                'override can set aside.',
+            );
+          }
+
+          return {
+            lotId: lot.id,
+            lotNumber: lot.lotNumber,
+            expiryDate: lot.expiryDate ? toIsoDate(lot.expiryDate) : null,
+            quantity: this.round(new Prisma.Decimal(entry.quantity)).toString(),
+            quantityAvailable: lot.quantityAvailable.toString(),
+            isFefoOverride: true,
+            overrideReason: entry.reason.trim(),
+          };
+        });
+
+        const allocated = allocations.reduce(
+          (total, allocation) => total.add(new Prisma.Decimal(allocation.quantity)),
+          ZERO,
+        );
+        const required = new Prisma.Decimal(line.quantityRequired);
+
+        return {
+          ...line,
+          quantityAllocated: this.round(allocated).toString(),
+          quantityShort: this.round(Prisma.Decimal.max(required.sub(allocated), ZERO)).toString(),
+          allocations,
+        };
+      }),
+    );
+
+    return { ...plan, lines };
   }
 
   /**
@@ -207,21 +342,26 @@ export class MaterialIssueService {
       earliestUsableExpiry.getUTCDate() + MaterialIssueService.MINIMUM_SHELF_LIFE_DAYS,
     );
 
-    const lots = await this.prisma.scoped.materialLot.findMany({
+    const lots = await this.prisma.scoped.stockLot.findMany({
       where: {
         itemId,
         // Only released stock. Quarantined material has not passed incoming QC
         // and rejected material never will; both stay visible in the register
         // and unpickable here.
         status: 'USABLE',
-        deletedAt: null,
         quantityAvailable: { gt: 0 },
-        expiryDate: { gte: earliestUsableExpiry },
+        // A lot with NO expiry is usable. Cartons, leaflets and shippers
+        // routinely have none, and `expiryDate: { gte: ... }` alone would
+        // silently exclude every one of them — turning "no expiry" into
+        // "unissuable", which is the opposite of what it means.
+        OR: [{ expiryDate: { gte: earliestUsableExpiry } }, { expiryDate: null }],
       },
-      // FEFO. `lotNumber` breaks ties so the order is deterministic — two lots
-      // sharing an expiry date must not be picked in whatever order the planner
-      // happens to return, or the same plan would issue differently twice.
-      orderBy: [{ expiryDate: 'asc' }, { lotNumber: 'asc' }],
+      // FEFO, with no-expiry lots LAST: something that cannot expire is the
+      // safest thing to leave on the shelf. `lotNumber` breaks ties so the
+      // order is deterministic — two lots sharing an expiry must not be picked
+      // in whatever order the planner happens to return, or the same plan
+      // would issue differently twice.
+      orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { lotNumber: 'asc' }],
     });
 
     const allocations: { lot: (typeof lots)[number]; quantity: Prisma.Decimal }[] = [];
@@ -248,15 +388,19 @@ export class MaterialIssueService {
     id: string;
     issuedAt: Date;
     notes: string | null;
+    productionOrder: { orderNumber: string };
     issuedBy: { fullName: string } | null;
     lines: {
       id: string;
       quantityIssued: Prisma.Decimal;
       item: Parameters<typeof toItemSummary>[0];
-      lot: { lotNumber: string; expiryDate: Date };
+      isFefoOverride: boolean;
+      overrideReason: string | null;
+      lot: { lotNumber: string; expiryDate: Date | null };
     }[];
   }): MaterialIssueView {
     return {
+      orderNumber: issue.productionOrder.orderNumber,
       id: issue.id,
       issuedAt: issue.issuedAt.toISOString(),
       issuedBy: issue.issuedBy?.fullName ?? null,
@@ -265,8 +409,10 @@ export class MaterialIssueService {
         id: line.id,
         item: toItemSummary(line.item),
         lotNumber: line.lot.lotNumber,
-        expiryDate: toIsoDate(line.lot.expiryDate),
+        expiryDate: line.lot.expiryDate ? toIsoDate(line.lot.expiryDate) : null,
         quantityIssued: line.quantityIssued.toString(),
+        isFefoOverride: line.isFefoOverride,
+        overrideReason: line.overrideReason,
       })),
     };
   }

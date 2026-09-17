@@ -5,16 +5,20 @@ import type {
   ItemSummary,
   MaterialIssuePlan,
   MaterialIssueView,
-  MaterialLotSummary,
+  PackagingRequirementView,
+  ProductionStockLot,
   ProductionOrderSummary,
 } from '@pharma-erp/types';
-import { MATERIAL_LOT_STATUS_LABELS } from '@pharma-erp/types';
+import { STOCK_LOT_STATUS_LABELS } from '@pharma-erp/types';
 
+import { ProductionRegister } from '@/components/production/register';
 import { apiFetch, type ApiResult } from '@/lib/api';
+import { requireSession } from '@/lib/session';
 
 import {
   CreateProductionOrderForm,
   IssueMaterialForm,
+  type PackSpecification,
   RecordBatchForm,
   RecordPackingForm,
   ReleaseDecisionForm,
@@ -165,15 +169,15 @@ export async function ProductionOrdersPanel() {
   const orders = ordersResult.data;
 
   return (
-    <div className="space-y-6">
-      <Panel
-        title="Raise a work order"
-        description="What to make, how much, and against the formulation version current right now."
-      >
-        <CreateProductionOrderForm products={products} />
-      </Panel>
-
-      <Panel title={`${orders.length} work order${orders.length === 1 ? '' : 's'}`}>
+    <ProductionRegister
+      title={`${orders.length} work order${orders.length === 1 ? '' : 's'}`}
+      description="What to make, how much, and against which formulation version."
+      newLabel="New work order"
+      newTitle="New — Work order"
+      newDescription="Checked against usable stock before it can be saved. The formulation version is whichever is active right now."
+      form={<CreateProductionOrderForm products={products} />}
+    >
+      <>
         {orders.length === 0 ? (
           <EmptyState>No work orders yet.</EmptyState>
         ) : (
@@ -226,8 +230,8 @@ export async function ProductionOrdersPanel() {
             ))}
           </TableFrame>
         )}
-      </Panel>
-    </div>
+      </>
+    </ProductionRegister>
   );
 }
 
@@ -236,199 +240,249 @@ export async function ProductionOrdersPanel() {
 // ---------------------------------------------------------------------------
 
 export async function MaterialIssuePanel() {
-  const [ordersResult, lotsResult] = await Promise.all([
+  const [ordersResult, lotsResult, issuesResult] = await Promise.all([
     get<ProductionOrderSummary[]>('/api/v1/production/orders'),
-    get<MaterialLotSummary[]>('/api/v1/production/material-lots'),
+    get<ProductionStockLot[]>('/api/v1/production/stock-lots'),
+    get<MaterialIssueView[]>('/api/v1/production/issues'),
   ]);
 
-  if (!ordersResult.ok) {
+  if (!issuesResult.ok) {
     return (
       <Panel title="Material issue">
-        <LoadError error={ordersResult.error} />
+        <LoadError error={issuesResult.error} />
       </Panel>
     );
   }
 
-  const awaiting = ordersResult.data.filter((order) => order.status === 'PLANNED');
+  const awaiting = ordersResult.ok
+    ? ordersResult.data.filter((order) => order.status === 'PLANNED')
+    : [];
 
   // One plan at a time: the oldest order awaiting material. Previewing every
-  // order would mean an allocation query per order per page load, and the
-  // shop floor dispenses one order at a time anyway.
+  // order would mean an allocation query per order per page load, and the shop
+  // floor dispenses one order at a time anyway.
   const next = awaiting.at(-1);
   const planResult = next
     ? await get<MaterialIssuePlan>(`/api/v1/production/orders/${next.id}/issue-plan`)
     : null;
 
-  const issuedResult = next
-    ? null
-    : await (async () => {
-        const recent = ordersResult.data.find((order) => order.status !== 'PLANNED');
-        return recent
-          ? get<MaterialIssueView[]>(`/api/v1/production/orders/${recent.id}/issues`)
-          : null;
-      })();
+  const issues = issuesResult.data;
 
   return (
     <div className="space-y-6">
-      <Panel
-        title="Next to dispense"
-        description="Materials are picked First Expiry, First Out — the lot that expires soonest is consumed first, whatever order it arrived in."
-      >
-        {!next ? (
-          <EmptyState>
-            No work order is awaiting material. Raise one under Production orders.
-          </EmptyState>
-        ) : !planResult?.ok ? (
-          <LoadError error={planResult?.error ?? 'unknown error'} />
-        ) : (
-          <>
-            <div className="border-b border-slate-200 px-6 py-3 text-sm text-slate-700">
-              <span className="font-mono font-semibold">{planResult.data.orderNumber}</span> ·{' '}
-              {next.product.name} · planned{' '}
-              <Quantity value={next.plannedQuantity} uom={next.product.uom} />
-            </div>
+      <ProductionRegister
+        title={`${issues.length} dispensing record${issues.length === 1 ? '' : 's'}`}
+        description="Every line here is a traceability link: it answers which supplier lot went into which batch, in both directions."
+        newLabel={next ? 'Dispense material' : undefined}
+        newTitle={next ? `Dispense against ${next.orderNumber}` : undefined}
+        newDescription="Materials are picked First Expiry, First Out — the lot that expires soonest is consumed first, whatever order it arrived in."
+        form={
+          next && planResult?.ok ? (
+            <div className="space-y-4">
+              <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                <span className="font-mono font-semibold">{planResult.data.orderNumber}</span> ·{' '}
+                {next.product.name} · planned{' '}
+                <Quantity value={next.plannedQuantity} uom={next.product.uom} />
+              </div>
 
+              <TableFrame
+                head={
+                  <>
+                    <Th>Material</Th>
+                    <Th align="right">Required</Th>
+                    <Th>Lots the plan will take</Th>
+                    <Th align="right">Short</Th>
+                  </>
+                }
+              >
+                {planResult.data.lines.map((line) => (
+                  <tr key={line.item.id} className="align-top">
+                    <td className="px-6 py-3">
+                      <span className="font-mono text-xs text-slate-700">{line.item.code}</span>
+                      <div className="text-slate-800">{line.item.name}</div>
+                    </td>
+                    <td className="px-6 py-3 text-right">
+                      <Quantity value={line.quantityRequired} uom={line.item.uom} />
+                    </td>
+                    <td className="px-6 py-3">
+                      {line.allocations.length === 0 ? (
+                        <span className="text-red-700">No usable stock</span>
+                      ) : (
+                        <ul className="space-y-1">
+                          {line.allocations.map((allocation) => (
+                            <li
+                              key={allocation.lotId}
+                              className="flex flex-wrap items-center gap-x-2"
+                            >
+                              <span className="font-mono text-xs text-slate-700">
+                                {allocation.lotNumber}
+                              </span>
+                              {/* A stock lot's expiry is optional — cartons and
+                                leaflets usually have none. "no expiry" is the
+                                fact, and it is different from a missing value:
+                                FEFO deliberately keeps such lots until last. */}
+                              {allocation.expiryDate ? (
+                                <>
+                                  <span className="text-xs text-slate-500">
+                                    exp {allocation.expiryDate}
+                                  </span>
+                                  <ExpiryHint date={allocation.expiryDate} />
+                                </>
+                              ) : (
+                                <span className="text-xs text-slate-400">no expiry</span>
+                              )}
+                              <Quantity value={allocation.quantity} uom={line.item.uom} />
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </td>
+                    <td className="px-6 py-3 text-right">
+                      {line.quantityShort === '0' ? (
+                        <span className="text-slate-300">—</span>
+                      ) : (
+                        <span className="font-semibold text-red-700">
+                          {line.quantityShort} {line.item.uom}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </TableFrame>
+
+              <IssueMaterialForm
+                plan={planResult.data}
+                lots={lotsResult.ok ? lotsResult.data : []}
+              />
+            </div>
+          ) : undefined
+        }
+      >
+        <>
+          {issues.length === 0 ? (
+            <EmptyState>
+              {next
+                ? `Nothing dispensed yet. ${next.orderNumber} is awaiting material.`
+                : 'Nothing dispensed yet, and no work order is awaiting material.'}
+            </EmptyState>
+          ) : (
             <TableFrame
               head={
                 <>
-                  <Th>Material</Th>
-                  <Th align="right">Required</Th>
-                  <Th>Lots the plan will take</Th>
-                  <Th align="right">Short</Th>
+                  <Th>Order</Th>
+                  <Th>Dispensed</Th>
+                  <Th>Materials</Th>
+                  <Th>By</Th>
                 </>
               }
             >
-              {planResult.data.lines.map((line) => (
-                <tr key={line.item.id} className="align-top">
+              {issues.map((issue) => (
+                <tr key={issue.id} className="align-top">
                   <td className="px-6 py-3">
-                    <span className="font-mono text-xs text-slate-700">{line.item.code}</span>
-                    <div className="text-slate-800">{line.item.name}</div>
-                  </td>
-                  <td className="px-6 py-3 text-right">
-                    <Quantity value={line.quantityRequired} uom={line.item.uom} />
+                    <span className="font-mono text-xs font-semibold text-slate-800">
+                      {issue.orderNumber}
+                    </span>
                   </td>
                   <td className="px-6 py-3">
-                    {line.allocations.length === 0 ? (
-                      <span className="text-red-700">No usable stock</span>
-                    ) : (
-                      <ul className="space-y-1">
-                        {line.allocations.map((allocation) => (
-                          <li
-                            key={allocation.lotId}
-                            className="flex flex-wrap items-center gap-x-2"
-                          >
-                            <span className="font-mono text-xs text-slate-700">
-                              {allocation.lotNumber}
-                            </span>
-                            <span className="text-xs text-slate-500">
-                              exp {allocation.expiryDate}
-                            </span>
-                            <ExpiryHint date={allocation.expiryDate} />
-                            <Quantity value={allocation.quantity} uom={line.item.uom} />
-                          </li>
-                        ))}
-                      </ul>
-                    )}
+                    <DateCell value={issue.issuedAt.slice(0, 10)} />
                   </td>
-                  <td className="px-6 py-3 text-right">
-                    {line.quantityShort === '0' ? (
-                      <span className="text-slate-300">—</span>
-                    ) : (
-                      <span className="font-semibold text-red-700">
-                        {line.quantityShort} {line.item.uom}
-                      </span>
-                    )}
+                  <td className="px-6 py-3">
+                    <ul className="space-y-1">
+                      {issue.lines.map((line) => (
+                        <li key={line.id} className="flex flex-wrap items-center gap-x-2">
+                          <span className="font-mono text-xs text-slate-700">{line.item.code}</span>
+                          <span className="font-mono text-xs text-slate-500">{line.lotNumber}</span>
+                          <Quantity value={line.quantityIssued} uom={line.item.uom} />
+                          {/* An override is the exception the criterion allows,
+                            so it is marked wherever the line is shown — a
+                            departure from FEFO that is invisible in the record
+                            is not really recorded. */}
+                          {line.isFefoOverride && (
+                            <span
+                              title={line.overrideReason ?? undefined}
+                              className="rounded-full bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 ring-1 ring-inset ring-amber-200"
+                            >
+                              override
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
                   </td>
+                  <td className="px-6 py-3 text-slate-600">{issue.issuedBy ?? '—'}</td>
                 </tr>
               ))}
             </TableFrame>
+          )}
+        </>
+      </ProductionRegister>
 
-            <IssueMaterialForm plan={planResult.data} />
-          </>
-        )}
-      </Panel>
-
-      {issuedResult?.ok && issuedResult.data.length > 0 && (
-        <Panel
-          title="Last dispensing"
-          description="Every line here is a traceability link: it answers which supplier lot went into which batch, in both directions."
-        >
-          <TableFrame
-            head={
-              <>
-                <Th>Material</Th>
-                <Th>Lot</Th>
-                <Th>Expiry</Th>
-                <Th align="right">Issued</Th>
-              </>
-            }
-          >
-            {issuedResult.data[0]?.lines.map((line) => (
-              <tr key={line.id}>
-                <td className="px-6 py-3">
-                  <span className="font-mono text-xs text-slate-700">{line.item.code}</span>
-                </td>
-                <td className="px-6 py-3 font-mono text-xs text-slate-700">{line.lotNumber}</td>
-                <td className="px-6 py-3">
-                  <DateCell value={line.expiryDate} />
-                </td>
-                <td className="px-6 py-3 text-right">
-                  <Quantity value={line.quantityIssued} uom={line.item.uom} />
-                </td>
-              </tr>
-            ))}
-          </TableFrame>
-        </Panel>
-      )}
-
-      {lotsResult.ok && (
-        <Panel
-          title="Stock on hand"
-          description="Ordered by expiry, which is the order FEFO consumes it in. Quarantined and rejected lots stay visible but are never picked."
-        >
-          <TableFrame
-            head={
-              <>
-                <Th>Material</Th>
-                <Th>Lot</Th>
-                <Th>Expiry</Th>
-                <Th>Status</Th>
-                <Th align="right">Available</Th>
-              </>
-            }
-          >
-            {lotsResult.data.map((lot) => (
-              <tr key={lot.id} className={lot.status === 'USABLE' ? '' : 'bg-slate-50/60'}>
-                <td className="px-6 py-3">
-                  <span className="font-mono text-xs text-slate-700">{lot.item.code}</span>
-                </td>
-                <td className="px-6 py-3 font-mono text-xs text-slate-700">{lot.lotNumber}</td>
-                <td className="px-6 py-3">
-                  <DateCell value={lot.expiryDate} />
-                  <ExpiryHint date={lot.expiryDate} />
-                </td>
-                <td className="px-6 py-3">
-                  <span
-                    className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset ${
-                      lot.status === 'USABLE'
-                        ? 'bg-emerald-50 text-emerald-800 ring-emerald-200'
-                        : lot.status === 'QUARANTINE'
-                          ? 'bg-amber-50 text-amber-800 ring-amber-200'
-                          : 'bg-red-50 text-red-800 ring-red-200'
-                    }`}
-                  >
-                    {MATERIAL_LOT_STATUS_LABELS[lot.status]}
-                  </span>
-                </td>
-                <td className="px-6 py-3 text-right">
-                  <Quantity value={lot.quantityAvailable} uom={lot.item.uom} />
-                </td>
-              </tr>
-            ))}
-          </TableFrame>
-        </Panel>
-      )}
+      <StockOnHand lots={lotsResult.ok ? lotsResult.data : []} />
     </div>
+  );
+}
+
+/**
+ * What is on the shelf, under the dispensing register.
+ *
+ * Kept as its own panel rather than folded into the register: the register
+ * answers "what have we issued" and this answers "what could we issue", and a
+ * storekeeper checking the second before doing the first is the ordinary way
+ * round. Restored here after the register rewrite dropped it.
+ */
+function StockOnHand({ lots }: { lots: ProductionStockLot[] }) {
+  return (
+    <Panel
+      title="Stock on hand"
+      description="The lots goods-in received, ordered by expiry — the order FEFO consumes them in. Anything not yet released by incoming QC stays visible but is never picked."
+    >
+      {lots.length === 0 ? (
+        <EmptyState>No stock. Receive material through Procure-to-Pay first.</EmptyState>
+      ) : (
+        <TableFrame
+          head={
+            <>
+              <Th>Material</Th>
+              <Th>Lot</Th>
+              <Th>Expiry</Th>
+              <Th>Status</Th>
+              <Th align="right">Available</Th>
+            </>
+          }
+        >
+          {lots.map((lot) => (
+            <tr key={lot.id} className={lot.status === 'USABLE' ? '' : 'bg-slate-50/60'}>
+              <td className="px-6 py-3">
+                <span className="font-mono text-xs text-slate-700">{lot.item.code}</span>
+              </td>
+              <td className="px-6 py-3 font-mono text-xs text-slate-700">{lot.lotNumber}</td>
+              <td className="px-6 py-3">
+                <DateCell value={lot.expiryDate} />
+                {/* Packaging usually has no expiry, and a hint needs a date to
+                    count down from. DateCell already shows the dash. */}
+                {lot.expiryDate && <ExpiryHint date={lot.expiryDate} />}
+              </td>
+              <td className="px-6 py-3">
+                <span
+                  className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset ${
+                    lot.status === 'USABLE'
+                      ? 'bg-emerald-50 text-emerald-800 ring-emerald-200'
+                      : lot.status === 'QUARANTINE' || lot.status === 'ON_HOLD'
+                        ? 'bg-amber-50 text-amber-800 ring-amber-200'
+                        : 'bg-red-50 text-red-800 ring-red-200'
+                  }`}
+                >
+                  {STOCK_LOT_STATUS_LABELS[lot.status]}
+                </span>
+              </td>
+              <td className="px-6 py-3 text-right">
+                <Quantity value={lot.quantityAvailable} uom={lot.item.uom} />
+              </td>
+            </tr>
+          ))}
+        </TableFrame>
+      )}
+    </Panel>
   );
 }
 
@@ -437,9 +491,10 @@ export async function MaterialIssuePanel() {
 // ---------------------------------------------------------------------------
 
 export async function BatchRecordPanel() {
-  const [ordersResult, batchesResult] = await Promise.all([
+  const [ordersResult, batchesResult, packagingResult] = await Promise.all([
     get<ProductionOrderSummary[]>('/api/v1/production/orders'),
     get<BatchView[]>('/api/v1/production/batches'),
+    get<PackagingRequirementView[]>('/api/v1/packaging/requirements'),
   ]);
 
   if (!batchesResult.ok) {
@@ -454,108 +509,147 @@ export async function BatchRecordPanel() {
     ? ordersResult.data.filter((order) => order.status === 'MATERIAL_ISSUED')
     : [];
 
+  // The active specifications, by product, for the packing form below.
+  //
+  // Read here rather than folded into BatchView because a product can have
+  // several presentations and the operator picks which one was run — the batch
+  // record does not know that until it is written. A failed read is not fatal:
+  // the form falls back to a free-text variant with no component rows, which
+  // is what a product with no specification gets anyway.
+  const specificationsByProduct = new Map<string, PackSpecification[]>();
+
+  for (const requirement of packagingResult.ok ? packagingResult.data : []) {
+    if (!requirement.isActive) continue;
+
+    const specifications = specificationsByProduct.get(requirement.product.id) ?? [];
+
+    specifications.push({
+      id: requirement.id,
+      packVariant: requirement.packVariant,
+      unitsPerPack: requirement.unitsPerPack,
+      components: requirement.lines.map((line) => ({
+        id: line.item.id,
+        code: line.item.code,
+        name: line.item.name,
+        uom: line.item.uom,
+      })),
+    });
+
+    specificationsByProduct.set(requirement.product.id, specifications);
+  }
+
+  const batches = batchesResult.data;
+
   return (
-    <div className="space-y-6">
-      <Panel
-        title="Open a batch record"
-        description="Assigns the batch number and expiry, and records the yield actually manufactured."
-      >
-        <RecordBatchForm orders={awaitingBatch} />
-      </Panel>
-
-      {batchesResult.data.length === 0 ? (
-        <Panel title="Batches">
-          <EmptyState>No batches yet.</EmptyState>
-        </Panel>
-      ) : (
-        batchesResult.data.map((batch) => (
-          <Panel
-            key={batch.id}
-            title={`${batch.batchNumber} — ${batch.product.name}`}
-            description={`Work order ${batch.orderNumber}. Manufactured ${batch.manufacturedOn}, expires ${batch.expiryDate}.`}
-            actions={<ReleaseBadge status={batch.releaseStatus} />}
-          >
-            <dl className="grid gap-4 border-b border-slate-200 px-6 py-4 text-sm sm:grid-cols-3">
-              <div>
-                <dt className="text-xs uppercase tracking-wide text-slate-500">Planned</dt>
-                <dd className="mt-1">
-                  <Quantity value={batch.plannedQuantity} uom={batch.product.uom} />
-                </dd>
-              </div>
-              <div>
-                <dt className="text-xs uppercase tracking-wide text-slate-500">Manufactured</dt>
-                <dd className="mt-1">
-                  <Quantity value={batch.actualQuantity} uom={batch.product.uom} />
-                </dd>
-              </div>
-              <div>
-                <dt className="text-xs uppercase tracking-wide text-slate-500">Packed</dt>
-                <dd className="mt-1">
-                  <Quantity value={batch.packedQuantity} uom={batch.product.uom} />
-                </dd>
-              </div>
-            </dl>
-
-            <div className="px-6 py-4">
-              <h4 className="text-xs font-medium uppercase tracking-wide text-slate-600">
-                Planned vs actual consumption
-              </h4>
-              <p className="mt-1 text-xs text-slate-500">
-                Anything beyond ±{batch.varianceThresholdPercent}% is flagged for review.
-              </p>
-            </div>
-
-            <TableFrame
-              head={
-                <>
-                  <Th>Material</Th>
-                  <Th align="right">Planned</Th>
-                  <Th align="right">Issued</Th>
-                  <Th align="right">Variance</Th>
-                </>
-              }
+    <ProductionRegister
+      title={`${batches.length} batch${batches.length === 1 ? '' : 'es'}`}
+      description="The batch manufacturing record: the yield actually produced, and what packing consumed."
+      newLabel={awaitingBatch.length > 0 ? 'New batch' : undefined}
+      newTitle="New — Batch record"
+      newDescription="Assigns the batch number and expiry, and records the yield actually manufactured."
+      form={awaitingBatch.length > 0 ? <RecordBatchForm orders={awaitingBatch} /> : undefined}
+    >
+      <div className="space-y-6 p-6">
+        {batches.length === 0 ? (
+          <EmptyState>
+            {awaitingBatch.length > 0
+              ? 'No batches yet. A work order has material issued and is ready to open one.'
+              : 'No batches yet. Issue material against a work order first.'}
+          </EmptyState>
+        ) : (
+          batches.map((batch) => (
+            <Panel
+              key={batch.id}
+              title={`${batch.batchNumber} — ${batch.product.name}`}
+              description={`Work order ${batch.orderNumber}. Manufactured ${batch.manufacturedOn}, expires ${batch.expiryDate}.`}
+              actions={<ReleaseBadge status={batch.releaseStatus} />}
             >
-              {batch.materialVariances.map((variance) => (
-                <tr key={variance.item.id} className={variance.flagged ? 'bg-amber-50/60' : ''}>
-                  <td className="px-6 py-3">
-                    <span className="font-mono text-xs text-slate-700">{variance.item.code}</span>
-                  </td>
-                  <td className="px-6 py-3 text-right">
-                    <Quantity value={variance.quantityPlanned} uom={variance.item.uom} />
-                  </td>
-                  <td className="px-6 py-3 text-right">
-                    <Quantity value={variance.quantityIssued} uom={variance.item.uom} />
-                  </td>
-                  <td className="px-6 py-3 text-right">
-                    <span
-                      className={`tabular-nums ${
-                        variance.flagged ? 'font-semibold text-amber-800' : 'text-slate-600'
-                      }`}
-                    >
-                      {variance.variancePercent}%
-                    </span>
-                    {variance.flagged && (
-                      <span className="ml-2 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900">
-                        review
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </TableFrame>
+              <dl className="grid gap-4 border-b border-slate-200 px-6 py-4 text-sm sm:grid-cols-3">
+                <div>
+                  <dt className="text-xs uppercase tracking-wide text-slate-500">Planned</dt>
+                  <dd className="mt-1">
+                    <Quantity value={batch.plannedQuantity} uom={batch.product.uom} />
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs uppercase tracking-wide text-slate-500">Manufactured</dt>
+                  <dd className="mt-1">
+                    <Quantity value={batch.actualQuantity} uom={batch.product.uom} />
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-xs uppercase tracking-wide text-slate-500">Packed</dt>
+                  <dd className="mt-1">
+                    <Quantity value={batch.packedQuantity} uom={batch.product.uom} />
+                  </dd>
+                </div>
+              </dl>
 
-            {batch.releaseStatus === 'PENDING' && (
-              <div className="border-t border-slate-200 px-6 py-4">
-                <h4 className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-600">
-                  Batch packing record
+              <div className="px-6 py-4">
+                <h4 className="text-xs font-medium uppercase tracking-wide text-slate-600">
+                  Planned vs actual consumption
                 </h4>
-                <RecordPackingForm batchId={batch.id} batchNumber={batch.batchNumber} />
+                <p className="mt-1 text-xs text-slate-500">
+                  Anything beyond ±{batch.varianceThresholdPercent}% is flagged for review.
+                </p>
               </div>
-            )}
-          </Panel>
-        ))
-      )}
-    </div>
+
+              <TableFrame
+                head={
+                  <>
+                    <Th>Material</Th>
+                    <Th align="right">Planned</Th>
+                    <Th align="right">Issued</Th>
+                    <Th align="right">Variance</Th>
+                  </>
+                }
+              >
+                {batch.materialVariances.map((variance) => (
+                  <tr key={variance.item.id} className={variance.flagged ? 'bg-amber-50/60' : ''}>
+                    <td className="px-6 py-3">
+                      <span className="font-mono text-xs text-slate-700">{variance.item.code}</span>
+                    </td>
+                    <td className="px-6 py-3 text-right">
+                      <Quantity value={variance.quantityPlanned} uom={variance.item.uom} />
+                    </td>
+                    <td className="px-6 py-3 text-right">
+                      <Quantity value={variance.quantityIssued} uom={variance.item.uom} />
+                    </td>
+                    <td className="px-6 py-3 text-right">
+                      <span
+                        className={`tabular-nums ${
+                          variance.flagged ? 'font-semibold text-amber-800' : 'text-slate-600'
+                        }`}
+                      >
+                        {variance.variancePercent}%
+                      </span>
+                      {variance.flagged && (
+                        <span className="ml-2 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900">
+                          review
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </TableFrame>
+
+              {batch.releaseStatus === 'PENDING' && (
+                <div className="border-t border-slate-200 px-6 py-4">
+                  <h4 className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-600">
+                    Batch packing record
+                  </h4>
+                  <RecordPackingForm
+                    batchId={batch.id}
+                    batchNumber={batch.batchNumber}
+                    packSpecifications={specificationsByProduct.get(batch.product.id) ?? []}
+                  />
+                </div>
+              )}
+            </Panel>
+          ))
+        )}
+      </div>
+    </ProductionRegister>
   );
 }
 
@@ -563,11 +657,18 @@ export async function BatchRecordPanel() {
 // 7. Batch release — the quality gate
 // ---------------------------------------------------------------------------
 
-export async function BatchReleasePanel({ role }: { role: string }) {
-  const [batchesResult, stockResult] = await Promise.all([
+export async function BatchReleasePanel() {
+  // The role is resolved here rather than handed down from the page, so that
+  // the four steps which do not need it make no session call at all. It joins
+  // the same Promise.all as the reads, so it costs no extra wait even here —
+  // `getSession` is request-cached, and this is the only caller in this render.
+  const [user, batchesResult, stockResult] = await Promise.all([
+    requireSession(),
     get<BatchView[]>('/api/v1/production/batches'),
     get<FinishedGoodsLotView[]>('/api/v1/production/finished-goods'),
   ]);
+
+  const role = user.role;
 
   if (!batchesResult.ok) {
     return (
