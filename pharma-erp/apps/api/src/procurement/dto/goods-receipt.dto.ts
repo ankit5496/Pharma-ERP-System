@@ -11,10 +11,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 
-import type {
-  CreateGoodsReceiptLineRequest,
-  CreateGoodsReceiptRequest,
-} from '@pharma-erp/types';
+import type { CreateGoodsReceiptLineRequest, CreateGoodsReceiptRequest } from '@pharma-erp/types';
 
 import { IsDecimalString, trim } from './common.dto';
 
@@ -92,4 +89,34 @@ export class CreateGoodsReceiptDto implements CreateGoodsReceiptRequest {
   @ValidateNested({ each: true })
   @Type(() => CreateGoodsReceiptLineDto)
   lines!: CreateGoodsReceiptLineDto[];
+}
+
+/**
+ * What may still be corrected on a booked receipt.
+ *
+ * THE QUANTITIES ARE NOT HERE, and that is the whole shape of this DTO. Booking
+ * a receipt creates batches and moves stock; re-typing a received quantity
+ * afterwards would leave the stock ledger — which is append-only — describing a
+ * delivery that never happened. A wrong quantity is corrected by receiving the
+ * difference, or by rejecting the batch at QC.
+ *
+ * What is left is the paperwork around the delivery: which document the vendor
+ * sent it under, when it arrived, and any note about it.
+ */
+export class UpdateGoodsReceiptDto {
+  @IsOptional()
+  @IsISO8601()
+  receiptDate?: string;
+
+  @IsOptional()
+  @IsString()
+  @trim()
+  @MaxLength(64)
+  vendorDocumentNumber?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @trim()
+  @MaxLength(1000)
+  remarks?: string | null;
 }

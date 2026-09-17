@@ -1,9 +1,15 @@
-import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { Prisma } from '@pharma-erp/database';
 import type {
   AgeingBucket,
   PayablesReport,
+  Paginated,
   ProcurementListQuery,
   VendorPayableRow,
   VendorPaymentItem,
@@ -14,8 +20,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
 import { ZERO, daysUntil, money, parsePositive, positiveDifference } from './decimal.util';
-import type { RecordPaymentDto } from './dto/payment.dto';
-import { dateRange } from './filters.util';
+import type { RecordPaymentDto, UpdatePaymentDto } from './dto/payment.dto';
+import { dateRange, paginate } from './filters.util';
 import { derivePaymentStatus } from './invoices.service';
 import { collectIds } from './mappers';
 import { NumberingService } from './numbering.service';
@@ -53,7 +59,7 @@ export class PaymentsService {
    * Cancelled invoices are excluded; everything else is payable, because an
    * invoice is Booked the moment it is recorded.
    */
-  async payables(query: ProcurementListQuery): Promise<VendorPayableRow[]> {
+  async payables(query: ProcurementListQuery): Promise<Paginated<VendorPayableRow>> {
     const where: Prisma.PurchaseInvoiceWhereInput = {
       deletedAt: null,
       // Anything not cancelled is payable: an invoice is Booked the moment
@@ -92,8 +98,21 @@ export class PaymentsService {
 
     const mapped = rows.map((row) => this.toPayableRow(row, people));
 
-    // Payment status is derived, so it cannot be a WHERE clause.
-    return query.status ? mapped.filter((row) => row.paymentStatus === query.status) : mapped;
+    // Payment status is derived, so it cannot be a WHERE clause — and so the
+    // page has to be taken after the filter rather than by the database. See
+    // the note on `InvoicesService.list`.
+    const filtered = query.status
+      ? mapped.filter((row) => row.paymentStatus === query.status)
+      : mapped;
+
+    const { page, pageSize } = paginate(query);
+
+    return {
+      rows: filtered.slice((page - 1) * pageSize, page * pageSize),
+      total: filtered.length,
+      page,
+      pageSize,
+    };
   }
 
   /**
@@ -193,6 +212,74 @@ export class PaymentsService {
 
     const refreshed = await this.prisma.scoped.purchaseInvoice.findFirstOrThrow({
       where: { id: invoice.id },
+      include: PAYABLE_INCLUDE,
+    });
+
+    const people = await this.people.load(
+      collectIds(...refreshed.payments.map((payment) => payment.recordedById)),
+    );
+
+    return this.toPayableRow(refreshed, people);
+  }
+
+  /**
+   * Corrects how a payment was recorded, never how much it was.
+   *
+   * The amount and the invoice are absent from the DTO on purpose: both decide
+   * what the vendor is still owed, and changing either here would move the
+   * payables balance with nothing recording that it moved. A payment sent in
+   * error is corrected by another payment.
+   *
+   * Returns the payable row rather than the payment, so the caller's table can
+   * be refreshed from one response — the same shape `recordPayment` returns.
+   */
+  async updatePayment(id: string, dto: UpdatePaymentDto): Promise<VendorPayableRow> {
+    const before = await this.prisma.scoped.vendorPayment.findFirst({
+      where: { id },
+      select: {
+        id: true,
+        number: true,
+        paymentDate: true,
+        reference: true,
+        method: true,
+        notes: true,
+        purchaseInvoiceId: true,
+      },
+    });
+
+    if (!before) throw new NotFoundException('Payment not found.');
+
+    const data: Prisma.VendorPaymentUpdateInput = {};
+
+    if (dto.paymentDate !== undefined) data.paymentDate = new Date(dto.paymentDate);
+    if (dto.reference !== undefined) data.reference = dto.reference || null;
+    if (dto.method !== undefined) data.method = dto.method || null;
+    if (dto.notes !== undefined) data.notes = dto.notes || null;
+
+    if (Object.keys(data).length === 0) throw new BadRequestException('Nothing to update.');
+
+    const after = await this.prisma.scoped.vendorPayment.update({ where: { id }, data });
+
+    await this.audit.record({
+      entityType: 'VendorPayment',
+      entityId: id,
+      action: 'UPDATE',
+      before: {
+        paymentDate: before.paymentDate,
+        reference: before.reference,
+        method: before.method,
+        notes: before.notes,
+      },
+      after: {
+        paymentDate: after.paymentDate,
+        reference: after.reference,
+        method: after.method,
+        notes: after.notes,
+      },
+    });
+
+    const refreshed = await this.prisma.scoped.purchaseInvoice.findFirstOrThrow({
+      where: { id: before.purchaseInvoiceId },
       include: PAYABLE_INCLUDE,
     });
 
@@ -336,18 +423,16 @@ export class PaymentsService {
       outstandingAmount: money(positiveDifference(total, paid)),
       paymentStatus: derivePaymentStatus(row.status, total, paid, row.dueDate),
       daysToDue: daysUntil(row.dueDate),
-      payments: row.payments.map(
-        (payment): VendorPaymentItem => ({
-          id: payment.id,
-          number: payment.number,
-          paymentDate: payment.paymentDate.toISOString(),
-          amount: money(payment.amount),
-          reference: payment.reference,
-          method: payment.method,
-          notes: payment.notes,
-          recordedBy: people.get(payment.recordedById) ?? null,
-        }),
-      ),
+      payments: row.payments.map((payment): VendorPaymentItem => ({
+        id: payment.id,
+        number: payment.number,
+        paymentDate: payment.paymentDate.toISOString(),
+        amount: money(payment.amount),
+        reference: payment.reference,
+        method: payment.method,
+        notes: payment.notes,
+        recordedBy: people.get(payment.recordedById) ?? null,
+      })),
     };
   }
 }

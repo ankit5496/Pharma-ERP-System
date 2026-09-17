@@ -96,7 +96,6 @@ export class CreateItemDto {
   @trim()
   @MaxLength(16)
   hsnCode?: string;
-
 }
 
 export class CreatePartyDto {

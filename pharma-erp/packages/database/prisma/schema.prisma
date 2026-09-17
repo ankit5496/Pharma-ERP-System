@@ -1024,8 +1024,15 @@ enum ProductionPlanStatus {
 /// hand — an order that claims to be received when nothing arrived is exactly
 /// what that removes.
 enum PurchaseOrderStatus {
+  /// Being prepared. Not receivable, not invoiceable, editable in full —
+  /// submitting it is what makes it a real order.
+  DRAFT
   OPEN
+  /// Authorised to send to the vendor. Set by hand; everything below it is
+  /// computed from what has actually been received.
+  APPROVED
   PARTIALLY_RECEIVED
+  /// Finished. Either every unit arrived, or the balance was short closed.
   CLOSED
   CANCELLED
 }
@@ -1938,6 +1945,14 @@ model PurchaseOrderLine {
   /// fulfilment state, written in the same transaction as the receipt that
   /// changes it, and it decides the order's status.
   quantityReceived Decimal @default(0) @map("quantity_received") @db.Decimal(18, 4)
+
+  /// The part of this line the buyer has short-closed and no longer expects.
+  ///
+  /// Pending is quantity - quantityReceived - quantityCancelled. Kept separate
+  /// from the received quantity on purpose: absorbing a cancellation into what
+  /// arrived would overstate deliveries and let the line be invoiced for
+  /// material nobody got.
+  quantityCancelled Decimal @default(0) @map("quantity_cancelled") @db.Decimal(18, 4)
 
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)

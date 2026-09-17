@@ -1,27 +1,199 @@
 'use client';
 
-import type { PartySummary, RequisitionListItem } from '@pharma-erp/types';
-
 import {
-  changeRequisitionStatusAction,
-  convertRequisitionAction,
-} from '@/app/(app)/workflows/procure-to-pay/actions';
+  PROCUREMENT_ROUTES,
+  REQUISITION_STATUSES,
+  REQUISITION_STATUS_LABELS,
+  type PartySummary,
+  type RequisitionListItem,
+  type RequisitionStatus,
+} from '@pharma-erp/types';
+import { useEffect, useRef, useState } from 'react';
+import { useFormStatus } from 'react-dom';
 
-import { ActionMessage, Disclosure, Field, SubmitButton, useAction } from './form-kit';
+import { changeRequisitionStatusAction } from '@/app/(app)/workflows/procure-to-pay/actions';
+
+import { EditRequisitionButton } from './edit-dialogs';
+import { ActionMessage, useAction } from './form-kit';
 
 /**
- * Row actions for a requisition, offered strictly by status.
+ * Why a requisition cannot move to a given status, or null when it can.
  *
- * The buttons mirror the API's state machine rather than showing everything
- * and letting the server refuse: an Approve button on a cancelled requisition
- * is a promise the system will not keep.
+ * Mirrors the transitions the requisition service enforces. The server list is
+ * the one that decides; this only decides what to draw, and attaches the reason
+ * to the option so "why can I not approve this?" is answered in place rather
+ * than by an error after the fact.
  *
- * BOTH ACTION STATES LIVE HERE, not in the buttons and forms below. Every one
- * of those disappears the moment its action succeeds — approving removes the
- * Approve button, converting removes the whole cell — so a `useActionState`
- * held inside them would unmount before it could report anything, and the user
- * would see a click that apparently did nothing. This component survives the
- * status change, so the message does too.
+ * CONVERTED TO PO IS NEVER SELECTABLE. It is a consequence of placing an order,
+ * not a decision: the purchase-order service sets it in the same transaction
+ * that makes the order live, and choosing it here would claim an order that
+ * does not exist.
+ */
+function blockedBecause(current: RequisitionStatus, target: RequisitionStatus): string | null {
+  if (target === current) return null;
+
+  switch (target) {
+    case 'OPEN':
+      return current === 'APPROVED' ? null : 'Set when the requisition is raised.';
+    case 'APPROVED':
+      return current === 'OPEN' ? null : 'Only an open requisition can be approved.';
+    case 'CONVERTED_TO_PO':
+      return 'Set automatically when a purchase order is placed.';
+    case 'CANCELLED':
+      return current === 'CONVERTED_TO_PO'
+        ? 'A requisition with an order against it cannot be cancelled.'
+        : null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * The requisition's status, in the Status column, as the control that changes
+ * it.
+ *
+ * NO UPDATE BUTTON. The dropdown used to sit in the actions cell beside an
+ * Update button, so changing a status took two deliberate acts and the row
+ * carried two controls for one field. Choosing a value IS the change now: the
+ * select submits its own form.
+ *
+ * A REFUSAL PUTS THE OLD VALUE BACK. The select holds what was picked, but a
+ * rejected change means the record did not move — leaving the new value on
+ * screen would have the column reporting a status the database does not have.
+ * The error itself is announced by the centred toast, like every other failure.
+ *
+ * THE COLUMN SAYS ONLY THE STATUS. It used to append who approved it, which put
+ * a person's name in a column headed Status and made two rows of different
+ * heights out of one field. Who raised the requisition has its own column; the
+ * approver is on the record itself.
+ */
+export function RequisitionStatusSelect({ requisition }: { requisition: RequisitionListItem }) {
+  const [state, action] = useAction(changeRequisitionStatusAction);
+  const form = useRef<HTMLFormElement>(null);
+  const [value, setValue] = useState<string>(requisition.status);
+
+  // The server re-render after a successful change brings the new status down
+  // as a prop; this is what keeps the control in step with it.
+  useEffect(() => {
+    setValue(requisition.status);
+  }, [requisition.status]);
+
+  useEffect(() => {
+    if (state.status === 'error') setValue(requisition.status);
+  }, [state.status, requisition.status]);
+
+  // Settled requisitions have nowhere left to go — cancelled is final, and
+  // converted is owned by the order. A control that could only refuse is worse
+  // than no control, so the status is stated instead.
+  const settled = requisition.status === 'CANCELLED' || requisition.status === 'CONVERTED_TO_PO';
+
+  if (settled) {
+    return (
+      <div className="flex flex-col gap-1">
+        <ActionMessage state={state} />
+        <span
+          className="text-xs font-medium text-slate-600"
+          title={REQUISITION_STATUS_LABELS[requisition.status]}
+        >
+          {REQUISITION_STATUS_LABELS[requisition.status]}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <form action={action} ref={form} className="flex flex-col gap-1">
+      <ActionMessage state={state} />
+
+      <input type="hidden" name="id" value={requisition.id} />
+
+      <label className="sr-only" htmlFor={`pr-status-${requisition.id}`}>
+        Status for {requisition.number}
+      </label>
+
+      <StatusControl
+        id={`pr-status-${requisition.id}`}
+        value={value}
+        current={requisition.status}
+        onPick={(next) => {
+          setValue(next);
+          // requestSubmit rather than submit: it runs the form's action the way
+          // a real submit does, which is what React needs to see.
+          form.current?.requestSubmit();
+        }}
+      />
+
+    </form>
+  );
+}
+
+/**
+ * Separate from the form above because `useFormStatus` only reports on a form
+ * its component is rendered INSIDE — called alongside the `<form>` it would
+ * always say idle, and the control would stay live through its own submit.
+ */
+function StatusControl({
+  id,
+  value,
+  current,
+  onPick,
+}: {
+  id: string;
+  value: string;
+  current: RequisitionStatus;
+  onPick: (next: string) => void;
+}) {
+  const { pending } = useFormStatus();
+
+  return (
+    <select
+      id={id}
+      name="status"
+      value={value}
+      disabled={pending}
+      onChange={(event) => onPick(event.target.value)}
+      // The full label on hover, because the box is deliberately too narrow to
+      // hold the longest of them.
+      title={REQUISITION_STATUS_LABELS[value as RequisitionStatus]}
+      className="field-sm w-32 truncate disabled:opacity-60"
+    >
+      {REQUISITION_STATUSES.map((status) => {
+        const blocked = blockedBecause(current, status);
+
+        return (
+          <option
+            key={status}
+            value={status}
+            disabled={blocked !== null}
+            title={blocked ?? REQUISITION_STATUS_LABELS[status]}
+          >
+            {REQUISITION_STATUS_LABELS[status]}
+          </option>
+        );
+      })}
+    </select>
+  );
+}
+
+/** Why this requisition can no longer be edited, by the status it reached. */
+const NOT_EDITABLE: Record<RequisitionStatus, string> = {
+  OPEN: '',
+  APPROVED: 'Approved — no longer editable',
+  CONVERTED_TO_PO: 'Ordered — no longer editable',
+  CANCELLED: 'Cancelled',
+};
+
+/**
+ * What can be done with a requisition, beyond changing its status.
+ *
+ * THE STATUS CONTROL IS NOT HERE ANY MORE. It lives in the Status column, which
+ * is where a reader looks for a status; keeping a copy here would be two
+ * controls for one field.
+ *
+ * CONVERT TO PO IS NOT A STATUS CHANGE. It carries the user to the Purchase
+ * orders tab with this requisition in hand, and the order is built there — this
+ * screen's job is requisitions. The status becomes Converted as a consequence
+ * of that order being placed, which is why it is never selectable above.
  */
 export function RequisitionActions({
   requisition,
@@ -30,156 +202,33 @@ export function RequisitionActions({
   requisition: RequisitionListItem;
   vendors: readonly PartySummary[];
 }) {
-  const [statusState, statusAction] = useAction(changeRequisitionStatusAction);
-  const [convertState, convertAction] = useAction(convertRequisitionAction);
-
-  const { status } = requisition;
-  const terminal = status === 'CONVERTED_TO_PO' || status === 'CANCELLED';
+  // The API accepts an edit only while the requisition is Open. Past that it
+  // has been approved, ordered against or withdrawn, and the document is no
+  // longer this screen's to rewrite.
+  const editable = requisition.status === 'OPEN';
 
   return (
-    <div className="flex flex-col items-start gap-2">
-      <ActionMessage state={statusState} />
-      <ActionMessage state={convertState} />
-
-      {terminal ? (
-        <span className="text-xs text-slate-400">No actions</span>
+    <div className="flex flex-col items-start gap-1.5">
+      {editable ? (
+        <EditRequisitionButton requisition={requisition} vendors={vendors} />
       ) : (
-        <>
-          {/* OPEN is the only pre-approval state now — the earlier
-              draft/pending pair behaved identically and was collapsed. */}
-          {status === 'OPEN' && (
-            <StatusButton
-              id={requisition.id}
-              status="APPROVED"
-              label="Approve"
-              variant="primary"
-              action={statusAction}
-            />
-          )}
+        // NOT AN EMPTY CELL, and not a disabled button either. A blank Actions
+        // column reads as something that failed to load; a greyed-out Edit
+        // invites a click that can only be refused. A short reason says which
+        // of the two it is.
+        <span className="text-[11px] text-slate-500" title={NOT_EDITABLE[requisition.status]}>
+          {NOT_EDITABLE[requisition.status]}
+        </span>
+      )}
 
-          {status === 'APPROVED' && (
-            <ConvertForm requisition={requisition} vendors={vendors} action={convertAction} />
-          )}
-
-          <StatusButton
-            id={requisition.id}
-            status="CANCELLED"
-            label="Cancel"
-            action={statusAction}
-          />
-        </>
+      {requisition.status === 'APPROVED' && (
+        <a
+          href={`${PROCUREMENT_ROUTES.purchaseOrders}?fromRequisition=${requisition.id}`}
+          className="whitespace-nowrap rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+        >
+          Convert to PO →
+        </a>
       )}
     </div>
-  );
-}
-
-function StatusButton({
-  id,
-  status,
-  label,
-  variant = 'secondary',
-  action,
-}: {
-  id: string;
-  status: string;
-  label: string;
-  variant?: 'primary' | 'secondary';
-  action: (formData: FormData) => void;
-}) {
-  return (
-    <form action={action}>
-      <input type="hidden" name="id" value={id} />
-      <input type="hidden" name="status" value={status} />
-      <SubmitButton variant={variant} pendingLabel="…">
-        {label}
-      </SubmitButton>
-    </form>
-  );
-}
-
-/**
- * Approved requisition -> purchase order.
- *
- * Vendor, rate and GST are asked for here because a requisition does not carry
- * them: it says what is needed, not what it costs. The resulting order line
- * keeps a link back to this requisition, which is what makes the order
- * traceable to the shortage that caused it.
- */
-function ConvertForm({
-  requisition,
-  vendors,
-  action,
-}: {
-  requisition: RequisitionListItem;
-  vendors: readonly PartySummary[];
-  action: (formData: FormData) => void;
-}) {
-  return (
-    <Disclosure
-      label="Convert to PO"
-      title={`Purchase order from ${requisition.number}`}
-      openLabel={`Raise a purchase order for ${requisition.item.name}`}
-    >
-      {() => (
-        <form action={action} className="w-[min(28rem,80vw)] space-y-3">
-          <input type="hidden" name="id" value={requisition.id} />
-
-          <p className="text-xs text-slate-600">
-            {requisition.requiredQuantity} {requisition.item.uom.toLowerCase()} of{' '}
-            <span className="font-medium">{requisition.item.name}</span>
-          </p>
-
-          <Field label="Vendor" htmlFor={`po-vendor-${requisition.id}`} required>
-            <select
-              id={`po-vendor-${requisition.id}`}
-              name="vendorId"
-              required
-              defaultValue={requisition.preferredVendor?.id ?? ''}
-              className="field-sm w-full"
-            >
-              <option value="">Choose a vendor</option>
-              {vendors.map((vendor) => (
-                <option key={vendor.id} value={vendor.id}>
-                  {vendor.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Rate per unit" htmlFor={`po-rate-${requisition.id}`} required>
-              <input
-                id={`po-rate-${requisition.id}`}
-                name="rate"
-                required
-                inputMode="decimal"
-                className="field-sm w-full"
-              />
-            </Field>
-
-            <Field label="GST %" htmlFor={`po-tax-${requisition.id}`}>
-              <input
-                id={`po-tax-${requisition.id}`}
-                name="taxRatePercent"
-                inputMode="decimal"
-                defaultValue="12"
-                className="field-sm w-full"
-              />
-            </Field>
-          </div>
-
-          <Field label="Expected delivery" htmlFor={`po-eta-${requisition.id}`}>
-            <input
-              id={`po-eta-${requisition.id}`}
-              name="expectedDeliveryDate"
-              type="date"
-              className="field-sm w-full"
-            />
-          </Field>
-
-          <SubmitButton pendingLabel="Creating…">Create purchase order</SubmitButton>
-        </form>
-      )}
-    </Disclosure>
   );
 }

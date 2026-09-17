@@ -23,6 +23,7 @@ import type {
   LowStockItem,
   PartySummary,
   PartyType,
+  Paginated,
   ProcurementSettings,
   ProcurementSummary,
   PurchaseInvoiceListItem,
@@ -38,10 +39,14 @@ import { TenantContextService } from '../tenant/tenant-context.service';
 
 import { parsePositive } from './decimal.util';
 import { ConsumeStockDto, ProcurementListQueryDto } from './dto/common.dto';
-import { CreateGoodsReceiptDto } from './dto/goods-receipt.dto';
-import { ChangeInvoiceStatusDto, CreatePurchaseInvoiceDto } from './dto/invoice.dto';
+import { CreateGoodsReceiptDto, UpdateGoodsReceiptDto } from './dto/goods-receipt.dto';
+import {
+  ChangeInvoiceStatusDto,
+  CreatePurchaseInvoiceDto,
+  UpdateInvoiceDto,
+} from './dto/invoice.dto';
 import { CreateItemDto, CreatePartyDto, CreateProductionPlanDto } from './dto/masters.dto';
-import { RecordPaymentDto } from './dto/payment.dto';
+import { RecordPaymentDto, UpdatePaymentDto } from './dto/payment.dto';
 import {
   ChangePurchaseOrderStatusDto,
   ConvertRequisitionDto,
@@ -275,7 +280,9 @@ export class ProcurementController {
 
   @Get('requisitions')
   @SkipAudit('Read-only listing.')
-  async listRequisitions(@Query() query: ProcurementListQueryDto): Promise<RequisitionListItem[]> {
+  async listRequisitions(
+    @Query() query: ProcurementListQueryDto,
+  ): Promise<Paginated<RequisitionListItem>> {
     return this.requisitions.list(query);
   }
 
@@ -329,7 +336,7 @@ export class ProcurementController {
   @SkipAudit('Read-only listing.')
   async listPurchaseOrders(
     @Query() query: ProcurementListQueryDto,
-  ): Promise<PurchaseOrderListItem[]> {
+  ): Promise<Paginated<PurchaseOrderListItem>> {
     return this.purchaseOrders.list(query);
   }
 
@@ -371,6 +378,22 @@ export class ProcurementController {
     return this.purchaseOrders.update(id, dto);
   }
 
+  /**
+   * Places a draft order.
+   *
+   * Its own endpoint rather than a status change, because it does two things
+   * that must happen together: the order goes live, and the requisition behind
+   * it is marked converted. A plain status write would do only the first and
+   * leave the reorder check free to raise the same shortage again.
+   */
+  @Post('purchase-orders/:id/submit')
+  @Auditable('PurchaseOrder')
+  async submitDraftPurchaseOrder(
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ): Promise<PurchaseOrderListItem> {
+    return this.purchaseOrders.submitDraft(id);
+  }
+
   @Post('purchase-orders/:id/status')
   @Auditable('PurchaseOrder')
   async changePurchaseOrderStatus(
@@ -388,8 +411,17 @@ export class ProcurementController {
   @SkipAudit('Read-only listing.')
   async listGoodsReceipts(
     @Query() query: ProcurementListQueryDto,
-  ): Promise<GoodsReceiptListItem[]> {
+  ): Promise<Paginated<GoodsReceiptListItem>> {
     return this.goodsReceipts.list(query);
+  }
+
+  @Patch('goods-receipts/:id')
+  @Auditable('GoodsReceipt')
+  async updateGoodsReceipt(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: UpdateGoodsReceiptDto,
+  ): Promise<GoodsReceiptListItem> {
+    return this.goodsReceipts.update(id, dto);
   }
 
   @Get('goods-receipts/:id')
@@ -413,7 +445,7 @@ export class ProcurementController {
 
   @Get('qc/lots')
   @SkipAudit('Read-only listing.')
-  async qcQueue(@Query() query: ProcurementListQueryDto): Promise<QcQueueItem[]> {
+  async qcQueue(@Query() query: ProcurementListQueryDto): Promise<Paginated<QcQueueItem>> {
     return this.qc.queue(query);
   }
 
@@ -440,7 +472,9 @@ export class ProcurementController {
 
   @Get('invoices')
   @SkipAudit('Read-only listing.')
-  async listInvoices(@Query() query: ProcurementListQueryDto): Promise<PurchaseInvoiceListItem[]> {
+  async listInvoices(
+    @Query() query: ProcurementListQueryDto,
+  ): Promise<Paginated<PurchaseInvoiceListItem>> {
     return this.invoices.list(query);
   }
 
@@ -455,6 +489,15 @@ export class ProcurementController {
   @HttpCode(HttpStatus.CREATED)
   async createInvoice(@Body() dto: CreatePurchaseInvoiceDto): Promise<PurchaseInvoiceListItem> {
     return this.invoices.create(dto);
+  }
+
+  @Patch('invoices/:id')
+  @Auditable('PurchaseInvoice')
+  async updateInvoice(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: UpdateInvoiceDto,
+  ): Promise<PurchaseInvoiceListItem> {
+    return this.invoices.update(id, dto);
   }
 
   @Post('invoices/:id/status')
@@ -472,7 +515,7 @@ export class ProcurementController {
 
   @Get('payables')
   @SkipAudit('Read-only listing.')
-  async payables(@Query() query: ProcurementListQueryDto): Promise<VendorPayableRow[]> {
+  async payables(@Query() query: ProcurementListQueryDto): Promise<Paginated<VendorPayableRow>> {
     return this.payments.payables(query);
   }
 
@@ -493,5 +536,18 @@ export class ProcurementController {
   @HttpCode(HttpStatus.CREATED)
   async recordPayment(@Body() dto: RecordPaymentDto): Promise<VendorPayableRow> {
     return this.payments.record(dto);
+  }
+
+  /**
+   * Corrects how a payment was recorded. Returns the payable row it belongs to,
+   * so one response refreshes the table the edit was made from.
+   */
+  @Patch('payments/:id')
+  @Auditable('VendorPayment')
+  async updatePayment(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: UpdatePaymentDto,
+  ): Promise<VendorPayableRow> {
+    return this.payments.updatePayment(id, dto);
   }
 }

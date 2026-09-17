@@ -1,6 +1,8 @@
 'use client';
 
 import { useActionState, useEffect, useState } from 'react';
+
+import { useActionToast } from '@/components/toast';
 import { useRouter } from 'next/navigation';
 import {
   GST_RATES,
@@ -13,7 +15,6 @@ import {
 import { saveItemAction, type ActionResult } from './actions';
 import {
   CheckboxField,
-  FormError,
   FormGrid,
   FormSection,
   SelectField,
@@ -60,6 +61,11 @@ export function ItemMasterForm({
     saveItemAction.bind(null, item?.id ?? null),
     INITIAL,
   );
+
+  // The result is announced by the application-wide centred toast rather
+  // than by a banner inside this form, which on a form this long sat above
+  // the fold while the submit button being watched was below it.
+  useActionToast(isPending, state.ok ? 'success' : 'error', state.message);
   const router = useRouter();
 
   // Controlled dropdowns. React 19 resets an uncontrolled form once its action
@@ -106,9 +112,6 @@ export function ItemMasterForm({
 
   return (
     <form action={formAction} className="flex flex-col gap-8" noValidate>
-      {!state.ok && state.message && (
-        <FormError message={state.message} fieldErrors={state.fieldErrors} />
-      )}
 
       <FormSection title="Identity">
         <FormGrid>

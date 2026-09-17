@@ -2,6 +2,8 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { PHASE_DEVELOPMENT_SERVER } from 'next/constants.js';
+
 import { config as loadEnv } from 'dotenv';
 
 // This app's env vars live in the single root .env, but Next only looks in its
@@ -35,4 +37,21 @@ const nextConfig = {
   poweredByHeader: false,
 };
 
-export default nextConfig;
+/**
+ * THE DEV SERVER AND THE PRODUCTION BUILD GET SEPARATE OUTPUT DIRECTORIES.
+ *
+ * They both default to `.next`, so running `pnpm build` while `pnpm dev` is up
+ * — which happens constantly, since the build is part of the check pipeline —
+ * has the production compiler overwrite the manifests the running dev server is
+ * serving from. The dev server then hands the browser a client-reference id
+ * that no longer matches any chunk, and the page dies with "Element type is
+ * invalid. Received a promise that resolves to: undefined" pointing at whatever
+ * client component happened to be first in the tree. Nothing is wrong with that
+ * component, which is what makes it such a bad hour to debug.
+ *
+ * Production keeps `.next` so nothing about deployment changes.
+ */
+export default (phase) => ({
+  ...nextConfig,
+  distDir: phase === PHASE_DEVELOPMENT_SERVER ? '.next-dev' : '.next',
+});

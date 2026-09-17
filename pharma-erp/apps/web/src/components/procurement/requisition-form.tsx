@@ -52,7 +52,12 @@ export function RequisitionForm({
   const today = new Date().toISOString().slice(0, 10);
 
   return (
-    <Disclosure label="Create purchase requisition" title="New purchase requisition">
+    <Disclosure
+      label="Create purchase requisition"
+      title="New purchase requisition"
+      subtitle="Raised against master data that already exists. Nothing here creates an item, a vendor or a plan."
+      closeWhen={state.status === 'success'}
+    >
       {() => (
         <form action={formAction} className="w-full space-y-4">
           <ActionMessage state={state} />

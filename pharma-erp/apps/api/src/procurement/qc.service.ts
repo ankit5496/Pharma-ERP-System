@@ -1,7 +1,18 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { Prisma } from '@pharma-erp/database';
-import type { ProcurementListQuery, QcDecision, QcQueueItem, StockLotStatus } from '@pharma-erp/types';
+import type {
+  Paginated,
+  ProcurementListQuery,
+  QcDecision,
+  QcQueueItem,
+  StockLotStatus,
+} from '@pharma-erp/types';
 
 import { AuditService } from '../common/audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -9,7 +20,7 @@ import { TenantContextService } from '../tenant/tenant-context.service';
 
 import { daysUntil } from './decimal.util';
 import type { RecordQcDecisionDto } from './dto/qc.dto';
-import { dateRange } from './filters.util';
+import { dateRange, paginate } from './filters.util';
 import {
   ITEM_SELECT,
   collectIds,
@@ -75,7 +86,7 @@ export class QcService {
    * Defaults to the pending queue, because that is the Quality Officer's
    * actual worklist; the status filter widens it to the history.
    */
-  async queue(query: ProcurementListQuery): Promise<QcQueueItem[]> {
+  async queue(query: ProcurementListQuery): Promise<Paginated<QcQueueItem>> {
     const where: Prisma.StockLotWhereInput = {};
 
     if (query.status) {
@@ -109,9 +120,13 @@ export class QcService {
         { vendorBatchNumber: { contains: search, mode: 'insensitive' } },
         { item: { name: { contains: search, mode: 'insensitive' } } },
         { item: { code: { contains: search, mode: 'insensitive' } } },
-        { goodsReceiptLine: { goodsReceipt: { number: { contains: search, mode: 'insensitive' } } } },
+        {
+          goodsReceiptLine: { goodsReceipt: { number: { contains: search, mode: 'insensitive' } } },
+        },
       ];
     }
+
+    const { skip, take, page, pageSize } = paginate(query);
 
     const rows = await this.prisma.scoped.stockLot.findMany({
       where,
@@ -119,14 +134,17 @@ export class QcService {
       // Pending first, then soonest expiry: the two things that decide what a
       // Quality Officer should look at next.
       orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'desc' }],
-      take: 500,
+      skip,
+      take,
     });
+
+    const total = await this.prisma.scoped.stockLot.count({ where });
 
     const people = await this.people.load(
       collectIds(...rows.flatMap((row) => row.qcResults.map((result) => result.inspectedById))),
     );
 
-    return rows.map((row) => this.toQueueItem(row, people));
+    return { rows: rows.map((row) => this.toQueueItem(row, people)), total, page, pageSize };
   }
 
   async findLot(id: string): Promise<QcQueueItem> {
@@ -159,9 +177,7 @@ export class QcService {
       // A rejection or a hold has consequences for the vendor and may end in a
       // debit note. Requiring the reason at the point of decision is the only
       // time anyone reliably remembers it.
-      throw new BadRequestException(
-        'A reason is required when rejecting or holding a batch.',
-      );
+      throw new BadRequestException('A reason is required when rejecting or holding a batch.');
     }
 
     const quantity = new Prisma.Decimal(lot.quantityAvailable);
@@ -335,4 +351,3 @@ export class QcService {
 function statusFor(decision: QcDecision): StockLotStatus {
   return decision === 'ACCEPTED' ? 'USABLE' : decision === 'REJECTED' ? 'REJECTED' : 'ON_HOLD';
 }
-

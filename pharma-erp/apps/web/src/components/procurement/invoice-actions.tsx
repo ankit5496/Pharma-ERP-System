@@ -4,6 +4,7 @@ import { PROCUREMENT_ROUTES, type PurchaseInvoiceListItem } from '@pharma-erp/ty
 
 import { changeInvoiceStatusAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
+import { EditInvoiceButton } from './edit-dialogs';
 import { ActionMessage, SubmitButton, useAction } from './form-kit';
 
 /**
@@ -30,6 +31,8 @@ export function InvoiceActions({ invoice }: { invoice: PurchaseInvoiceListItem }
       <div className="max-w-[16rem]">
         <ActionMessage state={state} />
       </div>
+
+      <EditInvoiceButton invoice={invoice} />
 
       {invoice.status === 'CANCELLED' ? (
         <span className="text-xs text-slate-400">Cancelled</span>

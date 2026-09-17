@@ -9,6 +9,8 @@ import type {
   WorkOrderFeasibility,
 } from '@pharma-erp/types';
 
+import { useActionToast } from '@/components/toast';
+
 import {
   checkWorkOrderFeasibilityAction,
   createProductionOrderAction,
@@ -21,25 +23,24 @@ import {
   releaseBatchAction,
   type ActionResult,
 } from '@/app/(app)/workflows/production-actions';
-import { NO_DRAWER, useReportSaved } from '@/components/production/register';
+import { useReportSaved } from '@/components/production/register';
 
 import { ExpiryHint, Quantity } from './shared';
 
 const IDLE: ActionResult = { ok: true };
 
 /**
- * Hands a successful save to the register, which closes the form and confirms
- * it in a dialog of its own.
+ * Closes the drawer once a form has saved.
  *
- * NO TIMER. The form used to show the confirmation itself and then close after
- * a second and a half, which meant the message naming what had just been
- * created removed itself while it was still being read. Closing the form is
- * automatic; dismissing the confirmation is the reader's to do.
+ * ONLY closes it. The confirmation itself is the application-wide toast — see
+ * `Result` below — which arrived on main while this branch was building a
+ * dialog of its own to do the same job. The toast wins: it is what every other
+ * module raises, and it renders in the browser's top layer, so it stays
+ * readable over an open modal in a way an ordinary fixed element cannot.
  *
  * THE MESSAGE IS WHAT MAKES IT A SUCCESS, not `ok` alone. The idle state is
  * `{ ok: true }` with nothing in it, so testing `state.ok` by itself matched
- * the moment the form MOUNTED — every form would report a save as soon as it
- * opened.
+ * the moment the form MOUNTED — every form would close as soon as it opened.
  */
 function useReportOnSaved(state: ActionResult) {
   // From context, not a prop: `form` is built by a server component, and a
@@ -56,39 +57,18 @@ function useReportOnSaved(state: ActionResult) {
 }
 
 /**
- * What the action said, in the form beside the fields it is about.
+ * Announces a finished submission through the application-wide toast.
  *
- * A REFUSAL always shows here: the fields it refers to are here, and a message
- * about a rejected quantity belongs next to the quantity.
+ * This used to be a banner rendered inline in each of the five forms. It now
+ * raises the same centred message every other module raises — `ok: true` with
+ * no message is still the idle state, so a fresh form announces nothing.
  *
- * A SUCCESS shows here only when the form is NOT in a drawer. The drawer forms
- * hand their confirmation to the register (see useReportOnSaved), which closes
- * the form and puts the message in a dialog that waits to be dismissed —
- * rendering it here as well would flash it for the instant before the form is
- * taken away. The packing and release forms sit inline on a batch card and stay
- * put after saving, so for them this banner is the confirmation.
+ * Renders nothing: the toast has its own host.
  */
-function Result({ state }: { state: ActionResult }) {
-  // `useReportSaved` returns the register's reporter inside a drawer and the
-  // context default outside one, which is how the form knows whether something
-  // else is going to show this.
-  const inDrawer = useReportSaved() !== NO_DRAWER;
+function Result({ state, pending }: { state: ActionResult; pending: boolean }) {
+  useActionToast(pending, state.ok ? 'success' : 'error', state.message);
 
-  if (!state.message) return null;
-  if (state.ok && inDrawer) return null;
-
-  return (
-    <div
-      role={state.ok ? 'status' : 'alert'}
-      className={`rounded-md border p-3 text-sm ${
-        state.ok
-          ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
-          : 'border-red-200 bg-red-50 text-red-800'
-      }`}
-    >
-      {state.message}
-    </div>
-  );
+  return null;
 }
 
 const FIELD =
@@ -358,7 +338,7 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
 
   return (
     <form action={action} className="space-y-4 px-6 py-5">
-      <Result state={state} />
+      <Result state={state} pending={pending} />
 
       {/* Ordered as the record reads, not as the inputs happen to be typed:
           the number and the date identify the order, then what it is for, then
@@ -562,7 +542,7 @@ export function IssueMaterialForm({
     <form action={action} className="space-y-4 border-t border-slate-200 px-6 py-5">
       <input type="hidden" name="orderId" value={orderId} />
 
-      <Result state={state} />
+      <Result state={state} pending={pending} />
 
       {/* US-PROD-02's first two fields, plus the choice of what to dispense
           against. The work order is a PICKER now: this form used to be handed
@@ -959,7 +939,7 @@ export function RecordBatchForm({ orders }: { orders: ProductionOrderSummary[] }
 
   return (
     <form action={action} className="space-y-4 px-6 py-5">
-      <Result state={state} />
+      <Result state={state} pending={pending} />
 
       <div className="grid gap-4 sm:grid-cols-3">
         <div>
@@ -1108,7 +1088,7 @@ export function RecordPackingForm({
     <form action={action} className="space-y-3 rounded-md bg-slate-50 p-4">
       <input type="hidden" name="batchId" value={batchId} />
 
-      <Result state={state} />
+      <Result state={state} pending={pending} />
 
       {/* Linked BMR, quantity and variant on one row — US-PROD-04 lists them
           together and they are read together: what this packing is against,
@@ -1291,7 +1271,7 @@ export function ReleaseDecisionForm({
     <form action={action} className="space-y-3 rounded-md border border-slate-200 bg-slate-50 p-4">
       <input type="hidden" name="batchId" value={batchId} />
 
-      <Result state={state} />
+      <Result state={state} pending={pending} />
 
       <div>
         <label htmlFor={`release-notes-${batchId}`} className={LABEL}>

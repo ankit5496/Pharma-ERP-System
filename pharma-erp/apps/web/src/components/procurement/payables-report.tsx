@@ -37,10 +37,7 @@ export function PayablesReportPanel({ result }: { result: ApiResult<PayablesRepo
       {!result.ok ? (
         <ErrorState message={`Could not load the payables report: ${result.error}`} />
       ) : result.data.rows.length === 0 ? (
-        <EmptyState
-          title="Nothing outstanding."
-          hint="Every approved invoice has been settled."
-        />
+        <EmptyState title="Nothing outstanding." hint="Every approved invoice has been settled." />
       ) : (
         <TableWrap>
           <table className="w-full min-w-[64rem] text-left text-sm">
