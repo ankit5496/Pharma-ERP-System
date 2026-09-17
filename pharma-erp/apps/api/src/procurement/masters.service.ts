@@ -70,7 +70,17 @@ export class MastersService {
           type: dto.type ?? 'RAW_MATERIAL',
           uom: dto.uom ?? 'kg',
           reorderLevel,
-          reorderQuantity: parseNonNegative(dto.reorderQuantity ?? '0', 'Reorder quantity'),
+          // NULL when not given, NOT zero. `items_reorder_quantity_positive`
+          // is CHECK (reorder_quantity IS NULL OR reorder_quantity > 0), so
+          // defaulting an omitted value to '0' made every item created without a
+          // reorder policy fail the constraint — and it surfaced as a 500,
+          // because a check violation is not a Prisma error code this service
+          // translates. Null is also the honest value: "no reorder quantity
+          // configured" is not the same claim as "reorder zero of it".
+          reorderQuantity:
+            dto.reorderQuantity === undefined
+              ? null
+              : parseNonNegative(dto.reorderQuantity, 'Reorder quantity'),
           shelfLifeMonths: dto.shelfLifeMonths ?? null,
           // GST lives on the item; there is no separate tax master.
           gstRate: dto.gstRate === undefined ? null : parseNonNegative(dto.gstRate, 'GST rate'),

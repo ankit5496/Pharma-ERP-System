@@ -13,6 +13,8 @@ import { useFormStatus } from 'react-dom';
 
 import { changeRequisitionStatusAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
+import { RowActionMenu, type RowAction } from '@/components/row-action-menu';
+
 import { EditRequisitionButton } from './edit-dialogs';
 import { ActionMessage, useAction } from './form-kit';
 
@@ -34,15 +36,17 @@ function blockedBecause(current: RequisitionStatus, target: RequisitionStatus): 
 
   switch (target) {
     case 'OPEN':
-      return current === 'APPROVED' ? null : 'Set when the requisition is raised.';
+      // Not reachable from anywhere. Approving is a signature, and unsigning it
+      // by picking Open would leave no record that it ever happened.
+      return 'Set when the requisition is raised.';
     case 'APPROVED':
       return current === 'OPEN' ? null : 'Only an open requisition can be approved.';
     case 'CONVERTED_TO_PO':
       return 'Set automatically when a purchase order is placed.';
     case 'CANCELLED':
-      return current === 'CONVERTED_TO_PO'
-        ? 'A requisition with an order against it cannot be cancelled.'
-        : null;
+      return current === 'OPEN' || current === 'APPROVED'
+        ? null
+        : 'A requisition with an order against it cannot be cancelled.';
     default:
       return null;
   }
@@ -178,9 +182,9 @@ function StatusControl({
 /** Why this requisition can no longer be edited, by the status it reached. */
 const NOT_EDITABLE: Record<RequisitionStatus, string> = {
   OPEN: '',
-  APPROVED: 'Approved — no longer editable',
-  CONVERTED_TO_PO: 'Ordered — no longer editable',
-  CANCELLED: 'Cancelled',
+  APPROVED: 'An approved requisition can no longer be edited.',
+  CONVERTED_TO_PO: 'An ordered requisition can no longer be edited.',
+  CANCELLED: 'A cancelled requisition can no longer be edited.',
 };
 
 /**
@@ -202,33 +206,49 @@ export function RequisitionActions({
   requisition: RequisitionListItem;
   vendors: readonly PartySummary[];
 }) {
+  const [editing, setEditing] = useState(false);
+
   // The API accepts an edit only while the requisition is Open. Past that it
   // has been approved, ordered against or withdrawn, and the document is no
   // longer this screen's to rewrite.
   const editable = requisition.status === 'OPEN';
 
+  // CONVERSION IS GATED ON APPROVED, and the same rule is enforced by the API —
+  // `assertRequisitionConvertible` refuses anything else and refuses a second
+  // order against a requisition that already has one. Greying the entry here
+  // saves a round trip and says why; it is not what makes the rule hold, which
+  // is why editing the page's state cannot get past it.
+  const convertReason =
+    requisition.status === 'APPROVED'
+      ? requisition.linkedPurchaseOrders.length > 0
+        ? `${requisition.linkedPurchaseOrders[0]!.number} already covers this requisition.`
+        : null
+      : 'Only an approved requisition can be converted to a purchase order.';
+
+  const actions: RowAction[] = [
+    {
+      label: 'Edit',
+      onSelect: () => setEditing(true),
+      disabledReason: editable ? null : NOT_EDITABLE[requisition.status],
+    },
+    {
+      label: 'Convert to PO',
+      href: `${PROCUREMENT_ROUTES.purchaseOrders}?fromRequisition=${requisition.id}`,
+      disabledReason: convertReason,
+    },
+  ];
+
   return (
     <div className="flex flex-col items-start gap-1.5">
-      {editable ? (
-        <EditRequisitionButton requisition={requisition} vendors={vendors} />
-      ) : (
-        // NOT AN EMPTY CELL, and not a disabled button either. A blank Actions
-        // column reads as something that failed to load; a greyed-out Edit
-        // invites a click that can only be refused. A short reason says which
-        // of the two it is.
-        <span className="text-[11px] text-slate-500" title={NOT_EDITABLE[requisition.status]}>
-          {NOT_EDITABLE[requisition.status]}
-        </span>
-      )}
+      <RowActionMenu label={requisition.number} actions={actions} />
 
-      {requisition.status === 'APPROVED' && (
-        <a
-          href={`${PROCUREMENT_ROUTES.purchaseOrders}?fromRequisition=${requisition.id}`}
-          className="whitespace-nowrap rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
-        >
-          Convert to PO →
-        </a>
-      )}
+      {/* No trigger of its own: the menu entry above opens it. */}
+      <EditRequisitionButton
+        requisition={requisition}
+        vendors={vendors}
+        isOpen={editing}
+        onOpenChange={setEditing}
+      />
     </div>
   );
 }

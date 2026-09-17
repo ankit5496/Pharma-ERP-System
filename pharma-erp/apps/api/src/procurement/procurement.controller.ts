@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Delete,
   Patch,
   Post,
   Query,
@@ -340,6 +341,13 @@ export class ProcurementController {
     return this.purchaseOrders.list(query);
   }
 
+  /** Unplaced drafts, for the draft table above the register. */
+  @Get('purchase-orders/drafts')
+  @SkipAudit('Read-only listing.')
+  async draftOrders(): Promise<PurchaseOrderListItem[]> {
+    return this.purchaseOrders.drafts();
+  }
+
   /** Orders open for receiving, for the GRN form. */
   @Get('purchase-orders/receivable')
   @SkipAudit('Read-only.')
@@ -386,6 +394,16 @@ export class ProcurementController {
    * it is marked converted. A plain status write would do only the first and
    * leave the reorder check free to raise the same shortage again.
    */
+  /**
+   * Discards a draft. Drafts only — a placed order is cancelled, not deleted.
+   */
+  @Delete('purchase-orders/:id')
+  @Auditable('PurchaseOrder')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async discardDraftOrder(@Param('id', new ParseUUIDPipe()) id: string): Promise<void> {
+    return this.purchaseOrders.discardDraft(id);
+  }
+
   @Post('purchase-orders/:id/submit')
   @Auditable('PurchaseOrder')
   async submitDraftPurchaseOrder(

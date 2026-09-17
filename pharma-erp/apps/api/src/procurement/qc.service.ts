@@ -87,7 +87,14 @@ export class QcService {
    * actual worklist; the status filter widens it to the history.
    */
   async queue(query: ProcurementListQuery): Promise<Paginated<QcQueueItem>> {
-    const where: Prisma.StockLotWhereInput = {};
+    // COMPANY-OWNED ONLY. Incoming QC clears a VENDOR’s material before it may
+    // be used; a principal's free-of-cost material (US-JW-02) arrives on their
+    // own delivery challan, has no goods receipt behind it, and has no
+    // incoming-QC step in the specification. Listing it here would put rows in
+    // a Quality Officer’s worklist that they have no document to inspect
+    // against. The quality gate job work DOES have is US-JW-04, on the
+    // finished batch.
+    const where: Prisma.StockLotWhereInput = { ownership: 'COMPANY_OWNED' };
 
     if (query.status) {
       where.status = query.status as StockLotStatus;
@@ -201,7 +208,11 @@ export class QcService {
         data: { status: statusFor(dto.decision) },
       });
 
-      const reference = lot.goodsReceiptLine.goodsReceipt.number;
+      // Non-null by the `ownership` filter in requireLot; guarded rather than
+      // asserted so widening that filter fails loudly instead of at runtime.
+      const reference = lot.goodsReceiptLine
+        ? lot.goodsReceiptLine.goodsReceipt.number
+        : lot.lotNumber;
 
       if (willBeUsable && !wasUsable) {
         // Quarantine empties, usable stock gains. Two entries rather than one,
@@ -310,7 +321,10 @@ export class QcService {
 
   private async requireLot(id: string): Promise<LotRow> {
     const row = await this.prisma.scoped.stockLot.findFirst({
-      where: { id },
+      // Same narrowing as the queue, and for the same reason: a QC decision
+      // recorded against a principal's material would be a decision about
+      // stock this gate does not govern.
+      where: { id, ownership: 'COMPANY_OWNED' },
       include: LOT_INCLUDE,
     });
 
@@ -330,6 +344,18 @@ export class QcService {
   }
 
   private toQueueItem(row: LotRow, people: Map<string, string>): QcQueueItem {
+    if (!row.goodsReceiptLine) {
+      // Unreachable: both queries above filter to COMPANY_OWNED, and the
+      // `stock_lots_has_one_source` CHECK guarantees such a lot has a goods
+      // receipt line. Stated as a throw rather than a `!` so that if the
+      // filter is ever relaxed this fails where the cause is, not three
+      // frames away in a mapper.
+      throw new Error(
+        `Lot ${row.lotNumber} has no goods receipt behind it, so it is not incoming-QC ` +
+          'material. This is a query that should have excluded it.',
+      );
+    }
+
     const receipt = row.goodsReceiptLine.goodsReceipt;
 
     return {

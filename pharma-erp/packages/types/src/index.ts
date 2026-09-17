@@ -3,6 +3,7 @@ export * from './dashboard';
 export * from './datasets';
 export * from './health';
 export * from './job-work';
+export * from './job-work-execution';
 export * from './licences';
 export * from './master-data';
 export * from './order-to-cash';

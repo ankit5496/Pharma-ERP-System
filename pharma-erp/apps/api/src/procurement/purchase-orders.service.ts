@@ -118,7 +118,12 @@ export class PurchaseOrdersService {
   async list(query: ProcurementListQuery): Promise<Paginated<PurchaseOrderListItem>> {
     const where: Prisma.PurchaseOrderWhereInput = { deletedAt: null };
 
+    // DRAFTS ARE EXCLUDED unless asked for by name. They are unfinished work
+    // rather than orders, they have their own table on the screen, and a
+    // half-priced draft sitting among placed orders made the register's totals
+    // read as though money had been committed that had not.
     if (query.status) where.status = query.status as PurchaseOrderStatus;
+    else where.status = { not: 'DRAFT' };
     if (query.vendorId) where.vendorId = query.vendorId;
     const lineFilters: Prisma.PurchaseOrderLineWhereInput[] = [];
 
@@ -161,6 +166,27 @@ export class PurchaseOrdersService {
     return { rows: rows.map((row) => this.toListItem(row, people)), total, page, pageSize };
   }
 
+  /**
+   * Drafts only, newest first.
+   *
+   * A separate method rather than a status filter on `list` because the screen
+   * shows both at once: one paged register of real orders, and above it the
+   * drafts belonging to whoever is looking. Sharing the pager between them
+   * would make paging one of them page the other.
+   */
+  async drafts(): Promise<PurchaseOrderListItem[]> {
+    const rows = await this.prisma.scoped.purchaseOrder.findMany({
+      where: { deletedAt: null, status: 'DRAFT' },
+      include: PO_INCLUDE,
+      orderBy: [{ createdAt: 'desc' }],
+      take: 100,
+    });
+
+    const people = await this.people.load(collectIds(...rows.map((row) => row.createdById)));
+
+    return rows.map((row) => this.toListItem(row, people));
+  }
+
   async findOne(id: string): Promise<PurchaseOrderListItem> {
     const row = await this.requireOrder(id);
     const people = await this.people.load(collectIds(row.createdById));
@@ -178,20 +204,42 @@ export class PurchaseOrdersService {
     const tenantId = this.tenantContext.requireTenantId();
     const createdById = this.requireActingUser();
 
-    if (dto.lines.length === 0) {
+    // A DRAFT IS PARKED WORK, so nothing below is demanded of it. A placed
+    // order is a commitment to a vendor and every rule still applies — the
+    // difference is the draft flag, which is why these checks live here and not
+    // in the DTO. `submitDraft` runs the same rules again when the draft is
+    // finally placed, and that is the check that decides: a draft can sit for a
+    // week and be edited in between.
+    const submitted = dto.lines ?? [];
+
+    if (!asDraft && submitted.length === 0) {
       throw new BadRequestException('A purchase order needs at least one line.');
     }
 
     const vendor = await this.requireVendor(dto.vendorId);
 
+    // On a draft, a line nobody has put a quantity on yet is not stored at all.
+    // Keeping it as a zero would be a number nobody typed, and `submitDraft`
+    // would then accept an order for nothing.
+    const usable = asDraft
+      ? submitted.filter((line) => line.quantity !== undefined && line.quantity.trim() !== '')
+      : submitted;
+
     // Every item and requisition is resolved before anything is written, so a
     // bad id fails the whole request rather than leaving a half-built order.
     const lines = await Promise.all(
-      dto.lines.map(async (line) => {
+      usable.map(async (line) => {
         const item = await this.requireItem(line.itemId);
-        const quantity = parsePositive(line.quantity, `Quantity for ${item.code}`);
-        const rate = parseNonNegative(line.rate, `Rate for ${item.code}`);
-        const taxRatePercent = parseNonNegative(line.taxRatePercent, `Tax rate for ${item.code}`);
+        const quantity = parsePositive(line.quantity ?? '', `Quantity for ${item.code}`);
+
+        // Unpriced on a draft: the rate is what a buyer is still negotiating,
+        // and zero is the only figure that leaves the total honest until they
+        // have one.
+        const rate = parseNonNegative(line.rate ?? (asDraft ? '0' : ''), `Rate for ${item.code}`);
+        const taxRatePercent = parseNonNegative(
+          line.taxRatePercent ?? (asDraft ? '0' : ''),
+          `Tax rate for ${item.code}`,
+        );
 
         // US-PUR-02: "A Purchase Order can only be created from an Approved
         // Purchase Requisition." Every line must cite one — there is no path
@@ -371,35 +419,37 @@ export class PurchaseOrdersService {
         const tenantId = this.tenantContext.requireTenantId();
 
         const rebuilt = await Promise.all(
-          dto.lines!.map(async (line) => {
-            const item = await this.requireItem(line.itemId);
-            const quantity = parsePositive(line.quantity, `Quantity for ${item.code}`);
-            const rate = parseNonNegative(line.rate, `Rate for ${item.code}`);
-            const taxRatePercent = parseNonNegative(
-              line.taxRatePercent,
-              `Tax rate for ${item.code}`,
-            );
-
-            if (!line.requisitionId) {
-              throw new BadRequestException(
-                `${item.code}: a purchase order line must come from an approved requisition.`,
+          dto
+            .lines!.filter((line) => line.quantity !== undefined && line.quantity.trim() !== '')
+            .map(async (line) => {
+              const item = await this.requireItem(line.itemId);
+              const quantity = parsePositive(line.quantity ?? '', `Quantity for ${item.code}`);
+              const rate = parseNonNegative(line.rate ?? '0', `Rate for ${item.code}`);
+              const taxRatePercent = parseNonNegative(
+                line.taxRatePercent ?? '0',
+                `Tax rate for ${item.code}`,
               );
-            }
 
-            // The draft's own lines are excluded, or editing a draft would
-            // report the draft itself as a duplicate of the requisition.
-            await this.assertRequisitionConvertible(line.requisitionId, id);
+              if (!line.requisitionId) {
+                throw new BadRequestException(
+                  `${item.code}: a purchase order line must come from an approved requisition.`,
+                );
+              }
 
-            return {
-              tenantId,
-              itemId: item.id,
-              requisitionId: line.requisitionId,
-              quantity,
-              rate,
-              taxRatePercent,
-              ...computeLineAmounts(quantity, rate, taxRatePercent),
-            };
-          }),
+              // The draft's own lines are excluded, or editing a draft would
+              // report the draft itself as a duplicate of the requisition.
+              await this.assertRequisitionConvertible(line.requisitionId, id);
+
+              return {
+                tenantId,
+                itemId: item.id,
+                requisitionId: line.requisitionId,
+                quantity,
+                rate,
+                taxRatePercent,
+                ...computeLineAmounts(quantity, rate, taxRatePercent),
+              };
+            }),
         );
 
         const totals = sumLineAmounts(rebuilt);
@@ -670,6 +720,43 @@ export class PurchaseOrdersService {
     const people = await this.people.load(collectIds(after.createdById));
 
     return this.toListItem(after, people);
+  }
+
+  /**
+   * Discards a draft.
+   *
+   * DRAFTS ONLY, and that restriction is what makes this safe: a draft has
+   * never been placed, so nothing can have been received or invoiced against
+   * it and no requisition has been marked converted by it. A placed order is
+   * cancelled instead, which leaves the record and its history in place.
+   *
+   * Soft, like every deletion in this module — `purchase_orders` carries a
+   * `prevent_hard_delete` trigger, and the row stays readable to anything that
+   * already cites it.
+   */
+  async discardDraft(id: string): Promise<void> {
+    const before = await this.requireOrder(id);
+
+    if (before.status !== 'DRAFT') {
+      throw new ConflictException(
+        `${before.number} is ${label(before.status)}, not a draft. Cancel it instead — a placed ` +
+          'order stays on the record.',
+      );
+    }
+
+    await this.prisma.transaction(async (tx) => {
+      // The lines go with it. They have no independent existence, and leaving
+      // them would keep the requisition looking as though an order covered it.
+      await tx.purchaseOrderLine.deleteMany({ where: { purchaseOrderId: id } });
+      await tx.purchaseOrder.update({ where: { id }, data: { deletedAt: new Date() } });
+    });
+
+    await this.audit.record({
+      entityType: 'PurchaseOrder',
+      entityId: id,
+      action: 'DELETE',
+      before: { number: before.number, status: before.status },
+    });
   }
 
   private async requireVendor(vendorId: string) {

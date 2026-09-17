@@ -12,6 +12,9 @@ export type DocumentType =
   | 'PAY'
   | 'LOT'
   | 'PLAN'
+  // Production dispensing notes. The column existed on the hosted database
+  // before the series did; see the material_issue_number_reconcile migration.
+  | 'MI'
   // Order-to-Cash. Added when the O2C services that already passed these
   // reached main without them — the numbering service is the one place that
   // knows every document series, so a new one has to be declared here or it
@@ -20,7 +23,14 @@ export type DocumentType =
   | 'DSP'
   | 'SINV'
   | 'RCPT'
-  | 'SRTN';
+  | 'SRTN'
+  // Job work. Three series rather than one: an auditor tracing a principal's
+  // material asks three different questions — what was ordered, what came in on
+  // their challan, and what went back — and one shared series would interleave
+  // all three into a sequence with no meaning.
+  | 'JW'
+  | 'JWR'
+  | 'JWI';
 
 /**
  * Allocates human-readable document numbers: PR-2026-0001, GRN-2026-0014.

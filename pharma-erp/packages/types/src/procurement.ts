@@ -509,9 +509,15 @@ export interface PurchaseOrderListItem {
 export interface CreatePurchaseOrderLineRequest {
   itemId: string;
   requisitionId?: string;
-  quantity: string;
-  rate: string;
-  taxRatePercent: string;
+  /**
+   * Optional ONLY on a draft. The service demands all three for a placed
+   * order, and again when a draft is submitted — a type cannot express
+   * "required unless saveAsDraft", so the rule lives where the flag is
+   * visible rather than being weakened into a comment here.
+   */
+  quantity?: string;
+  rate?: string;
+  taxRatePercent?: string;
 }
 
 export interface CreatePurchaseOrderRequest {
@@ -521,7 +527,8 @@ export interface CreatePurchaseOrderRequest {
   notes?: string;
   /** Save without placing the order. Absent means a real, placed order. */
   saveAsDraft?: boolean;
-  lines: CreatePurchaseOrderLineRequest[];
+  /** May be omitted or empty on a draft; a placed order needs at least one. */
+  lines?: CreatePurchaseOrderLineRequest[];
 }
 
 /** Body of the convert-requisition-to-PO action. */

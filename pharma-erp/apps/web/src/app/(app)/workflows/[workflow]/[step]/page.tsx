@@ -4,6 +4,7 @@ import { findWorkflow, findWorkflowStep } from '@pharma-erp/types';
 
 // AppShell is deliberately absent: the workflow layout renders it now, so a
 // sub-tab change no longer re-runs the session lookup. See ../layout.tsx.
+import { JOB_WORK_STEPS } from '@/components/job-work/panels';
 import { OrderToCashStep } from '@/components/order-to-cash';
 import { StepSearch } from '@/components/order-to-cash/step-search';
 import {
@@ -82,7 +83,7 @@ export default async function WorkflowStepPage({ params, searchParams }: PagePro
             <OrderToCashStep step={step.key} search={search} />
           </>
         ) : step.state === 'ready' ? (
-          <ProductionStep workflowKey={workflow.key} stepKey={step.key} />
+          <BuiltStep workflowKey={workflow.key} stepKey={step.key} />
         ) : (
           <StepPlaceholder workflowLabel={workflow.label} stepLabel={step.label} />
         )}
@@ -107,8 +108,15 @@ const PRODUCTION_STEPS: Record<string, () => React.ReactNode> = {
   'batch-release': () => <BatchReleasePanel />,
 };
 
-function ProductionStep({ workflowKey, stepKey }: { workflowKey: string; stepKey: string }) {
-  const render = workflowKey === 'production-quality' ? PRODUCTION_STEPS[stepKey] : undefined;
+function BuiltStep({ workflowKey, stepKey }: { workflowKey: string; stepKey: string }) {
+  const table =
+    workflowKey === 'production-quality'
+      ? PRODUCTION_STEPS
+      : workflowKey === 'job-work'
+        ? JOB_WORK_STEPS
+        : undefined;
+
+  const render = table?.[stepKey];
 
   if (!render) {
     // Reachable only by marking a step 'ready' without adding it above. Says
