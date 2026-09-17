@@ -9,8 +9,8 @@ import type {
   SalesInvoiceListItem,
 } from '@pharma-erp/types';
 
-import { NumberingService } from '../../procurement/numbering.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { NumberingService } from '../../procurement/numbering.service';
 import { TenantContextService } from '../../tenant/tenant-context.service';
 
 import type { CreateSalesInvoiceDto, UpdateSalesInvoiceDto } from './dto/sales-invoice.dto';

@@ -1,6 +1,8 @@
 'use client';
 
 import { useActionState, useEffect, useState } from 'react';
+
+import { useActionToast } from '@/components/toast';
 import { useRouter } from 'next/navigation';
 import {
   GST_RATES,
@@ -13,7 +15,6 @@ import {
 import { saveItemAction, type ActionResult } from './actions';
 import {
   CheckboxField,
-  FormError,
   FormGrid,
   FormSection,
   SelectField,
@@ -60,6 +61,11 @@ export function ItemMasterForm({
     saveItemAction.bind(null, item?.id ?? null),
     INITIAL,
   );
+
+  // The result is announced by the application-wide centred toast rather
+  // than by a banner inside this form, which on a form this long sat above
+  // the fold while the submit button being watched was below it.
+  useActionToast(isPending, state.ok ? 'success' : 'error', state.message);
   const router = useRouter();
 
   // Controlled dropdowns. React 19 resets an uncontrolled form once its action
@@ -101,14 +107,17 @@ export function ItemMasterForm({
   const typed = (field: string, stored?: string | number | null) =>
     state.values?.[field] ?? (stored === null || stored === undefined ? undefined : String(stored));
 
+  /** The refusal about one control, when the save named it. */
+  const errorFor = (field: string) => state.fieldErrors?.[field];
+
   return (
     <form action={formAction} className="flex flex-col gap-8" noValidate>
-      {!state.ok && state.message && <FormError message={state.message} />}
 
       <FormSection title="Identity">
         <FormGrid>
           <TextField
             name="code"
+            error={errorFor('code')}
             label="Item code"
             required
             maxLength={64}
@@ -123,6 +132,7 @@ export function ItemMasterForm({
           />
           <SelectField
             name="category"
+            error={errorFor('category')}
             label="Category"
             required
             options={CATEGORY_OPTIONS}
@@ -132,6 +142,7 @@ export function ItemMasterForm({
           />
           <TextField
             name="brandName"
+            error={errorFor('brandName')}
             label="Brand name"
             maxLength={255}
             placeholder="Calpol 500"
@@ -157,6 +168,7 @@ export function ItemMasterForm({
           />
           <SelectField
             name="uom"
+            error={errorFor('uom')}
             label="Unit of measure"
             required
             options={UOM_OPTIONS}
@@ -173,6 +185,7 @@ export function ItemMasterForm({
         <FormGrid>
           <TextField
             name="hsnCode"
+            error={errorFor('hsnCode')}
             label="HSN code"
             required
             inputMode="numeric"
@@ -183,6 +196,7 @@ export function ItemMasterForm({
           />
           <SelectField
             name="gstRate"
+            error={errorFor('gstRate')}
             label="GST rate"
             required
             options={GST_RATE_OPTIONS}
@@ -192,6 +206,7 @@ export function ItemMasterForm({
           />
           <TextField
             name="mrp"
+            error={errorFor('mrp')}
             label="MRP (₹)"
             type="number"
             min="0"

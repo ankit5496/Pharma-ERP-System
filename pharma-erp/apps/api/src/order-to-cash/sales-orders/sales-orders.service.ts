@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
-import { Prisma } from '@pharma-erp/database';
 
+import { Prisma } from '@pharma-erp/database';
 import type {
   CheckResult,
   OrderCheckResult,
@@ -11,8 +11,8 @@ import type {
   ScheduleCategory,
 } from '@pharma-erp/types';
 
-import { NumberingService } from '../../procurement/numbering.service';
 import { PrismaService } from '../../prisma/prisma.service';
+import { NumberingService } from '../../procurement/numbering.service';
 import { TenantContextService } from '../../tenant/tenant-context.service';
 import { AllocationService } from '../allocation/allocation.service';
 

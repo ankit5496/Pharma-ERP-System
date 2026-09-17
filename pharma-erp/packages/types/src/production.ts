@@ -14,18 +14,31 @@
 // ./procurement, which is where the shared item master lives. Imported here
 // rather than redeclared: two definitions of one table is what produced the
 // merge this comment is being written during.
-import type { ItemSummary, ItemType, ScheduleClassification } from './procurement';
+import type { ItemSummary, ItemType, ScheduleClassification, StockLotStatus } from './procurement';
 
+/**
+ * Ordered as the process runs, so a status filter reads down the workflow
+ * rather than alphabetically.
+ *
+ * The array is the source and the union is derived from it: a filter needs the
+ * values at runtime, and a hand-written union beside a hand-written list is two
+ * places to forget a status.
+ */
+export const PRODUCTION_ORDER_STATUSES = [
+  'PLANNED',
+  'MATERIAL_ISSUED',
+  'IN_PROGRESS',
+  'PACKED',
+  'UNDER_TEST',
+  'CLOSED',
+  'CANCELLED',
+] as const;
 
+export type ProductionOrderStatus = (typeof PRODUCTION_ORDER_STATUSES)[number];
 
+export const BATCH_RELEASE_STATUSES = ['PENDING', 'RELEASED', 'BLOCKED'] as const;
 
-export type MaterialLotStatus = 'QUARANTINE' | 'USABLE' | 'REJECTED';
-
-export type ProductionOrderStatus =
-  'PLANNED' | 'MATERIAL_ISSUED' | 'IN_PROGRESS' | 'PACKED' | 'UNDER_TEST' | 'CLOSED' | 'CANCELLED';
-
-export type BatchReleaseStatus = 'PENDING' | 'RELEASED' | 'BLOCKED';
-
+export type BatchReleaseStatus = (typeof BATCH_RELEASE_STATUSES)[number];
 
 /**
  * Short labels for the tab row and grid; the long form is in
@@ -50,12 +63,6 @@ export const SCHEDULE_CLASSIFICATION_HINTS: Record<ScheduleClassification, strin
 /** GST slabs a medicament can fall in. Held here so the form and the API agree. */
 export const GST_RATES = ['0', '5', '12', '18', '28'] as const;
 
-export const MATERIAL_LOT_STATUS_LABELS: Record<MaterialLotStatus, string> = {
-  QUARANTINE: 'Quarantine',
-  USABLE: 'Usable',
-  REJECTED: 'Rejected',
-};
-
 export const PRODUCTION_ORDER_STATUS_LABELS: Record<ProductionOrderStatus, string> = {
   PLANNED: 'Planned',
   MATERIAL_ISSUED: 'Material issued',
@@ -75,7 +82,6 @@ export const BATCH_RELEASE_STATUS_LABELS: Record<BatchReleaseStatus, string> = {
 // ---------------------------------------------------------------------------
 // Items and stock
 // ---------------------------------------------------------------------------
-
 
 /**
  * What the create endpoint accepts.
@@ -132,12 +138,24 @@ export interface CreateItemRequest {
   reorderQuantity?: string;
 }
 
-export interface MaterialLotSummary {
+/**
+ * A lot of raw or packaging material as production sees it.
+ *
+ * This is a `stock_lots` row — the same lot Procure-to-Pay received and
+ * incoming QC released — not a production-private copy. There is one stock
+ * table, and both modules read it; see the note on MaterialIssueLine.lot.
+ *
+ * `expiryDate` is nullable because cartons, leaflets and most packaging carry
+ * no expiry at all. Null is a fact about the material, not a missing value:
+ * FEFO deliberately orders such lots last. See STOCK_LOT_STATUS_LABELS for the
+ * statuses; only USABLE is ever issued.
+ */
+export interface ProductionStockLot {
   id: string;
   lotNumber: string;
-  /** ISO date, no time component. */
-  expiryDate: string;
-  status: MaterialLotStatus;
+  /** ISO date, no time component. Null when the material does not expire. */
+  expiryDate: string | null;
+  status: StockLotStatus;
   quantityAvailable: string;
   quantityReceived: string;
   item: ItemSummary;
@@ -173,6 +191,21 @@ export interface CreateBomRequest {
   lines: { itemId: string; quantityPer: string; notes?: string }[];
 }
 
+/**
+ * Changes a formulation in place, instead of superseding it with a new version.
+ *
+ * No `productId` and no `activate`: a formulation that changes which product it
+ * makes is a different formulation, and which version is current is a decision
+ * about the whole set rather than about one row. The API refuses the edit once
+ * a work order, brand mapping or production plan references the formulation —
+ * at that point something downstream was decided on these numbers.
+ */
+export interface UpdateBomRequest {
+  outputQuantity: string;
+  instructions?: string;
+  lines: { itemId: string; quantityPer: string; notes?: string }[];
+}
+
 // ---------------------------------------------------------------------------
 // Production orders
 // ---------------------------------------------------------------------------
@@ -204,6 +237,49 @@ export interface CreateProductionOrderRequest {
 // ---------------------------------------------------------------------------
 
 /**
+ * Whether a batch of a given size could be made, and what it would consume —
+ * US-PROD-01.
+ *
+ * Returned before the work order is raised, so the requirement grid and the
+ * Pass/Fail on the form are the SAME numbers the save will check. A screen that
+ * computed its own answer would eventually disagree with the server, and the
+ * disagreement would show up as a save refused for reasons the page said were
+ * fine.
+ */
+export interface WorkOrderFeasibilityLine {
+  itemId: string;
+  code: string;
+  name: string;
+  uom: string;
+  /** Scaled from the formulation to the batch size. */
+  required: string;
+  /** Usable stock on hand — quarantined and rejected lots excluded. */
+  available: string;
+  /** `required - available`, floored at zero. */
+  short: string;
+  isShort: boolean;
+}
+
+export interface WorkOrderFeasibility {
+  productId: string;
+  productCode: string;
+  productName: string;
+  /** The formulation the batch would follow. */
+  bomVersion: number;
+  batchQuantity: string;
+  /** False when any material is short. The create endpoint refuses then too. */
+  canRaise: boolean;
+  /** Absent only when the product has no active formulation to scale. */
+  lines: WorkOrderFeasibilityLine[];
+  /**
+   * Why it cannot be raised, when the reason is not a shortage — no active
+   * formulation, or no active pack specification. Null when the only thing
+   * stopping it is stock, which `lines` already explains.
+   */
+  blockedReason: string | null;
+}
+
+/**
  * What the FEFO planner intends to consume, before anything is written.
  *
  * Returned by a preview endpoint so the shop floor sees which lots will be
@@ -221,9 +297,21 @@ export interface MaterialIssuePlanLine {
   allocations: {
     lotId: string;
     lotNumber: string;
-    expiryDate: string;
+    /**
+     * YYYY-MM-DD, or null.
+     *
+     * Nullable because stock lots carry an optional expiry: a carton or a
+     * leaflet usually has none. FEFO sorts those LAST rather than excluding
+     * them — a component with no expiry cannot expire, so it is the safest
+     * thing to leave on the shelf, not a reason to make it unissuable.
+     */
+    expiryDate: string | null;
     quantity: string;
     quantityAvailable: string;
+    /** True when this lot is not the one FEFO would have chosen. */
+    isFefoOverride?: boolean;
+    /** Why, when it is. Required by the column's CHECK constraint. */
+    overrideReason?: string | null;
   }[];
 }
 
@@ -235,16 +323,57 @@ export interface MaterialIssuePlan {
   lines: MaterialIssuePlanLine[];
 }
 
+/**
+ * Naming the lot to draw from, rather than taking the one FEFO proposed —
+ * US-PROD-02.
+ *
+ * The criterion is that the screen always PROPOSES the nearest-expiry lot. It
+ * does not forbid choosing another: a container damaged in the store, or one
+ * held back for a retained sample, is a real reason. What it cannot be is
+ * silent, so the reason travels with the choice and is stored on the line.
+ *
+ * `reason` is optional because naming a lot is not always a departure —
+ * confirming the one already suggested is the case the story calls "Actual
+ * Batch, manually confirmed, defaults to the suggestion". The API requires it
+ * when, and only when, the lot differs from the plan's proposal.
+ */
+export interface MaterialIssueOverride {
+  itemId: string;
+  lotId: string;
+  quantity: string;
+  /** Required when the lot differs from the FEFO suggestion; the API enforces that. */
+  reason?: string;
+}
+
+/** What the issue endpoint accepts. Omit `overrides` for a plain FEFO issue. */
+export interface IssueMaterialRequest {
+  overrides?: MaterialIssueOverride[];
+}
+
 export interface MaterialIssueLineView {
   id: string;
   item: ItemSummary;
   lotNumber: string;
-  expiryDate: string;
+  /** YYYY-MM-DD, or null for a lot with no expiry. */
+  expiryDate: string | null;
   quantityIssued: string;
+  /** US-PROD-02: departing from the FEFO suggestion, and why. */
+  isFefoOverride: boolean;
+  overrideReason: string | null;
 }
 
 export interface MaterialIssueView {
   id: string;
+  /** US-PROD-02's "Issue No.", as MI-YYYY-NNNN. Allocated when the issue saves. */
+  issueNumber: string;
+  /**
+   * The work order this dispensing was against.
+   *
+   * Denormalised onto the view because the register lists every issue across
+   * every order, and without it each row would say what was dispensed but not
+   * what for.
+   */
+  orderNumber: string;
   issuedAt: string;
   issuedBy: string | null;
   notes: string | null;

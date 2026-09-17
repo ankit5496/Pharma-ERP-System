@@ -1,9 +1,15 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { Prisma } from '@pharma-erp/database';
 import type {
   GoodsReceiptListItem,
   GoodsReceiptLineItem,
+  Paginated,
   ProcurementListQuery,
 } from '@pharma-erp/types';
 
@@ -11,9 +17,16 @@ import { AuditService } from '../common/audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
-import { daysUntil, parseNonNegative, parsePositive, positiveDifference, qty } from './decimal.util';
-import type { CreateGoodsReceiptDto } from './dto/goods-receipt.dto';
-import { dateRange } from './filters.util';
+import {
+  fulfilmentStatus,
+  parseNonNegative,
+  parsePositive,
+  pendingOn,
+  positiveDifference,
+  qty,
+} from './decimal.util';
+import type { CreateGoodsReceiptDto, UpdateGoodsReceiptDto } from './dto/goods-receipt.dto';
+import { dateRange, paginate } from './filters.util';
 import {
   ITEM_SELECT,
   LOT_SELECT,
@@ -70,7 +83,7 @@ export class GoodsReceiptsService {
     private readonly numbering: NumberingService,
   ) {}
 
-  async list(query: ProcurementListQuery): Promise<GoodsReceiptListItem[]> {
+  async list(query: ProcurementListQuery): Promise<Paginated<GoodsReceiptListItem>> {
     const where: Prisma.GoodsReceiptWhereInput = { deletedAt: null };
 
     if (query.vendorId) where.vendorId = query.vendorId;
@@ -85,7 +98,10 @@ export class GoodsReceiptsService {
     if (query.status === 'QC_PENDING') {
       where.lines = { ...(where.lines ?? {}), some: { stockLot: { status: 'QUARANTINE' } } };
     } else if (query.status === 'QC_COMPLETE') {
-      where.lines = { ...(where.lines ?? {}), every: { stockLot: { status: { not: 'QUARANTINE' } } } };
+      where.lines = {
+        ...(where.lines ?? {}),
+        every: { stockLot: { status: { not: 'QUARANTINE' } } },
+      };
     }
 
     if (query.search) {
@@ -101,16 +117,70 @@ export class GoodsReceiptsService {
       ];
     }
 
+    const { skip, take, page, pageSize } = paginate(query);
+
     const rows = await this.prisma.scoped.goodsReceipt.findMany({
       where,
       include: GRN_INCLUDE,
       orderBy: [{ receiptDate: 'desc' }, { createdAt: 'desc' }],
-      take: 500,
+      skip,
+      take,
     });
+
+    const total = await this.prisma.scoped.goodsReceipt.count({ where });
 
     const people = await this.people.load(collectIds(...rows.map((row) => row.receivedById)));
 
-    return rows.map((row) => this.toListItem(row, people));
+    return { rows: rows.map((row) => this.toListItem(row, people)), total, page, pageSize };
+  }
+
+  /**
+   * Corrects the paperwork on a booked receipt.
+   *
+   * Deliberately narrow. Everything that moved stock — the lines, the batches,
+   * the quantities — is settled by the time this can be called, and the stock
+   * ledger it wrote to is append-only. What is left is what a person transcribed
+   * from the delivery: the vendor's document number, the date it arrived, and
+   * any remark about the delivery.
+   */
+  async update(id: string, dto: UpdateGoodsReceiptDto): Promise<GoodsReceiptListItem> {
+    const before = await this.requireReceipt(id);
+
+    const data: Prisma.GoodsReceiptUpdateInput = {};
+
+    if (dto.receiptDate !== undefined) data.receiptDate = new Date(dto.receiptDate);
+    if (dto.vendorDocumentNumber !== undefined) {
+      data.vendorDocumentNumber = dto.vendorDocumentNumber || null;
+    }
+    if (dto.remarks !== undefined) data.remarks = dto.remarks || null;
+
+    if (Object.keys(data).length === 0) throw new BadRequestException('Nothing to update.');
+
+    const after = await this.prisma.scoped.goodsReceipt.update({
+      where: { id },
+      data,
+      include: GRN_INCLUDE,
+    });
+
+    await this.audit.record({
+      entityType: 'GoodsReceipt',
+      entityId: id,
+      action: 'UPDATE',
+      before: {
+        receiptDate: before.receiptDate,
+        vendorDocumentNumber: before.vendorDocumentNumber,
+        remarks: before.remarks,
+      },
+      after: {
+        receiptDate: after.receiptDate,
+        vendorDocumentNumber: after.vendorDocumentNumber,
+        remarks: after.remarks,
+      },
+    });
+
+    const people = await this.people.load(collectIds(after.receivedById));
+
+    return this.toListItem(after, people);
   }
 
   async findOne(id: string): Promise<GoodsReceiptListItem> {
@@ -146,10 +216,21 @@ export class GoodsReceiptsService {
 
     if (!order) throw new NotFoundException('Purchase order not found.');
 
-    if (!['OPEN', 'PARTIALLY_RECEIVED'].includes(order.status)) {
+    // A CANCELLED order is the only one that refuses material outright: it says
+    // nothing is expected at all. Every other order is judged on whether it
+    // still has a pending quantity, which is checked per line below — an order
+    // closed by hand while short must still be able to receive what turns up.
+    if (order.status === 'CANCELLED') {
       throw new ConflictException(
-        `Material cannot be received against a ${order.status.replace(/_/g, ' ').toLowerCase()} ` +
-          'purchase order.',
+        `${order.number} is cancelled, so no material can be received against it.`,
+      );
+    }
+
+    // A draft is not an order yet — it has not been placed with the vendor, so
+    // nothing can have arrived against it.
+    if (order.status === 'DRAFT') {
+      throw new ConflictException(
+        `${order.number} is still a draft. Place the order before receiving against it.`,
       );
     }
 
@@ -183,11 +264,20 @@ export class GoodsReceiptsService {
       // Over-receipt is refused rather than silently accepted: it usually means
       // the wrong line was picked, and a quantity that exceeds the order also
       // exceeds what the vendor may invoice for.
-      const alreadyReceived = new Prisma.Decimal(orderLine.quantityReceived);
-      const outstanding = positiveDifference(
-        new Prisma.Decimal(orderLine.quantity),
-        alreadyReceived,
-      );
+      //
+      // The ceiling is the PENDING quantity — ordered, less everything received
+      // by earlier receipts, less anything short-closed. Read from the line
+      // itself rather than recomputed from the GRNs: the running total is
+      // maintained in the same transaction as every receipt, so the two cannot
+      // drift, and this way a second GRN cannot re-receive what the first took.
+      const outstanding = pendingOn(orderLine);
+
+      if (outstanding.lessThanOrEqualTo(0)) {
+        throw new ConflictException(
+          `${orderLine.item.code}: nothing is outstanding on this order line — it has been ` +
+            'received in full or short closed.',
+        );
+      }
 
       if (quantityReceived.greaterThan(outstanding)) {
         throw new ConflictException(
@@ -233,31 +323,46 @@ export class GoodsReceiptsService {
         );
       }
 
-      // Shelf life on arrival, against the item master's `shelfLifeMonths`.
+      // The batch's dates must be consistent with the product's shelf life.
       //
-      // A batch arriving with two months left may pass every analytical test
-      // and still be useless: it will expire before it can be consumed, and
-      // accepting it converts the vendor's problem into stock the company
-      // writes off.
+      // `shelfLifeMonths` is the TOTAL life of the material, not the life
+      // demanded on arrival — the shared item master says so explicitly. So the
+      // check it supports is that a batch cannot outlive the product: expiry
+      // may not be later than its own manufacturing date plus that total. That
+      // catches the realistic data-entry error, which is a mistyped year on the
+      // expiry date.
       //
-      // The comparison is done in MONTHS via real calendar arithmetic rather
-      // than by multiplying by 30. A 24-month rule is 24 calendar months, and
-      // the approximation drifts by nearly a fortnight over that span — enough
-      // to accept a batch that should have been refused.
+      // WHAT THIS DELIBERATELY NO LONGER DOES is demand the full shelf life be
+      // REMAINING at receipt. That rule read the field as "minimum residual
+      // life", and against the field's real meaning it is impossible to satisfy
+      // — a 36-month material would need to expire 36 months from today, which
+      // only a batch manufactured today can do. Every real delivery was
+      // refused. A genuine minimum-residual-life rule is a commercial policy
+      // ("at least 75% of shelf life remaining") and needs its own configurable
+      // figure; it must not be improvised from a field that means something
+      // else.
       //
-      // Only applied when the item has a rule. An absent rule means no rule;
-      // it must not silently become a rule of zero.
-      if (expiryDate && orderLine.item.shelfLifeMonths !== null) {
-        const earliestAcceptableExpiry = new Date();
-        earliestAcceptableExpiry.setUTCMonth(
-          earliestAcceptableExpiry.getUTCMonth() + orderLine.item.shelfLifeMonths,
+      // Calendar arithmetic, not 30-day months: a 24-month life is 24 calendar
+      // months, and the approximation drifts by nearly a fortnight over that
+      // span.
+      //
+      // Only applied when the item has a shelf life and the batch has both
+      // dates. An absent rule means no rule; it must not silently become a
+      // rule of zero.
+      if (expiryDate && manufacturingDate && orderLine.item.shelfLifeMonths !== null) {
+        const latestPlausibleExpiry = new Date(manufacturingDate);
+        latestPlausibleExpiry.setUTCMonth(
+          latestPlausibleExpiry.getUTCMonth() + orderLine.item.shelfLifeMonths,
         );
 
-        if (expiryDate < earliestAcceptableExpiry) {
+        if (expiryDate > latestPlausibleExpiry) {
           throw new ConflictException(
-            `${orderLine.item.code}: this batch expires in ${daysUntil(expiryDate)} days, short ` +
-              `of the ${orderLine.item.shelfLifeMonths} months of shelf life required on receipt ` +
-              `(not before ${earliestAcceptableExpiry.toISOString().slice(0, 10)}).`,
+            `${orderLine.item.code}: an expiry of ${expiryDate.toISOString().slice(0, 10)} is ` +
+              `later than this material's ${orderLine.item.shelfLifeMonths}-month shelf life ` +
+              `allows from a manufacturing date of ` +
+              `${manufacturingDate.toISOString().slice(0, 10)} ` +
+              `(no later than ${latestPlausibleExpiry.toISOString().slice(0, 10)}). ` +
+              'Check the dates on the delivery note.',
           );
         }
       }
@@ -356,33 +461,17 @@ export class GoodsReceiptsService {
       // contributed and only the totals know the answer.
       const refreshedLines = await tx.purchaseOrderLine.findMany({
         where: { purchaseOrderId: order.id },
-        select: { quantity: true, quantityReceived: true },
+        select: { quantity: true, quantityReceived: true, quantityCancelled: true },
       });
-
-      const fullyReceived = refreshedLines.every((line) =>
-        new Prisma.Decimal(line.quantityReceived).greaterThanOrEqualTo(line.quantity),
-      );
-
-      // Nothing has arrived on any line. Reachable when every line of this
-      // receipt was rejected outright at the gate, and the order has to stay
-      // Open — calling it partially received when the quantity received across
-      // all its receipts is still zero would be false.
-      const nothingReceived = refreshedLines.every((line) =>
-        new Prisma.Decimal(line.quantityReceived).lessThanOrEqualTo(0),
-      );
 
       await tx.purchaseOrder.update({
         where: { id: order.id },
         // Computed from the TOTALS on the order's lines, never from this
-        // receipt alone: several receipts contribute and only the sum knows
-        // the answer.
-        //
-        // US-PUR-03: once the ordered quantity has all arrived the order is
-        // Closed. 'Fully received' and 'closed' meant the same thing, and one
-        // name for one state is better than two.
-        data: {
-          status: fullyReceived ? 'CLOSED' : nothingReceived ? 'OPEN' : 'PARTIALLY_RECEIVED',
-        },
+        // receipt alone: several receipts contribute and only the sum knows the
+        // answer. `fulfilmentStatus` is the single definition of that mapping,
+        // shared with the order service so the two cannot disagree about what
+        // a set of quantities means.
+        data: { status: fulfilmentStatus(refreshedLines, order.status) },
       });
 
       return tx.goodsReceipt.findFirstOrThrow({
@@ -473,4 +562,3 @@ export class GoodsReceiptsService {
     };
   }
 }
-

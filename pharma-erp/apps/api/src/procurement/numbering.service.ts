@@ -4,6 +4,7 @@ import type { Prisma } from '@pharma-erp/database';
 
 /** Document prefixes. The set is closed so a typo cannot invent a new series. */
 export type DocumentType =
+  // Procure-to-Pay
   | 'PR'
   | 'PO'
   | 'GRN'
@@ -11,7 +12,10 @@ export type DocumentType =
   | 'PAY'
   | 'LOT'
   | 'PLAN'
-  // Order-to-Cash: sales order, despatch, sales invoice, receipt, sales return.
+  // Order-to-Cash. Added when the O2C services that already passed these
+  // reached main without them — the numbering service is the one place that
+  // knows every document series, so a new one has to be declared here or it
+  // cannot be allocated.
   | 'SO'
   | 'DSP'
   | 'SINV'
@@ -42,7 +46,11 @@ export class NumberingService {
    * different timezone may see the roll-over a few hours early or late, which
    * is acceptable for a document number and not worth a per-tenant clock.
    */
-  async next(tx: Prisma.TransactionClient, tenantId: string, docType: DocumentType): Promise<string> {
+  async next(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    docType: DocumentType,
+  ): Promise<string> {
     const year = new Date().getUTCFullYear();
 
     // upsert then read would race; this is one statement. `update` on a

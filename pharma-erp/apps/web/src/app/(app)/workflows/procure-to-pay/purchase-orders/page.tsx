@@ -5,7 +5,9 @@ import {
   PURCHASE_ORDER_STATUS_LABELS,
 } from '@pharma-erp/types';
 
-import { FilterBar } from '@/components/procurement/filter-bar';
+import { FilterButton, FilterPanel } from '@/components/procurement/filter-bar';
+import { Pagination } from '@/components/procurement/pagination';
+import { CreatePoDialog } from '@/components/procurement/create-po-dialog';
 import { PurchaseOrderActions } from '@/components/procurement/purchase-order-actions';
 import {
   Blank,
@@ -18,10 +20,13 @@ import {
   RecordLink,
   StatusPill,
   TableWrap,
+  Td,
+  Th,
 } from '@/components/procurement/ui';
 import {
   fetchItems,
   fetchPurchaseOrders,
+  fetchRequisitions,
   fetchVendors,
   toListQuery,
   toOptions,
@@ -43,200 +48,249 @@ export default async function PurchaseOrdersPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const query = toListQuery(await searchParams);
+  const params = await searchParams;
+  const query = toListQuery(params);
 
-  const [orders, vendors, items] = await Promise.all([
-    fetchPurchaseOrders(query),
-    fetchVendors(),
-    fetchItems(),
-  ]);
+  // Set by 'Convert to PO' on an approved requisition. The requisition is
+  // fetched here so the dialog opens already filled in — the user arrives on
+  // this tab with the form in front of them rather than having to find it.
+  const fromRequisition =
+    typeof params.fromRequisition === 'string' ? params.fromRequisition : undefined;
 
   const isFiltered = Object.values(query).some(Boolean);
 
-  return (
-    <Panel
-      title="Purchase orders"
-      subtitle={
-        orders.ok
-          ? `${orders.data.length} order${orders.data.length === 1 ? '' : 's'}`
-          : undefined
+  const [orders, vendors, items, requisitions] = await Promise.all([
+    fetchPurchaseOrders(query),
+    fetchVendors(),
+    fetchItems(),
+    // Only when it is actually needed. Unfiltered, the orders on the page
+    // already name every requisition that produced one, so the whole
+    // requisition list would be a second query for information in hand — and
+    // this page is re-rendered on every filter change, where it would be paid
+    // again each time.
+    fromRequisition || isFiltered ? fetchRequisitions({}) : Promise.resolve(null),
+  ]);
+
+  const sourceRequisition =
+    fromRequisition && requisitions?.ok
+      ? (requisitions.data.rows.find((r) => r.id === fromRequisition) ?? null)
+      : null;
+
+  // Only requisitions that actually reached an order: offering the rest would
+  // be a filter guaranteed to return nothing. Taken from the full list while
+  // filtering — derived from the visible orders, choosing one would narrow the
+  // page to it and drop every other option, leaving no way back.
+  const requisitionOptions = (() => {
+    if (requisitions?.ok) {
+      return requisitions.data.rows
+        .filter((requisition) => requisition.linkedPurchaseOrders.length > 0)
+        .map((requisition) => ({ value: requisition.id, label: requisition.number }));
+    }
+
+    if (!orders.ok) return [];
+
+    const byId = new Map<string, string>();
+
+    for (const order of orders.data.rows) {
+      for (const line of order.lines) {
+        if (line.requisition) byId.set(line.requisition.id, line.requisition.number);
       }
-    >
-      <FilterBar
-        statuses={PURCHASE_ORDER_STATUSES.map((status) => ({
-          value: status,
-          label: PURCHASE_ORDER_STATUS_LABELS[status],
-        }))}
-        vendors={vendors.ok ? toOptions(vendors.data) : []}
-        items={items.ok ? toOptions(items.data) : []}
-        searchPlaceholder="Search by PO number, vendor or item…"
-      />
+    }
 
-      {!orders.ok ? (
-        <ErrorState message={`Could not load purchase orders: ${orders.error}`} />
-      ) : orders.data.length === 0 ? (
-        <EmptyState
-          title="No purchase orders yet."
-          hint="Approve a requisition and use Convert to PO to raise the first one."
-          filtered={isFiltered}
-        />
-      ) : (
-        <ul className="divide-y divide-slate-100">
-          {orders.data.map((order) => (
-            <li key={order.id} className="px-5 py-4">
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-mono text-sm font-semibold text-slate-900">
-                      {order.number}
-                    </span>
-                    <StatusPill
-                      status={order.status}
-                      label={PURCHASE_ORDER_STATUS_LABELS[order.status]}
-                    />
-                  </div>
+    return [...byId].map(([value, label]) => ({ value, label }));
+  })();
 
-                  <p className="mt-1 text-sm text-slate-700">{order.vendor.name}</p>
-
-                  <p className="mt-0.5 text-xs text-slate-500">
-                    Raised <DateText value={order.poDate} />
-                    {order.expectedDeliveryDate && (
-                      <>
-                        {' · expected '}
-                        <DateText value={order.expectedDeliveryDate} />
-                      </>
-                    )}
-                    {' · net '}
-                    {order.paymentTermsDays} days
-                    {order.createdBy && ` · by ${order.createdBy}`}
-                  </p>
-
-                  {(order.goodsReceipts.length > 0 || order.invoices.length > 0) && (
-                    <p className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-xs">
-                      {order.goodsReceipts.map((grn) => (
-                        <RecordLink
-                          key={grn.id}
-                          href={`${PROCUREMENT_ROUTES.goodsReceipts}?search=${grn.number}`}
-                        >
-                          {grn.number}
-                        </RecordLink>
-                      ))}
-                      {order.invoices.map((invoice) => (
-                        <RecordLink
-                          key={invoice.id}
-                          href={`${PROCUREMENT_ROUTES.invoices}?search=${invoice.number}`}
-                        >
-                          {invoice.number}
-                        </RecordLink>
-                      ))}
-                    </p>
-                  )}
-                </div>
-
-                <div className="text-right">
-                  <p className="text-lg font-semibold text-slate-900">
-                    <Money amount={order.totalAmount} />
-                  </p>
-                  <p className="text-xs text-slate-500">
-                    <Money amount={order.taxableAmount} /> + <Money amount={order.taxAmount} /> GST
-                  </p>
-                  <div className="mt-2">
-                    <PurchaseOrderActions order={order} />
-                  </div>
-                </div>
-              </div>
-
-              <TableWrap>
-                <table className="mt-3 w-full min-w-[48rem] text-left text-xs">
-                  <thead>
-                    <tr className="border-y border-slate-200 text-[11px] uppercase tracking-wide text-slate-500">
-                      <th scope="col" className="py-2 pr-4 font-medium">
-                        Item
-                      </th>
-                      <th scope="col" className="py-2 pr-4 font-medium">
-                        From requisition
-                      </th>
-                      <th scope="col" className="py-2 pr-4 text-right font-medium">
-                        Ordered
-                      </th>
-                      <th scope="col" className="py-2 pr-4 text-right font-medium">
-                        Received
-                      </th>
-                      <th scope="col" className="py-2 pr-4 text-right font-medium">
-                        Pending
-                      </th>
-                      <th scope="col" className="py-2 pr-4 text-right font-medium">
-                        Rate
-                      </th>
-                      <th scope="col" className="py-2 pr-4 text-right font-medium">
-                        GST
-                      </th>
-                      <th scope="col" className="py-2 text-right font-medium">
-                        Line total
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {order.lines.map((line) => (
-                      <tr key={line.id}>
-                        <td className="py-2 pr-4">
-                          <span className="font-medium text-slate-800">{line.item.name}</span>
-                          <span className="ml-2 font-mono text-[11px] text-slate-500">
-                            {line.item.code}
-                          </span>
-                        </td>
-                        <td className="py-2 pr-4">
-                          {line.requisition ? (
-                            <RecordLink
-                              href={`${PROCUREMENT_ROUTES.requisitions}?search=${line.requisition.number}`}
-                            >
-                              <span className="font-mono text-[11px]">
-                                {line.requisition.number}
-                              </span>
-                            </RecordLink>
-                          ) : (
-                            <Blank />
-                          )}
-                        </td>
-                        <td className="py-2 pr-4 text-right tabular-nums">
-                          <Qty value={line.quantity} uom={line.item.uom} />
-                        </td>
-                        <td className="py-2 pr-4 text-right tabular-nums">
-                          {line.quantityReceived === '0' ? (
-                            <Blank />
-                          ) : (
-                            <Qty value={line.quantityReceived} />
-                          )}
-                        </td>
-                        <td className="py-2 pr-4 text-right tabular-nums">
-                          {line.quantityPending === '0' ? (
-                            <span className="font-medium text-green-800">complete</span>
-                          ) : (
-                            <span className="font-medium text-amber-800">
-                              {line.quantityPending}
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-2 pr-4 text-right tabular-nums">
-                          <Money amount={line.rate} />
-                        </td>
-                        <td className="py-2 pr-4 text-right tabular-nums">
-                          {line.taxRatePercent}%
-                        </td>
-                        <td className="py-2 text-right tabular-nums">
-                          <Money amount={line.totalAmount} />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </TableWrap>
-
-              {order.notes && <p className="mt-2 text-xs text-slate-500">{order.notes}</p>}
-            </li>
-          ))}
-        </ul>
+  return (
+    <>
+      {sourceRequisition && (
+        <CreatePoDialog requisition={sourceRequisition} vendors={vendors.ok ? vendors.data : []} />
       )}
-    </Panel>
+
+      <Panel
+        title="Purchase orders"
+        subtitle={
+          orders.ok ? `${orders.data.total} order${orders.data.total === 1 ? '' : 's'}` : undefined
+        }
+        action={<FilterButton />}
+      >
+        <FilterPanel
+          statuses={PURCHASE_ORDER_STATUSES.map((status) => ({
+            value: status,
+            label: PURCHASE_ORDER_STATUS_LABELS[status],
+          }))}
+          vendors={vendors.ok ? toOptions(vendors.data) : []}
+          items={items.ok ? toOptions(items.data) : []}
+          requisitions={requisitionOptions}
+          searchPlaceholder="Search by PO number, vendor or item…"
+        />
+
+        {!orders.ok ? (
+          <ErrorState message={`Could not load purchase orders: ${orders.error}`} />
+        ) : orders.data.rows.length === 0 ? (
+          <EmptyState
+            title="No purchase orders yet."
+            hint="Approve a requisition and use Convert to PO to raise the first one."
+            filtered={isFiltered}
+          />
+        ) : (
+          <>
+            <TableWrap>
+              <table className="w-full min-w-[86rem] text-left text-sm">
+                <thead>
+                  <tr className="text-xs uppercase tracking-wide text-slate-500">
+                    <Th>PO no.</Th>
+                    <Th>Raised</Th>
+                    <Th>Vendor</Th>
+                    <Th>Item</Th>
+                    <Th align="right">Quantity</Th>
+                    <Th align="right">Rate</Th>
+                    <Th align="right">Total</Th>
+                    <Th>Status</Th>
+                    <Th>Linked</Th>
+                    <Th>Actions</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {orders.data.rows.map((order) => (
+                    <tr key={order.id}>
+                      <Td>
+                        <span className="font-mono text-xs font-semibold text-slate-900">
+                          {order.number}
+                        </span>
+                        <span className="mt-0.5 block text-[11px] text-slate-500">
+                          net {order.paymentTermsDays} days
+                        </span>
+                      </Td>
+
+                      <Td>
+                        <DateText value={order.poDate} />
+                        {order.expectedDeliveryDate && (
+                          <span className="mt-0.5 block text-[11px] text-slate-500">
+                            due <DateText value={order.expectedDeliveryDate} />
+                          </span>
+                        )}
+                      </Td>
+
+                      <Td>
+                        {/* Truncated with the full name on hover, so one long
+                            vendor name cannot set the width of the column. */}
+                        <span className="block max-w-[11rem] truncate" title={order.vendor.name}>
+                          {order.vendor.name}
+                        </span>
+                      </Td>
+
+                      {/* THE LINES, STACKED IN THE ROW. One row per order keeps
+                          the pager's count and the rows on screen the same
+                          number, and keeps each order's values unmistakably
+                          its own. */}
+                      <Td valign="top">
+                        <ul className="space-y-1">
+                          {order.lines.map((line) => (
+                            <li key={line.id}>
+                              <span
+                                className="block max-w-[14rem] truncate text-xs font-medium text-slate-800"
+                                title={`${line.item.name} (${line.item.code})`}
+                              >
+                                {line.item.name}
+                              </span>
+                              {line.requisition && (
+                                <span className="block font-mono text-[11px] text-slate-500">
+                                  {line.requisition.number}
+                                </span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </Td>
+
+                      <Td align="right" valign="top">
+                        <ul className="space-y-1">
+                          {order.lines.map((line) => (
+                            <li key={line.id}>
+                              <Qty value={line.quantity} uom={line.item.uom} />
+                              {line.quantityPending !== '0' && (
+                                <span className="block text-[11px] text-amber-800">
+                                  {line.quantityPending} pending
+                                </span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </Td>
+
+                      <Td align="right" valign="top">
+                        <ul className="space-y-1">
+                          {order.lines.map((line) => (
+                            <li key={line.id}>
+                              <Money amount={line.rate} />
+                            </li>
+                          ))}
+                        </ul>
+                      </Td>
+
+                      <Td align="right">
+                        <Money amount={order.totalAmount} bold />
+                        <span className="mt-0.5 block text-[11px] text-slate-500">
+                          incl. <Money amount={order.taxAmount} /> GST
+                        </span>
+                      </Td>
+
+                      {/* ONE STATUS, IN ITS OWN COLUMN. The row used to carry a
+                          pill here AND a separate dropdown in the actions,
+                          which is two controls claiming the same fact. The
+                          dropdown moved into the Edit dialog. */}
+                      <Td>
+                        <StatusPill
+                          status={order.status}
+                          label={PURCHASE_ORDER_STATUS_LABELS[order.status]}
+                        />
+                      </Td>
+
+                      <Td>
+                        {order.goodsReceipts.length === 0 && order.invoices.length === 0 ? (
+                          <Blank />
+                        ) : (
+                          <ul className="space-y-0.5">
+                            {order.goodsReceipts.map((grn) => (
+                              <li key={grn.id}>
+                                <RecordLink
+                                  href={`${PROCUREMENT_ROUTES.goodsReceipts}?search=${grn.number}`}
+                                >
+                                  <span className="font-mono text-[11px]">{grn.number}</span>
+                                </RecordLink>
+                              </li>
+                            ))}
+                            {order.invoices.map((invoice) => (
+                              <li key={invoice.id}>
+                                <RecordLink
+                                  href={`${PROCUREMENT_ROUTES.invoices}?search=${invoice.number}`}
+                                >
+                                  <span className="font-mono text-[11px]">{invoice.number}</span>
+                                </RecordLink>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </Td>
+
+                      <Td>
+                        <PurchaseOrderActions order={order} />
+                      </Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableWrap>
+
+            <Pagination
+              total={orders.data.total}
+              page={orders.data.page}
+              pageSize={orders.data.pageSize}
+              noun="orders"
+            />
+          </>
+        )}
+      </Panel>
+    </>
   );
 }

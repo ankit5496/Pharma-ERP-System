@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "eslint src --ext .ts,.tsx --max-warnings 0",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "clean": "rimraf .next .turbo *.tsbuildinfo"
+    "clean": "rimraf .next .next-dev .turbo *.tsbuildinfo"
   },
   "dependencies": {
     "@pharma-erp/types": "workspace:*",

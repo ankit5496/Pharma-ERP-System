@@ -1,4 +1,9 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { Prisma } from '@pharma-erp/database';
 import type {
@@ -13,12 +18,17 @@ import type {
   PackagingShortagePlan,
 } from '@pharma-erp/types';
 
+import { fieldConflict } from '../common/field-error';
 import { PrismaService } from '../prisma/prisma.service';
 import { ITEM_SELECT, toItemSummary } from '../procurement/mappers';
 import { StockService } from '../procurement/stock.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
-import type { CreatePackagingRequirementDto, PackagingLineDto, UpdatePackagingRequirementDto } from './dto/packaging.dto';
+import type {
+  CreatePackagingRequirementDto,
+  PackagingLineDto,
+  UpdatePackagingRequirementDto,
+} from './dto/packaging.dto';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -187,7 +197,11 @@ export class PackagingService {
       let worst: PackagingAvailability | null = null;
 
       for (const requirement of chosen) {
-        const computed = this.compute(requirement, new Prisma.Decimal(plan.plannedQuantity), usable);
+        const computed = this.compute(
+          requirement,
+          new Prisma.Decimal(plan.plannedQuantity),
+          usable,
+        );
         if (!worst || rank(computed.readiness) > rank(worst.readiness)) worst = computed;
       }
 
@@ -515,7 +529,8 @@ export class PackagingService {
     });
 
     if (clash) {
-      throw new ConflictException(
+      throw fieldConflict(
+        'packVariant',
         `This product already has a specification for "${packVariant}". Edit that one instead.`,
       );
     }
@@ -629,7 +644,11 @@ function translate(error: unknown, packVariant: string): unknown {
  * false.
  */
 function isConstraint(error: unknown, marker: string): boolean {
-  if (typeof error === 'object' && error !== null && (error as { code?: unknown }).code === marker) {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === marker
+  ) {
     return true;
   }
 

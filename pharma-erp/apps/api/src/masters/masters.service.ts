@@ -249,9 +249,9 @@ function toScheduleClassification(category: string): 'NONE' | 'H' | 'H1' | 'X' |
   switch (category) {
     case 'SCHEDULE_H':
       return 'H';
-    case 'SCHEDULE_H1':
     // The shared register has no H1X. H1 is the nearest control it can express
-    // and is the stricter of the two it does have.
+    // and is the stricter of the two it does have, so both map to it.
+    case 'SCHEDULE_H1':
     case 'SCHEDULE_H1X':
       return 'H1';
     case 'SCHEDULE_X':

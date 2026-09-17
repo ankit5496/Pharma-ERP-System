@@ -2,6 +2,8 @@
 
 import { useActionState, useState } from 'react';
 
+import { useActionToast } from '@/components/toast';
+
 import { createCompanyAction, type CreateCompanyState } from '../actions';
 
 const TIMEZONES = [
@@ -31,6 +33,13 @@ function slugify(value: string): string {
 
 export function CreateCompanyForm() {
   const [state, formAction, isSubmitting] = useActionState(createCompanyAction, INITIAL);
+
+  // ONLY THE FAILURE IS A TOAST. The success panel below hands over a
+  // one-time password that is never shown again; moving that into a
+  // notification that dismisses itself after four seconds would destroy the
+  // credential before anyone could copy it. An error message has no such
+  // content and belongs with every other error in the application.
+  useActionToast(isSubmitting, 'error', state.status === 'error' ? state.message : undefined);
   const [companyName, setCompanyName] = useState(state.values?.companyName ?? '');
   const [slug, setSlug] = useState('');
   const [slugEdited, setSlugEdited] = useState(false);
@@ -92,15 +101,6 @@ export function CreateCompanyForm() {
             Shown once and not recoverable. If lost, the administrator can be given a new password
             from their company&rsquo;s user management, or you can create another administrator.
           </p>
-        </div>
-      )}
-
-      {state.status === 'error' && state.message && (
-        <div
-          role="alert"
-          className="mt-5 rounded-md border border-red-400/40 bg-red-500/10 p-3 text-sm text-red-200"
-        >
-          {state.message}
         </div>
       )}
 

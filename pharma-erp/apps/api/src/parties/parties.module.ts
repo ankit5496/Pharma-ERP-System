@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { DocumentsService } from './documents.service';
 import { PartiesController } from './parties.controller';
 import { PartiesService } from './parties.service';
 
@@ -14,7 +15,7 @@ import { PartiesService } from './parties.service';
  */
 @Module({
   controllers: [PartiesController],
-  providers: [PartiesService],
+  providers: [PartiesService, DocumentsService],
   exports: [PartiesService],
 })
 export class PartiesModule {}

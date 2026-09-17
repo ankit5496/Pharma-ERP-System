@@ -1,6 +1,6 @@
 import { BadRequestException, type ValidationPipeOptions } from '@nestjs/common';
 
-import { toReadableMessages } from './validation-message';
+import { toFieldMessages, toReadableMessages } from './validation-message';
 
 /**
  * Options for the global ValidationPipe.
@@ -61,5 +61,21 @@ export const VALIDATION_PIPE_OPTIONS: ValidationPipeOptions = {
    * one pipe produces every validation message in the product. See
    * ./validation-message for what it does and does not touch.
    */
-  exceptionFactory: (errors) => new BadRequestException(toReadableMessages(errors)),
+  /**
+   * Both shapes on one body.
+   *
+   * `message` is the array Nest already returned and every existing caller
+   * reads — unchanged, so nothing that consumed it has to be touched.
+   * `fields` is the same failures keyed by DTO property, which is what lets a
+   * form mark the offending control rather than printing a paragraph above it.
+   *
+   * A client that knows nothing about `fields` simply ignores it.
+   */
+  exceptionFactory: (errors) =>
+    new BadRequestException({
+      statusCode: 400,
+      error: 'Bad Request',
+      message: toReadableMessages(errors),
+      fields: toFieldMessages(errors),
+    }),
 };

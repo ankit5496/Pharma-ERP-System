@@ -94,3 +94,37 @@ export class ChangeInvoiceStatusDto {
   })
   status!: PurchaseInvoiceStatus;
 }
+
+/**
+ * What may still be corrected on a booked invoice.
+ *
+ * THE AMOUNTS ARE NOT HERE. They are derived from the lines, which were matched
+ * against the order and the receipt; editing a total by hand would break that
+ * three-way match silently and leave the payables ledger disagreeing with the
+ * goods actually received. A wrong amount is a wrong invoice: cancel it and
+ * book the one the vendor really sent.
+ *
+ * The vendor's own reference, the dates and the notes are transcription, and
+ * transcription is exactly what gets mistyped.
+ */
+export class UpdateInvoiceDto {
+  @IsOptional()
+  @IsString()
+  @trim()
+  @MaxLength(64)
+  vendorInvoiceNumber?: string;
+
+  @IsOptional()
+  @IsISO8601()
+  invoiceDate?: string;
+
+  @IsOptional()
+  @IsISO8601()
+  dueDate?: string;
+
+  @IsOptional()
+  @IsString()
+  @trim()
+  @MaxLength(1000)
+  notes?: string | null;
+}

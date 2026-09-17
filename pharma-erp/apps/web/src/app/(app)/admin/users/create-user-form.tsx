@@ -1,6 +1,8 @@
 'use client';
 
 import { useActionState, useState } from 'react';
+
+import { useActionToast } from '@/components/toast';
 import { USER_ROLES, USER_ROLE_LABELS } from '@pharma-erp/types';
 
 import { createUserAction, type UserFormState } from './actions';
@@ -9,6 +11,13 @@ const INITIAL: UserFormState = { status: 'idle' };
 
 export function CreateUserForm() {
   const [state, formAction, isSubmitting] = useActionState(createUserAction, INITIAL);
+
+  // ONLY THE FAILURE IS A TOAST. The success panel below hands over a
+  // one-time password that is never shown again; moving that into a
+  // notification that dismisses itself after four seconds would destroy the
+  // credential before anyone could copy it. An error message has no such
+  // content and belongs with every other error in the application.
+  useActionToast(isSubmitting, 'error', state.status === 'error' ? state.message : undefined);
   const [copied, setCopied] = useState(false);
 
   return (
@@ -50,15 +59,6 @@ export function CreateUserForm() {
             This is shown once and cannot be recovered. If you lose it, use{' '}
             <strong>Reset password</strong> on their row to set a new one.
           </p>
-        </div>
-      )}
-
-      {state.status === 'error' && state.message && (
-        <div
-          role="alert"
-          className="mt-5 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800"
-        >
-          {state.message}
         </div>
       )}
 
@@ -106,9 +106,13 @@ export function CreateUserForm() {
             defaultValue={state.values?.role ?? ''}
             className="field mt-1.5"
           >
-            <option value="" disabled>
-              Choose a role…
-            </option>
+            {/* NOT `disabled`: a disabled option cannot hold the selection, so
+                the select fell through to the first real role and quietly
+                submitted it for someone who had chosen none. On this form that
+                would grant a role nobody picked. `required` is what refuses an
+                empty choice. Same fix as SelectField in the master-data
+                form kit. */}
+            <option value="">Choose a role…</option>
             {USER_ROLES.map((role) => (
               <option key={role} value={role}>
                 {USER_ROLE_LABELS[role]}

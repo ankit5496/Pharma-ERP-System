@@ -17,8 +17,6 @@
 // needs: status, the licence validity, and the credit terms.
 import type { PartyType } from './procurement';
 
-
-
 export const PARTY_STATUSES = ['ACTIVE', 'INACTIVE', 'BLOCKED'] as const;
 export type PartyStatus = (typeof PARTY_STATUSES)[number];
 
@@ -128,7 +126,6 @@ export function joinPhoneNumber(dial: string, national: string): string | null {
   return `${dial}${digits}`;
 }
 
-
 /**
  * What the create endpoint accepts.
  *
@@ -172,4 +169,60 @@ export interface UpdatePartyRequest {
   drugLicenceValidTo?: string | null;
   creditLimit?: string | null;
   creditPeriodDays?: number | null;
+}
+
+// ---------------------------------------------------------------------------
+// Customer documents
+// ---------------------------------------------------------------------------
+
+/**
+ * What a customer's document may be.
+ *
+ * A whitelist, not a blocklist. The set of things a browser will happily
+ * execute if it is persuaded to treat them as a page is large and grows; the
+ * set of things a licence or a certificate actually arrives as is small and
+ * does not. Anything outside this is refused rather than stored and worried
+ * about later.
+ */
+export const DOCUMENT_CONTENT_TYPES = [
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+] as const;
+export type DocumentContentType = (typeof DOCUMENT_CONTENT_TYPES)[number];
+
+/**
+ * 5 MB.
+ *
+ * The bytes live in a Postgres column, so every read pulls the whole file
+ * through the database connection — which, against a cross-region database, is
+ * already the slowest thing in the system. Generous for a scanned certificate
+ * and deliberately nowhere near enough to make this a general file store.
+ */
+export const DOCUMENT_MAX_BYTES = 5 * 1024 * 1024;
+
+export const DOCUMENT_CONTENT_TYPE_LABELS: Record<string, string> = {
+  'application/pdf': 'PDF',
+  'image/jpeg': 'JPEG image',
+  'image/png': 'PNG image',
+  'image/webp': 'WebP image',
+};
+
+/** A document on file. The bytes are NOT included; fetch them separately. */
+export interface CustomerDocumentSummary {
+  id: string;
+  fileName: string;
+  contentType: string;
+  sizeBytes: number;
+  uploadedBy: string | null;
+  uploadedAt: string;
+}
+
+/** Human-readable size, for a listing. */
+export function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }

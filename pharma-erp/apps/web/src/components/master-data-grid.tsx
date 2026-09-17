@@ -25,17 +25,20 @@ import {
   type PackagingLevel,
   type PackagingLineView,
   type PackagingRequirementView,
+  type CustomerDocumentSummary,
   type PartySummary,
 } from '@pharma-erp/types';
 
 import {
   deleteAgreementAction,
+  listCustomerDocumentsAction,
   deleteItemAction,
   deleteLicenceAction,
   deletePackagingAction,
   deletePartyAction,
   setLicenceAlertAction,
 } from '@/app/(app)/master-data/actions';
+import { DocumentIcon, DocumentPreview } from '@/components/document-preview';
 import type { ApiResult } from '@/lib/api';
 
 /**
@@ -71,6 +74,17 @@ export interface GridColumn<Row> {
 
 /** Everything on a row that the search box should match against. */
 type SearchText<Row> = (row: Row) => string;
+
+/**
+ * Rows per page, and the sizes offered.
+ *
+ * Ten is the default because that is the brief, and because a register is read
+ * by scanning — a page you can take in without scrolling is the point of
+ * paging it at all. The larger sizes are there for the times someone is
+ * comparing rather than looking something up.
+ */
+const DEFAULT_PAGE_SIZE = 10;
+const PAGE_SIZES = [10, 25, 50, 100] as const;
 
 function Toolbar({
   count,
@@ -152,6 +166,89 @@ function HeadRow({ labels }: { labels: readonly string[] }) {
 }
 
 /**
+ * The footer: which slice of the register is on screen, and how to move.
+ *
+ * It sits OUTSIDE the scrolling box rather than under the last row, so it stays
+ * reachable without scrolling to the bottom of the page you are on — the
+ * controls for changing pages should not themselves need paging to reach.
+ *
+ * Prev/Next plus a page count, not a numbered strip. A register of two hundred
+ * parties is 20 pages, and twenty little numbers is a lot of furniture for a
+ * decision that is almost always "the next one" or "search instead".
+ */
+function Pager({
+  page,
+  pageCount,
+  first,
+  last,
+  total,
+  noun,
+  pageSize,
+  onPage,
+  onPageSize,
+}: {
+  page: number;
+  pageCount: number;
+  /** 1-based, inclusive — the row numbers actually on screen. */
+  first: number;
+  last: number;
+  total: number;
+  noun: string;
+  pageSize: number;
+  onPage: (page: number) => void;
+  onPageSize: (size: number) => void;
+}) {
+  return (
+    <div className="flex flex-none flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white px-4 py-2.5">
+      <p className="text-xs tabular-nums text-slate-600">
+        Showing <strong className="font-semibold text-slate-900">{first}</strong>–
+        <strong className="font-semibold text-slate-900">{last}</strong> of {total} {noun}
+      </p>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-1.5 whitespace-nowrap text-xs text-slate-600">
+          Rows
+          <select
+            value={pageSize}
+            onChange={(event) => onPageSize(Number(event.target.value))}
+            aria-label={`Rows of ${noun} per page`}
+            className="rounded-md border border-slate-300 bg-white px-1.5 py-1 text-xs tabular-nums text-slate-900"
+          >
+            {PAGE_SIZES.map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => onPage(page - 1)}
+            disabled={page <= 1}
+            className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Previous
+          </button>
+          <span className="whitespace-nowrap px-1.5 text-xs tabular-nums text-slate-600">
+            Page {page} of {pageCount}
+          </span>
+          <button
+            type="button"
+            onClick={() => onPage(page + 1)}
+            disabled={page >= pageCount}
+            className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * The table itself. Generic over the row so each register keeps its own
  * types — the alternative, a shared `Record<string, unknown>` row, throws away
  * exactly the checking that stops a column reading a field that no longer
@@ -180,12 +277,34 @@ export function Grid<Row>({
   notice?: ReactNode;
 }) {
   const [query, setQuery] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return rows;
     return rows.filter((row) => searchText(row).toLowerCase().includes(needle));
   }, [rows, query, searchText]);
+
+  // At least 1, so an empty register reads "Page 1 of 1" rather than "of 0".
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+
+  // Clamped rather than stored blindly. Searching, changing the page size, and
+  // deleting the last row of the last page all shrink the list under whatever
+  // page is current — and a page past the end renders an empty table that looks
+  // exactly like "nothing matches". Deriving the effective page keeps the two
+  // apart without a corrective effect that flashes the empty state first.
+  const current = Math.min(page, pageCount);
+  const start = (current - 1) * pageSize;
+  const visible = filtered.slice(start, start + pageSize);
+
+  function goTo(next: number) {
+    setPage(Math.min(Math.max(1, next), pageCount));
+    // Back to the top of the new page: paging while scrolled halfway down
+    // otherwise lands you in the middle of the next set of rows.
+    scrollRef.current?.scrollTo({ top: 0 });
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -195,7 +314,12 @@ export function Grid<Row>({
         noun={noun}
         singular={singular}
         query={query}
-        onQuery={setQuery}
+        onQuery={(value) => {
+          setQuery(value);
+          // A new search is a new list; keeping the old page number would show
+          // page 4 of a result that has one page.
+          setPage(1);
+        }}
         onNew={onNew}
         disabled={rows.length === 0}
       />
@@ -204,7 +328,7 @@ export function Grid<Row>({
 
       {/* The grid scrolls in both directions inside its own box, so a wide
           register never makes the page itself scroll sideways. */}
-      <div className="min-h-0 flex-1 overflow-auto overscroll-contain">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto overscroll-contain">
         <table className="w-full border-separate border-spacing-0 text-left text-sm">
           {/* Sticky so the column names stay readable once the register is
               longer than the box — which is the entire point of a grid. */}
@@ -246,7 +370,7 @@ export function Grid<Row>({
                 </td>
               </tr>
             ) : (
-              filtered.map((row) => (
+              visible.map((row) => (
                 <tr key={rowKey(row)} className="group transition hover:bg-slate-50">
                   {columns.map((column) => (
                     <td
@@ -272,6 +396,31 @@ export function Grid<Row>({
           </tbody>
         </table>
       </div>
+
+      {/* Hidden when there is nothing to page through: a single page of four
+          rows does not need a "Page 1 of 1" and a pair of dead buttons under
+          it. It reappears the moment a register outgrows one page. */}
+      {filtered.length > 0 && (filtered.length > pageSize || pageSize !== DEFAULT_PAGE_SIZE) && (
+        <Pager
+          page={current}
+          pageCount={pageCount}
+          first={start + 1}
+          last={start + visible.length}
+          total={filtered.length}
+          noun={noun}
+          pageSize={pageSize}
+          onPage={goTo}
+          onPageSize={(size) => {
+            setPageSize(size);
+            // Row 1 again rather than trying to keep the current rows in view:
+            // the arithmetic for "which page holds the row I was looking at"
+            // is guesswork once the size changes, and landing at the top is
+            // the one outcome nobody has to work out.
+            setPage(1);
+            scrollRef.current?.scrollTo({ top: 0 });
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -489,6 +638,7 @@ function RowActions({
   onEdit,
   onDelete,
   onError,
+  extra,
 }: {
   /** Names the row in the confirmation and the button's accessible name. */
   label: string;
@@ -496,6 +646,12 @@ function RowActions({
   /** The register's own delete action. Returns the API's refusal, if any. */
   onDelete: () => Promise<{ ok: boolean; message?: string }>;
   onError: (message: string | null) => void;
+  /**
+   * A register-specific entry, above Edit. Only the Item register uses one
+   * today (Inventory), and it sits first because looking at stock is a read
+   * and the two below it are writes.
+   */
+  extra?: { label: string; onClick: () => void };
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -638,6 +794,18 @@ function RowActions({
           style={{ top: anchor.top, right: anchor.right }}
           className="fixed z-50 w-40 rounded-md border border-slate-200 bg-white p-1 text-left shadow-lg"
         >
+          {extra && (
+            <button
+              type="button"
+              onClick={() => {
+                setIsOpen(false);
+                extra.onClick();
+              }}
+              className="block w-full rounded px-3 py-1.5 text-left text-sm font-medium text-slate-700 transition hover:bg-slate-100"
+            >
+              {extra.label}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -665,10 +833,12 @@ export function ItemGrid({
   result,
   onNew,
   onEdit,
+  onInventory,
 }: {
   result: ApiResult<ItemSummary[]>;
   onNew: () => void;
   onEdit: (item: ItemSummary) => void;
+  onInventory: (item: ItemSummary) => void;
 }) {
   // Declared before the early return: hooks cannot sit behind a condition.
   const [actionError, setActionError] = useState<string | null>(null);
@@ -688,6 +858,7 @@ export function ItemGrid({
           onEdit={() => onEdit(item)}
           onDelete={() => deleteItemAction(item.id)}
           onError={setActionError}
+          extra={{ label: 'Inventory', onClick: () => onInventory(item) }}
         />
       ),
     },
@@ -776,13 +947,47 @@ const BOM_COLUMNS: readonly GridColumn<BomView>[] = [
   { key: 'from', label: 'Effective', align: 'right', render: (bom) => bom.effectiveFrom },
 ];
 
-export function BomGrid({ result, onNew }: { result: ApiResult<BomView[]>; onNew: () => void }) {
+export function BomGrid({
+  result,
+  onNew,
+  onEdit,
+}: {
+  result: ApiResult<BomView[]>;
+  onNew: () => void;
+  onEdit: (bom: BomView) => void;
+}) {
   if (!result.ok) return <LoadFailed error={result.error} />;
+
+  // A plain button rather than the RowActions menu the other registers use:
+  // that menu pairs Edit with Delete, and a formulation has no delete endpoint.
+  // A menu offering one action is a menu nobody wants to open.
+  const columns: GridColumn<BomView>[] = [
+    ...BOM_COLUMNS,
+    {
+      key: 'actions',
+      label: '',
+      align: 'right',
+      pinned: true,
+      render: (bom) => (
+        <button
+          type="button"
+          onClick={() => onEdit(bom)}
+          className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+        >
+          Edit
+          <span className="sr-only">
+            {' '}
+            {bom.product.code} v{bom.version}
+          </span>
+        </button>
+      ),
+    },
+  ];
 
   return (
     <Grid
       rows={result.data}
-      columns={BOM_COLUMNS}
+      columns={columns}
       rowKey={(bom) => bom.id}
       searchText={(bom) => `${bom.product.code} ${bom.product.name} v${bom.version}`}
       noun="formulations"
@@ -837,6 +1042,20 @@ const PARTY_COLUMNS: readonly GridColumn<PartySummary>[] = [
     key: 'gstin',
     label: 'GSTIN',
     render: (party) => (party.gstin ? <Code>{party.gstin}</Code> : <Blank />),
+  },
+  {
+    key: 'documents',
+    label: 'Documents',
+    // The count, not a link, in the SHARED column definition: opening one needs
+    // its id, and the register holds only a count — the bytes stay in the
+    // database until somebody asks for a specific file. PartyGrid replaces this
+    // with a clickable version; see there.
+    render: (party) =>
+      party.documentCount > 0 ? (
+        <span className="text-slate-700">{party.documentCount}</span>
+      ) : (
+        <Blank />
+      ),
   },
   {
     key: 'licence',
@@ -901,6 +1120,115 @@ const PARTY_COLUMNS: readonly GridColumn<PartySummary>[] = [
   },
 ];
 
+/**
+ * The Documents cell: the paperwork on file, as icons.
+ *
+ * An icon per document rather than a count in words, because the useful fact at
+ * a glance is WHAT is on file — a PDF licence reads differently from a
+ * photographed one — and "1 document" says neither.
+ *
+ * Clicking opens a preview rather than downloading. Checking a licence number
+ * is the common reason to open one, and a download makes that a detour through
+ * the file manager; the preview carries its own Download button for when the
+ * file really is wanted.
+ *
+ * The ids are fetched on first click, not with the register: the listing
+ * carries a count precisely so drawing it does not touch the documents table
+ * for every row. Until then the count is all there is to draw, so the icons
+ * start as neutral placeholders and take their real type once loaded.
+ */
+function PartyDocumentsCell({ party }: { party: PartySummary }) {
+  const [documents, setDocuments] = useState<CustomerDocumentSummary[] | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState(false);
+  const [previewing, setPreviewing] = useState<CustomerDocumentSummary | null>(null);
+
+  const load = async (): Promise<CustomerDocumentSummary[] | null> => {
+    if (documents) return documents;
+
+    setIsLoading(true);
+    setError(false);
+
+    const result = await listCustomerDocumentsAction(party.id);
+
+    setIsLoading(false);
+
+    if (!result.ok) {
+      setError(true);
+      return null;
+    }
+
+    setDocuments(result.data);
+    return result.data;
+  };
+
+  const open = async (index: number) => {
+    const loaded = await load();
+    const chosen = loaded?.[index];
+
+    if (chosen) setPreviewing(chosen);
+  };
+
+  // Before the first click the types are unknown, so one neutral button per
+  // document stands in — the count is known, which is what the register was
+  // given.
+  const entries: (CustomerDocumentSummary | null)[] =
+    documents ?? Array.from({ length: party.documentCount }, () => null);
+
+  return (
+    <>
+      <div className="flex items-center gap-1.5">
+        {entries.map((document, index) => (
+          <button
+            key={document?.id ?? index}
+            type="button"
+            disabled={isLoading}
+            onClick={() => void open(index)}
+            title={document?.fileName ?? 'Open document'}
+            aria-label={document ? `Open ${document.fileName}` : `Open document ${index + 1}`}
+            className="rounded p-0.5 text-slate-400 transition hover:bg-slate-100 disabled:opacity-50"
+          >
+            {document ? (
+              <DocumentIcon contentType={document.contentType} />
+            ) : (
+              <svg
+                viewBox="0 0 20 20"
+                aria-hidden="true"
+                className="h-5 w-5 shrink-0"
+                fill="none"
+                stroke="currentColor"
+              >
+                <path
+                  d="M5 2.5h6.5L16 7v10.5H5z"
+                  strokeWidth="1.3"
+                  strokeLinejoin="round"
+                  className="stroke-slate-400"
+                />
+                <path
+                  d="M11.5 2.5V7H16"
+                  strokeWidth="1.3"
+                  strokeLinejoin="round"
+                  className="stroke-slate-400"
+                />
+              </svg>
+            )}
+          </button>
+        ))}
+
+        {error && <span className="text-xs text-red-700">could not load</span>}
+      </div>
+
+      {previewing && (
+        <DocumentPreview
+          partyId={party.id}
+          document={previewing}
+          onClose={() => setPreviewing(null)}
+        />
+      )}
+    </>
+  );
+}
+
 export function PartyGrid({
   result,
   onNew,
@@ -915,7 +1243,18 @@ export function PartyGrid({
   if (!result.ok) return <LoadFailed error={result.error} />;
 
   const columns: GridColumn<PartySummary>[] = [
-    ...PARTY_COLUMNS,
+    // The shared definition renders a bare count; here it becomes a control
+    // that opens the paperwork. Replaced rather than appended so the column
+    // keeps its position between GSTIN and the licence.
+    ...PARTY_COLUMNS.map((column) =>
+      column.key === 'documents'
+        ? {
+            ...column,
+            render: (party: PartySummary) =>
+              party.documentCount > 0 ? <PartyDocumentsCell party={party} /> : <Blank />,
+          }
+        : column,
+    ),
     {
       key: 'actions',
       label: '',
@@ -1008,7 +1347,9 @@ const LICENCE_COLUMNS: readonly GridColumn<LicenceSummary>[] = [
     key: 'status',
     label: 'Status',
     render: (licence) => (
-      <Pill tone={LICENCE_STATUS_TONE[licence.status]}>{LICENCE_STATUS_LABELS[licence.status]}</Pill>
+      <Pill tone={LICENCE_STATUS_TONE[licence.status]}>
+        {LICENCE_STATUS_LABELS[licence.status]}
+      </Pill>
     ),
   },
   {
@@ -1191,8 +1532,10 @@ export function LicenceGrid({
         </>
       }
       empty={
-        <>No licences on file yet. Add the manufacturing licence first — it is the one that stops
-        production when it lapses.</>
+        <>
+          No licences on file yet. Add the manufacturing licence first — it is the one that stops
+          production when it lapses.
+        </>
       }
     />
   );
@@ -1397,8 +1740,10 @@ export function AgreementGrid({
         )
       }
       empty={
-        <>No job-work agreements yet. Add one to record what a principal is billed and which of
-        our formulations carry their brand.</>
+        <>
+          No job-work agreements yet. Add one to record what a principal is billed and which of our
+          formulations carry their brand.
+        </>
       }
     />
   );
@@ -1571,8 +1916,10 @@ export function PackagingGrid({
         </>
       }
       empty={
-        <>No pack specifications yet. Add one before raising a work order — a product cannot go
-        into production without a pack to put it in.</>
+        <>
+          No pack specifications yet. Add one before raising a work order — a product cannot go into
+          production without a pack to put it in.
+        </>
       }
     />
   );

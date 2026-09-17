@@ -2,11 +2,7 @@
 
 import { useActionState, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import {
-  LICENCE_TYPE_LABELS,
-  type LicenceSummary,
-  type LicenceType,
-} from '@pharma-erp/types';
+import { LICENCE_TYPE_LABELS, type LicenceSummary, type LicenceType } from '@pharma-erp/types';
 
 import { saveLicenceAction, type ActionResult } from './actions';
 import {
@@ -79,14 +75,20 @@ export function LicenceComplianceMasterForm({
   const typed = (field: string, stored?: string | number | null) =>
     state.values?.[field] ?? (stored === null || stored === undefined ? undefined : String(stored));
 
+  /** The refusal about one control, when the save named it. */
+  const errorFor = (field: string) => state.fieldErrors?.[field];
+
   return (
     <form action={formAction} className="flex flex-col gap-8" noValidate>
-      {!state.ok && state.message && <FormError message={state.message} />}
+      {!state.ok && state.message && (
+        <FormError message={state.message} fieldErrors={state.fieldErrors} />
+      )}
 
       <FormSection title="Licence">
         <FormGrid>
           <SelectField
             name="licenceType"
+            error={errorFor('licenceType')}
             label="Licence type"
             required
             options={TYPE_OPTIONS}
@@ -96,6 +98,7 @@ export function LicenceComplianceMasterForm({
           />
           <TextField
             name="licenceNumber"
+            error={errorFor('licenceNumber')}
             label="Licence number"
             required
             maxLength={64}
@@ -105,6 +108,7 @@ export function LicenceComplianceMasterForm({
           />
           <TextField
             name="issuingAuthority"
+            error={errorFor('issuingAuthority')}
             label="Issuing authority"
             required
             maxLength={255}
@@ -121,6 +125,7 @@ export function LicenceComplianceMasterForm({
           />
           <TextField
             name="expiryDate"
+            error={errorFor('expiryDate')}
             label="Expiry date"
             required
             type="date"

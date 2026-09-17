@@ -3,11 +3,21 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 
 /**
- * The slide-over the register form opens in.
+ * The layer a register's form opens in.
  *
- * A drawer rather than a separate page, because creating a record is a detour
- * from the grid and not a destination: you come back to the same scroll
+ * Over a page rather than a separate route, because creating a record is a
+ * detour from the grid and not a destination: you come back to the same scroll
  * position in the same register, which a navigation would throw away.
+ *
+ * TWO PLACEMENTS, same component. A drawer down the right edge suits the long
+ * master-data forms — a dozen fields and several sections, which want height
+ * more than they want to be centred. A centred modal suits a short one: the
+ * work-order form is three fields, and pinning three fields to the right edge
+ * of a wide screen puts them a long way from where the eye already is.
+ *
+ * One component rather than two because everything that is easy to get wrong —
+ * the focus trap, Escape, returning focus to whatever opened it — is identical
+ * either way, and duplicating it is how one copy quietly loses a behaviour.
  *
  * Not a `<dialog>`: the native element's `showModal()` has to be called
  * imperatively after mount and then kept in step with React's idea of whether
@@ -18,11 +28,25 @@ import { useEffect, useRef, type ReactNode } from 'react';
 export function MasterDataDrawer({
   title,
   description,
+  placement = 'drawer',
+  width = 'default',
   onClose,
   children,
 }: {
   title: string;
   description?: string;
+  /** 'drawer' fills the right edge; 'center' is a modal box. */
+  placement?: 'drawer' | 'center';
+  /**
+   * How wide a CENTRED box may grow. Ignored by the edge drawer, which takes
+   * its width from the viewport.
+   *
+   * Default fits a form of short fields. 'wide' is for a form carrying a table
+   * — the dispensing plan lists every material with its lots and quantities,
+   * and at the narrow width those columns wrapped into a block that had to be
+   * scrolled sideways to read.
+   */
+  width?: 'default' | 'wide';
   onClose: () => void;
   children: ReactNode;
 }) {
@@ -75,8 +99,14 @@ export function MasterDataDrawer({
     };
   }, [onClose]);
 
+  const isCentred = placement === 'center';
+
   return (
-    <div className="fixed inset-0 z-40 flex justify-end">
+    <div
+      className={`fixed inset-0 z-40 flex ${
+        isCentred ? 'items-center justify-center p-4' : 'justify-end'
+      }`}
+    >
       {/* A button, not a div with onClick: it is a real control that closes
           the drawer, so it should be one for anything that is not a mouse. */}
       <button
@@ -91,7 +121,13 @@ export function MasterDataDrawer({
         role="dialog"
         aria-modal="true"
         aria-labelledby="drawer-title"
-        className="relative flex h-full w-full max-w-3xl flex-col bg-white shadow-2xl"
+        className={
+          isCentred
+            ? `relative flex max-h-[85vh] w-full flex-col overflow-hidden rounded-lg bg-white shadow-2xl ${
+                width === 'wide' ? 'max-w-5xl' : 'max-w-2xl'
+              }`
+            : 'relative flex h-full w-full max-w-3xl flex-col bg-white shadow-2xl'
+        }
       >
         <div className="flex flex-none items-start justify-between gap-4 border-b border-slate-200 px-6 py-4">
           <div className="min-w-0">

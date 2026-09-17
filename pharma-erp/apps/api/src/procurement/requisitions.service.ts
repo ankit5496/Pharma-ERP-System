@@ -1,10 +1,18 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { Prisma } from '@pharma-erp/database';
+import { REQUISITION_TRIGGER_TYPES } from '@pharma-erp/types';
 import type {
+  Paginated,
   ProcurementListQuery,
   RequisitionListItem,
   RequisitionStatus,
+  RequisitionTriggerType,
 } from '@pharma-erp/types';
 
 import { AuditService } from '../common/audit/audit.service';
@@ -13,7 +21,7 @@ import { TenantContextService } from '../tenant/tenant-context.service';
 
 import { parsePositive, positiveDifference, qty } from './decimal.util';
 import type { CreateRequisitionDto, UpdateRequisitionDto } from './dto/requisition.dto';
-import { dateRange } from './filters.util';
+import { dateRange, paginate } from './filters.util';
 import {
   ITEM_SELECT,
   PRODUCTION_PLAN_INCLUDE,
@@ -73,7 +81,7 @@ export class RequisitionsService {
     private readonly numbering: NumberingService,
   ) {}
 
-  async list(query: ProcurementListQuery): Promise<RequisitionListItem[]> {
+  async list(query: ProcurementListQuery): Promise<Paginated<RequisitionListItem>> {
     const where: Prisma.PurchaseRequisitionWhereInput = { deletedAt: null };
 
     if (query.status) {
@@ -82,6 +90,19 @@ export class RequisitionsService {
 
     if (query.itemId) where.itemId = query.itemId;
     if (query.vendorId) where.preferredVendorId = query.vendorId;
+
+    // Checked against the enum rather than cast: an unrecognised value reaching
+    // Prisma is a 500, and a filter nobody can spell should return nothing
+    // rather than break the page.
+    if (query.triggerType) {
+      if (!REQUISITION_TRIGGER_TYPES.includes(query.triggerType as RequisitionTriggerType)) {
+        throw new BadRequestException('Unknown trigger type.');
+      }
+
+      where.triggerType = query.triggerType as RequisitionTriggerType;
+    }
+
+    if (query.raisedById) where.requestedById = query.raisedById;
 
     const requestedBetween = dateRange(query.dateFrom, query.dateTo);
 
@@ -102,18 +123,26 @@ export class RequisitionsService {
       ];
     }
 
+    const { skip, take, page, pageSize } = paginate(query);
+
+    // The count runs against the SAME `where`, so the total describes the
+    // filtered list rather than the table. A pager built on an unfiltered
+    // count offers pages that are empty when you reach them.
     const rows = await this.prisma.scoped.purchaseRequisition.findMany({
       where,
       include: REQUISITION_INCLUDE,
       orderBy: [{ createdAt: 'desc' }],
-      take: 500,
+      skip,
+      take,
     });
+
+    const total = await this.prisma.scoped.purchaseRequisition.count({ where });
 
     const people = await this.people.load(
       collectIds(...rows.flatMap((row) => [row.requestedById, row.approvedById])),
     );
 
-    return rows.map((row) => this.toListItem(row, people));
+    return { rows: rows.map((row) => this.toListItem(row, people)), total, page, pageSize };
   }
 
   async findOne(id: string): Promise<RequisitionListItem> {
@@ -441,6 +470,7 @@ export class RequisitionsService {
       isMandatory: row.isMandatory,
       // Null for an auto-reorder: the system raised it and the trail says so.
       requestedBy: row.requestedById ? (people.get(row.requestedById) ?? null) : null,
+      requestedById: row.requestedById,
       approvedBy: row.approvedById ? (people.get(row.approvedById) ?? null) : null,
       requestDate: row.requestDate.toISOString(),
       requiredByDate: row.requiredByDate?.toISOString() ?? null,
@@ -460,5 +490,3 @@ function dedupeOrders<T extends { id: string }>(orders: T[]): T[] {
 
   return [...seen.values()];
 }
-
-

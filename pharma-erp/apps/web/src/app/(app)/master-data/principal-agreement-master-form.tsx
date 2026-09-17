@@ -54,9 +54,9 @@ const BILLING_MODEL_OPTIONS = (Object.keys(BILLING_MODEL_LABELS) as BillingModel
   label: `${BILLING_MODEL_LABELS[key]} — ${BILLING_MODEL_DESCRIPTIONS[key]}`,
 }));
 
-const RATE_BASIS_OPTIONS = (
-  Object.keys(CONVERSION_RATE_BASIS_LABELS) as ConversionRateBasis[]
-).map((key) => ({ value: key, label: CONVERSION_RATE_BASIS_LABELS[key] }));
+const RATE_BASIS_OPTIONS = (Object.keys(CONVERSION_RATE_BASIS_LABELS) as ConversionRateBasis[]).map(
+  (key) => ({ value: key, label: CONVERSION_RATE_BASIS_LABELS[key] }),
+);
 
 const INITIAL: ActionResult = { ok: false };
 
@@ -120,6 +120,9 @@ export function PrincipalAgreementMasterForm({
   const typed = (field: string, stored?: string | number | null) =>
     state.values?.[field] ?? (stored === null || stored === undefined ? undefined : String(stored));
 
+  /** The refusal about one control, when the save named it. */
+  const errorFor = (field: string) => state.fieldErrors?.[field];
+
   // Only parties recorded as job-work principals. The API refuses anything
   // else; offering it here would be offering a choice that cannot be saved.
   const principals = parties.filter((party) => party.partyType === 'JOB_WORK_PRINCIPAL');
@@ -143,7 +146,9 @@ export function PrincipalAgreementMasterForm({
 
   return (
     <form action={formAction} className="flex flex-col gap-8" noValidate>
-      {!state.ok && state.message && <FormError message={state.message} />}
+      {!state.ok && state.message && (
+        <FormError message={state.message} fieldErrors={state.fieldErrors} />
+      )}
 
       {(noPrincipals || noBoms) && (
         <p className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
@@ -159,6 +164,7 @@ export function PrincipalAgreementMasterForm({
         <FormGrid>
           <SelectField
             name="principalId"
+            error={errorFor('principalId')}
             label="Principal"
             required
             options={principalOptions}
@@ -169,6 +175,7 @@ export function PrincipalAgreementMasterForm({
           />
           <TextField
             name="agreementReference"
+            error={errorFor('agreementReference')}
             label="Agreement reference"
             maxLength={64}
             placeholder="JW-2026-018"
@@ -177,6 +184,7 @@ export function PrincipalAgreementMasterForm({
           />
           <SelectField
             name="billingModel"
+            error={errorFor('billingModel')}
             label="Billing model"
             required
             options={BILLING_MODEL_OPTIONS}
@@ -188,6 +196,7 @@ export function PrincipalAgreementMasterForm({
           />
           <TextField
             name="conversionChargeRate"
+            error={errorFor('conversionChargeRate')}
             label="Conversion charge rate (₹)"
             type="number"
             min="0"
@@ -197,6 +206,7 @@ export function PrincipalAgreementMasterForm({
           />
           <SelectField
             name="conversionRateBasis"
+            error={errorFor('conversionRateBasis')}
             label="Rate charged"
             options={RATE_BASIS_OPTIONS}
             value={rateBasis}
@@ -206,12 +216,14 @@ export function PrincipalAgreementMasterForm({
           />
           <TextField
             name="validFrom"
+            error={errorFor('validFrom')}
             label="Valid from"
             type="date"
             defaultValue={typed('validFrom', agreement?.validFrom)}
           />
           <TextField
             name="validTo"
+            error={errorFor('validTo')}
             label="Valid until"
             type="date"
             defaultValue={typed('validTo', agreement?.validTo)}

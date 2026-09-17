@@ -258,6 +258,40 @@ export class CreateBomDto {
   lines!: BomLineDto[];
 }
 
+/**
+ * Changes a formulation IN PLACE, rather than superseding it with a new
+ * version.
+ *
+ * Deliberately NOT a partial of CreateBomDto. `productId` is absent because a
+ * formulation that changes which product it makes is a different formulation,
+ * and the version it carries would then be a version of nothing. Correcting a
+ * recipe and repointing it at another product are not the same request.
+ *
+ * `activate` is absent for the same reason: which version is current is a
+ * decision about the SET of versions, and the partial unique index allows only
+ * one active version per product. Switching that belongs in its own operation,
+ * not folded into an edit.
+ *
+ * The service refuses this entirely once the formulation has been used to
+ * manufacture. See updateBom.
+ */
+export class UpdateBomDto {
+  @Matches(QUANTITY, { message: `outputQuantity ${QUANTITY_MESSAGE}` })
+  outputQuantity!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(4000)
+  instructions?: string;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(200)
+  @ValidateNested({ each: true })
+  @Type(() => BomLineDto)
+  lines!: BomLineDto[];
+}
+
 // ---------------------------------------------------------------------------
 // Production orders
 // ---------------------------------------------------------------------------
@@ -290,9 +324,93 @@ export class RecordBatchDto {
   actualQuantity!: string;
 }
 
+/**
+ * Naming the lot to draw from, rather than taking the one FEFO proposed —
+ * US-PROD-02.
+ *
+ * `reason` is OPTIONAL HERE and required by the service, which is the only
+ * layer that can tell whether this is a departure at all. The criterion is
+ * "mandatory only if Actual Batch ≠ Suggested Batch", and whether it differs
+ * depends on the FEFO plan for this order at this moment — something a DTO
+ * validating one object in isolation cannot know.
+ *
+ * It was `@IsString()` here, which made the reason unconditional and meant
+ * confirming the suggested lot by hand was rejected at the boundary for having
+ * nothing to explain. See MaterialIssueService.applyOverrides, which compares
+ * the chosen lot against the plan and refuses a reasonless DEPARTURE; the
+ * column's CHECK constraint is the backstop under that.
+ */
+export class MaterialIssueOverrideDto {
+  @IsUUID()
+  itemId!: string;
+
+  @IsUUID()
+  lotId!: string;
+
+  @Matches(QUANTITY, { message: `quantity ${QUANTITY_MESSAGE}` })
+  quantity!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  @Matches(/\S/, { message: 'reason must not be blank' })
+  reason?: string;
+}
+
+export class IssueMaterialDto {
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => MaterialIssueOverrideDto)
+  overrides?: MaterialIssueOverrideDto[];
+}
+
+/** One packaging component actually consumed by the batch — US-PROD-04. */
+export class PackagingConsumptionDto {
+  @IsUUID()
+  itemId!: string;
+
+  @Matches(QUANTITY, { message: `quantityConsumed ${QUANTITY_MESSAGE}` })
+  quantityConsumed!: string;
+
+  /** The lot it came from, where the line recorded one. */
+  @IsOptional()
+  @IsUUID()
+  lotId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  notes?: string | null;
+}
+
 export class RecordPackingDto {
   @Matches(QUANTITY, { message: `packedQuantity ${QUANTITY_MESSAGE}` })
   packedQuantity!: string;
+
+  /**
+   * Units damaged or discarded on the line — US-PROD-04.
+   *
+   * Defaults to zero rather than being required: a run with no losses is
+   * normal, and forcing a "0" would be asking a question whose answer is
+   * usually obvious. What it must not do is go unrecorded when it happens,
+   * because packed + rejected is what reconciles against the bulk yield.
+   */
+  @IsOptional()
+  @Matches(QUANTITY, { message: `rejectedQuantity ${QUANTITY_MESSAGE}` })
+  rejectedQuantity?: string;
+
+  /** Which presentation was packed; matches a PackagingRequirement pack variant. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  packVariant?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => PackagingConsumptionDto)
+  consumptions?: PackagingConsumptionDto[];
 
   @IsOptional()
   @IsISO8601()

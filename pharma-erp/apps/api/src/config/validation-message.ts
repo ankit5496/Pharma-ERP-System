@@ -209,6 +209,68 @@ function relabel(message: string, property: string): string {
  * with the collection's noun and the one-based index produces "Component 1:
  * Quantity must be …" rather than a dotted path.
  */
+/**
+ * One failed constraint, with the DTO property it came from.
+ *
+ * The property is what lets a form paint the offending control red instead of
+ * printing a sentence above the whole thing. Nested properties are dotted —
+ * `lines.0.itemId` — which is how the line rows address their own fields.
+ */
+export interface FieldMessage {
+  /** Dotted DTO path: `hsnCode`, or `lines.0.quantityPer`. */
+  field: string;
+  /** The sentence, already relabelled and capitalised. */
+  message: string;
+}
+
+/**
+ * The same walk as `flatten`, keeping the path instead of the prose prefix.
+ *
+ * Two walks rather than one returning both, because the prose form GROUPS
+ * missing fields into a single sentence and the keyed form must not: a field
+ * can only be painted red if its own message is still attached to it.
+ */
+function flattenKeyed(error: ValidationError, path: string): FieldMessage[] {
+  const here = path ? `${path}.${error.property}` : error.property;
+  const messages: FieldMessage[] = [];
+
+  if (error.constraints) {
+    const chosen = bestMessage(error.constraints, error.property);
+
+    if (chosen) messages.push({ field: here, message: relabel(chosen, error.property) });
+  }
+
+  for (const child of error.children ?? []) {
+    messages.push(...flattenKeyed(child, here));
+  }
+
+  return messages;
+}
+
+/**
+ * Every failed constraint, keyed by the field it belongs to.
+ *
+ * Terminated the same way as the prose form so a form can show the sentence
+ * under the control without re-punctuating it.
+ */
+export function toFieldMessages(errors: readonly ValidationError[]): FieldMessage[] {
+  const seen = new Set<string>();
+
+  return errors
+    .flatMap((error) => flattenKeyed(error, ''))
+    .filter((entry) => {
+      // One message per field: the first is the most specific, because
+      // bestMessage already chose it over the generic constraints.
+      if (seen.has(entry.field)) return false;
+      seen.add(entry.field);
+      return true;
+    })
+    .map((entry) => ({
+      field: entry.field,
+      message: /[.!?]$/.test(entry.message) ? entry.message : `${entry.message}.`,
+    }));
+}
+
 function flatten(error: ValidationError, prefix: string): string[] {
   const messages: string[] = [];
 
@@ -216,7 +278,9 @@ function flatten(error: ValidationError, prefix: string): string[] {
     const chosen = bestMessage(error.constraints, error.property);
 
     if (chosen) {
-      messages.push(prefix ? `${prefix}: ${relabel(chosen, error.property)}` : relabel(chosen, error.property));
+      messages.push(
+        prefix ? `${prefix}: ${relabel(chosen, error.property)}` : relabel(chosen, error.property),
+      );
     }
   }
 
@@ -233,16 +297,73 @@ function flatten(error: ValidationError, prefix: string): string[] {
   return messages;
 }
 
+/** "a", "a and b", "a, b and c". */
+function listFields(labels: readonly string[]): string {
+  if (labels.length === 1) return labels[0] as string;
+
+  const last = labels[labels.length - 1] as string;
+
+  return `${labels.slice(0, -1).join(', ')} and ${last}`;
+}
+
 /**
  * Every failed constraint, as sentences, de-duplicated and terminated.
  *
+ * MISSING FIELDS ARE COLLAPSED INTO ONE SENTENCE. A blank form fails five
+ * constraints, and five near-identical sentences — "Item code is required.
+ * Category is required. Unit of measure is required." — have to be read one at
+ * a time to work out which fields are meant. "Item code, Category, Unit of
+ * measure, HSN code and GST rate are required." says the same thing at a
+ * glance. Every other kind of failure stays its own sentence, because each one
+ * says something different and merging them would lose that.
+ *
+ * Grouped BY PREFIX, so a missing field on line 2 of a formulation does not get
+ * folded in with a missing field at the top of the form. Within a prefix the
+ * fields keep the order the DTO declares them, which is the order they appear
+ * on screen.
+ *
  * Full stops are added here rather than in each message so the web app can join
- * them with a space and get prose, instead of the run-on it gets today.
+ * them with a space and get prose, instead of a run-on.
  */
 export function toReadableMessages(errors: readonly ValidationError[]): string[] {
-  const messages = errors.flatMap((error) => flatten(error, ''));
+  const messages = [...new Set(errors.flatMap((error) => flatten(error, '')))];
 
-  return [...new Set(messages)].map((message) =>
-    /[.!?]$/.test(message) ? message : `${message}.`,
-  );
+  // Matches "Item code is required" and "Component 2: Quantity is required",
+  // which is the exact shape bestMessage emits for a missing value.
+  const REQUIRED = /^(?:(.+): )?(.+) is required$/;
+
+  const required = new Map<string, string[]>();
+  const output: string[] = [];
+  // Holds the position each prefix's collapsed sentence will occupy, so the
+  // order of the list follows where its first missing field appeared.
+  const slots = new Map<string, number>();
+
+  for (const message of messages) {
+    const match = REQUIRED.exec(message);
+
+    if (!match) {
+      output.push(message);
+      continue;
+    }
+
+    const prefix = match[1] ?? '';
+    const label = match[2] as string;
+
+    if (!required.has(prefix)) {
+      required.set(prefix, []);
+      slots.set(prefix, output.length);
+      output.push(''); // placeholder, filled in below
+    }
+
+    required.get(prefix)?.push(label);
+  }
+
+  for (const [prefix, labels] of required) {
+    const verb = labels.length === 1 ? 'is' : 'are';
+    const sentence = `${listFields(labels)} ${verb} required`;
+
+    output[slots.get(prefix) as number] = prefix ? `${prefix}: ${sentence}` : sentence;
+  }
+
+  return output.map((message) => (/[.!?]$/.test(message) ? message : `${message}.`));
 }

@@ -8,6 +8,7 @@ import type {
   BomView,
   ConversionRateBasis,
   CreateItemRequest,
+  CustomerDocumentSummary,
   CreateJobWorkAgreementRequest,
   CreateLicenceRequest,
   JobWorkAgreementSummary,
@@ -20,6 +21,7 @@ import type {
   PackagingRequirementView,
   UpdateJobWorkAgreementRequest,
   UpdatePackagingRequirementRequest,
+  ItemInventory,
   ItemSummary,
   ItemType,
   LicenceRegister,
@@ -35,6 +37,8 @@ import type {
 } from '@pharma-erp/types';
 
 import { apiFetch, isColdStart, COLD_START_MESSAGE, type ApiResult } from '@/lib/api';
+import { env } from '@/lib/env';
+import { getSessionToken } from '@/lib/session';
 
 /**
  * Writes for the master-data registers.
@@ -51,6 +55,17 @@ export interface ActionResult {
   message?: string;
   /** Kept so a rejected form can be re-rendered with what was typed. */
   values?: Record<string, string>;
+  /** The saved record's id, for work that can only follow a successful save. */
+  savedId?: string;
+  /**
+   * The refusal against the FORM field it is about, so the control can be
+   * marked rather than a sentence printed above the whole drawer.
+   *
+   * Keyed by the input's `name`, which is not always the DTO property: the
+   * Item form's category select is `name="category"` against a DTO field
+   * called `type`. `apiFields` maps between them.
+   */
+  fieldErrors?: Record<string, string>;
 }
 
 /** Empty string means "not filled in", which is different from a value of "0". */
@@ -60,25 +75,90 @@ function optional(formData: FormData, field: string): string | undefined {
 }
 
 /**
- * "Code is required. Party type is required." — one sentence per empty field,
- * each naming the field as its label appears on screen.
+ * "Item code, Category and GST rate are required." — one sentence naming every
+ * empty field, each as its label appears on screen.
  *
  * One helper rather than a hand-written sentence per form, because the two
  * drift: the party form used to say "Code, name and party type are all
  * required", where only the first field got a capital because it happened to
- * start the sentence. QA reported exactly that. Naming each field in its own
- * sentence removes the question of which word begins a clause.
+ * start the sentence. QA reported exactly that, and it is why every label here
+ * carries its own capital regardless of where in the sentence it lands.
+ *
+ * A sentence per field was the first fix for that, and it read badly — five
+ * empty fields produced five near-identical sentences that had to be parsed
+ * one by one to find out which fields were meant. One list is read at a
+ * glance.
  *
  * Worded to match what the API produces for the same failure, so a person does
  * not see two different styles depending on whether the browser or the server
- * caught it.
+ * caught it. See `listFields` in apps/api/src/config/validation-message.ts.
  */
-function requireFields(fields: readonly (readonly [string, unknown])[]): string | null {
-  const missing = fields.filter(([, value]) => !value).map(([label]) => label);
+function requireFields(
+  fields: readonly (readonly [string, unknown, string?])[],
+): { message: string; fieldErrors: Record<string, string> } | null {
+  const missing = fields.filter(([, value]) => !value);
 
   if (missing.length === 0) return null;
 
-  return missing.map((label) => `${label} is required.`).join(' ');
+  // One per control, so each empty field can carry its own red line. The
+  // sentence stays too: it is what a screen reader announces on the summary,
+  // and what shows when a field has no control to mark.
+  const fieldErrors: Record<string, string> = {};
+
+  for (const [label, , name] of missing) {
+    if (name) fieldErrors[name] = `${label} is required.`;
+  }
+
+  const labels = missing.map(([label]) => label);
+
+  if (labels.length === 1) return { message: `${labels[0]} is required.`, fieldErrors };
+
+  // Oxford-comma-free "a, b and c": the labels are short noun phrases and none
+  // of them contains a comma, so there is nothing for the final "and" to be
+  // ambiguous about.
+  const last = labels[labels.length - 1];
+  const rest = labels.slice(0, -1);
+
+  return { message: `${rest.join(', ')} and ${last} are required.`, fieldErrors };
+}
+
+/**
+ * The API's DTO property names, as the forms spell them.
+ *
+ * Most match. The ones here do not, because the label on screen and the column
+ * in the database were named by different concerns: the Item form asks for a
+ * "Category" and the DTO calls it `type`.
+ */
+const FORM_FIELD_FOR_DTO: Record<string, string> = {
+  type: 'category',
+  name: 'brandName',
+  productId: 'productId',
+};
+
+/**
+ * Re-keys the API's field errors to the input names the forms use.
+ *
+ * ALL OR NOTHING, deliberately. The banner hides itself once any field error is
+ * present, on the grounds that everything has been said where it can be acted
+ * on. That is only safe if every message really did reach a control — so a
+ * nested path like `lines.0.quantityPer`, which addresses a repeating row no
+ * top-level control renders, makes this return nothing at all and the whole
+ * refusal stays in the banner.
+ *
+ * Losing a message is worse than showing one twice.
+ */
+function apiFields(result: ApiFailure): Record<string, string> | undefined {
+  if (!result.fields) return undefined;
+
+  const mapped: Record<string, string> = {};
+
+  for (const [dtoField, message] of Object.entries(result.fields)) {
+    if (dtoField.includes('.')) return undefined;
+
+    mapped[FORM_FIELD_FOR_DTO[dtoField] ?? dtoField] = message;
+  }
+
+  return Object.keys(mapped).length > 0 ? mapped : undefined;
 }
 
 type ApiFailure = Extract<ApiResult<unknown>, { ok: false }>;
@@ -97,10 +177,13 @@ type ApiFailure = Extract<ApiResult<unknown>, { ok: false }>;
  * the form.
  */
 function failure(result: ApiFailure, values?: Record<string, string>): ActionResult {
+  const fieldErrors = isColdStart(result) ? undefined : apiFields(result);
+
   return {
     ok: false,
     message: isColdStart(result) ? COLD_START_MESSAGE : result.error,
     ...(values ? { values } : {}),
+    ...(fieldErrors ? { fieldErrors } : {}),
   };
 }
 
@@ -135,15 +218,16 @@ export async function saveItemAction(
 
   // Checked here as well as on the API so the obvious omissions are answered
   // without a round trip. The API's own validation is the one that counts.
+  // The third entry is the input's `name`, which is what marks the control.
   const itemMissing = requireFields([
-    ['Item code', code],
-    ['Category', type],
-    ['Unit of measure', uom],
-    ['HSN code', hsnCode],
-    ['GST rate', gstRate],
+    ['Item code', code, 'code'],
+    ['Category', type, 'category'],
+    ['Unit of measure', uom, 'uom'],
+    ['HSN code', hsnCode, 'hsnCode'],
+    ['GST rate', gstRate, 'gstRate'],
   ]);
 
-  if (itemMissing) return { ok: false, values, message: itemMissing };
+  if (itemMissing) return { ok: false, values, ...itemMissing };
 
   // `name` is what every other screen shows and what the BOM picker searches,
   // so it must not be blank. A finished good is known by its brand; a raw
@@ -154,8 +238,7 @@ export async function saveItemAction(
     return {
       ok: false,
       values,
-      message:
-        'Brand name is required, or a Generic name for a material that has no brand.',
+      message: 'Brand name is required, or a Generic name for a material that has no brand.',
     };
   }
 
@@ -254,19 +337,20 @@ export async function savePartyAction(
   const code = String(formData.get('code') ?? '').trim();
   const name = String(formData.get('name') ?? '').trim();
   const partyType = String(formData.get('partyType') ?? '') as PartyType;
-  const status = (optional(formData, 'status') ?? 'ACTIVE') as PartyStatus;
+  // No `?? 'ACTIVE'` fallback. Status is a starred field on the form, and
+  // defaulting it here meant an unanswered question was silently answered
+  // "active" — which for a customer is the difference between a party you may
+  // transact with and one you may not.
+  const status = optional(formData, 'status') as PartyStatus | undefined;
 
-  if (!code || !name || !partyType) {
-    return {
-      ok: false,
-      values,
-      message: requireFields([
-        ['Party code', code],
-        ['Party name', name],
-        ['Party type', partyType],
-      ])!,
-    };
-  }
+  const partyMissing = requireFields([
+    ['Party code', code, 'code'],
+    ['Party name', name, 'name'],
+    ['Party type', partyType, 'partyType'],
+    ['Status', status, 'status'],
+  ]);
+
+  if (partyMissing) return { ok: false, values, ...partyMissing };
 
   const terms = optional(formData, 'paymentTermsDays');
   const creditPeriod = optional(formData, 'creditPeriodDays');
@@ -322,6 +406,10 @@ export async function savePartyAction(
   return {
     ok: true,
     message: `${result.data.code} — ${result.data.name} ${partyId ? 'updated' : 'added'}.`,
+    // Handed back so the form can attach a chosen document immediately after a
+    // CREATE: a document is filed against a party, and until this returns there
+    // is no party to file it against.
+    savedId: result.data.id,
   };
 }
 
@@ -337,7 +425,15 @@ export async function savePartyAction(
  * the wire, which is what the table holds. The split is a reading aid, not a
  * distinction the schema makes — an item's own type already says which it is.
  */
+/**
+ * Creates a formulation, or rewrites one in place when `bomId` is given.
+ *
+ * The same form serves both, bound with `saveBomAction.bind(null, id)` from the
+ * edit path. Editing sends no `productId` and no `activate`: neither is the
+ * edit's to change, and the API's UpdateBomDto does not accept them.
+ */
 export async function saveBomAction(
+  bomId: string | null,
   _previous: ActionResult,
   formData: FormData,
 ): Promise<ActionResult> {
@@ -349,16 +445,18 @@ export async function saveBomAction(
   const productId = String(formData.get('productId') ?? '');
   const outputQuantity = String(formData.get('outputQuantity') ?? '').trim();
 
-  if (!productId || !outputQuantity) {
-    return {
-      ok: false,
-      values,
-      message: requireFields([
-        ['Finished product', productId],
-        ['Reference batch size', outputQuantity],
-      ])!,
-    };
-  }
+  // On an edit the product is fixed and the form does not submit it, so it is
+  // only required when writing a new formulation.
+  const bomMissing = requireFields(
+    bomId
+      ? [['Reference batch size', outputQuantity, 'outputQuantity']]
+      : [
+          ['Finished product', productId, 'productId'],
+          ['Reference batch size', outputQuantity, 'outputQuantity'],
+        ],
+  );
+
+  if (bomMissing) return { ok: false, values, ...bomMissing };
 
   // Line fields are named `raw.<row>.itemId` / `pack.<row>.itemId`, so the
   // rows are found by walking the names rather than by guessing how many
@@ -406,21 +504,27 @@ export async function saveBomAction(
     seen.add(line.itemId);
   }
 
-  const result = await apiFetch<BomView>('/api/v1/production/boms', {
-    method: 'POST',
-    authenticated: true,
-    json: {
-      productId,
-      outputQuantity,
-      lines,
-      // Absent from FormData when unticked, which is how a form spells false.
-      activate: formData.get('activate') !== null,
-      ...(optional(formData, 'instructions')
-        ? { instructions: optional(formData, 'instructions') }
-        : {}),
+  const instructions = optional(formData, 'instructions');
+
+  const result = await apiFetch<BomView>(
+    bomId ? `/api/v1/production/boms/${bomId}` : '/api/v1/production/boms',
+    {
+      method: bomId ? 'PATCH' : 'POST',
+      authenticated: true,
+      json: bomId
+        ? { outputQuantity, lines, ...(instructions ? { instructions } : {}) }
+        : {
+            productId,
+            outputQuantity,
+            lines,
+            // Absent from FormData when unticked, which is how a form spells
+            // false.
+            activate: formData.get('activate') !== null,
+            ...(instructions ? { instructions } : {}),
+          },
+      timeoutMs: 20_000,
     },
-    timeoutMs: 20_000,
-  });
+  );
 
   if (!result.ok) return failure(result, values);
 
@@ -428,9 +532,11 @@ export async function saveBomAction(
 
   return {
     ok: true,
-    message: `${result.data.product.code} v${result.data.version} saved${
-      result.data.isActive ? ' and made active' : ''
-    }.`,
+    message: bomId
+      ? `${result.data.product.code} v${result.data.version} updated.`
+      : `${result.data.product.code} v${result.data.version} saved${
+          result.data.isActive ? ' and made active' : ''
+        }.`,
   };
 }
 
@@ -464,18 +570,14 @@ export async function saveLicenceAction(
 
   // Answered here as well as on the API so the obvious omissions cost no round
   // trip. The API's validation is the one that counts.
-  if (!licenceType || !licenceNumber || !issuingAuthority || !expiryDate) {
-    return {
-      ok: false,
-      values,
-      message: requireFields([
-        ['Licence type', licenceType],
-        ['Licence number', licenceNumber],
-        ['Issuing authority', issuingAuthority],
-        ['Expiry date', expiryDate],
-      ])!,
-    };
-  }
+  const licenceMissing = requireFields([
+    ['Licence type', licenceType, 'licenceType'],
+    ['Licence number', licenceNumber, 'licenceNumber'],
+    ['Issuing authority', issuingAuthority, 'issuingAuthority'],
+    ['Expiry date', expiryDate, 'expiryDate'],
+  ]);
+
+  if (licenceMissing) return { ok: false, values, ...licenceMissing };
 
   // Caught before the round trip because the two dates are right next to each
   // other on the form, and naming them beats a constraint message.
@@ -601,16 +703,12 @@ export async function saveAgreementAction(
   // US-MD-05's first criterion, answered before the round trip. The column is
   // NOT NULL and the DTO requires it; this is only so the refusal names the
   // field instead of arriving as a validation array.
-  if (!principalId || !billingModel) {
-    return {
-      ok: false,
-      values,
-      message: requireFields([
-        ['Principal', principalId],
-        ['Billing model', billingModel],
-      ])!,
-    };
-  }
+  const agreementMissing = requireFields([
+    ['Principal', principalId, 'principalId'],
+    ['Billing model', billingModel, 'billingModel'],
+  ]);
+
+  if (agreementMissing) return { ok: false, values, ...agreementMissing };
 
   const rate = optional(formData, 'conversionChargeRate');
   const basis = optional(formData, 'conversionRateBasis') as ConversionRateBasis | undefined;
@@ -782,17 +880,13 @@ export async function savePackagingAction(
   const packVariant = String(formData.get('packVariant') ?? '').trim();
   const unitsPerPack = String(formData.get('unitsPerPack') ?? '').trim();
 
-  if (!productId || !packVariant || !unitsPerPack) {
-    return {
-      ok: false,
-      values,
-      message: requireFields([
-        ['Finished product', productId],
-        ['Pack variant', packVariant],
-        ['Units per pack', unitsPerPack],
-      ])!,
-    };
-  }
+  const packagingMissing = requireFields([
+    ['Finished product', productId, 'productId'],
+    ['Pack variant', packVariant, 'packVariant'],
+    ['Units per pack', unitsPerPack, 'unitsPerPack'],
+  ]);
+
+  if (packagingMissing) return { ok: false, values, ...packagingMissing };
 
   // Answered before the round trip because it is the field people get wrong,
   // and because the reason it matters is not obvious from the label alone.
@@ -855,7 +949,8 @@ export async function savePackagingAction(
     return {
       ok: false,
       values,
-      message: 'A pack specification needs at least one component — otherwise it specifies nothing.',
+      message:
+        'A pack specification needs at least one component — otherwise it specifies nothing.',
     };
   }
 
@@ -973,4 +1068,112 @@ export async function deleteItemAction(itemId: string): Promise<ActionResult> {
   revalidatePath('/master-data', 'layout');
 
   return { ok: true, message: 'Item retired.' };
+}
+
+/**
+ * What one item is holding, for the Inventory dialog.
+ *
+ * A read through a server action rather than a fetch from the browser, because
+ * the session token is in an httpOnly cookie that client JavaScript cannot
+ * read — every call to the API goes through the server for the same reason.
+ */
+export async function loadItemInventoryAction(
+  itemId: string,
+): Promise<{ ok: true; data: ItemInventory } | { ok: false; message: string }> {
+  const result = await apiFetch<ItemInventory>(`/api/v1/procurement/items/${itemId}/inventory`, {
+    authenticated: true,
+    timeoutMs: 20_000,
+  });
+
+  if (!result.ok) {
+    return { ok: false, message: isColdStart(result) ? COLD_START_MESSAGE : result.error };
+  }
+
+  return { ok: true, data: result.data };
+}
+
+// ---------------------------------------------------------------------------
+// Customer documents
+// ---------------------------------------------------------------------------
+//
+// These do not go through `apiFetch`, which only sends JSON. An upload is
+// multipart, and rebuilding it as JSON would mean base64 — a third more bytes
+// over the wire and a second copy of the file in memory on both sides.
+
+/** What is on file for a customer. Never the bytes; those come from the route. */
+export async function listCustomerDocumentsAction(
+  partyId: string,
+): Promise<{ ok: true; data: CustomerDocumentSummary[] } | { ok: false; message: string }> {
+  const result = await apiFetch<CustomerDocumentSummary[]>(`/api/v1/parties/${partyId}/documents`, {
+    authenticated: true,
+    timeoutMs: 20_000,
+  });
+
+  if (!result.ok) {
+    return { ok: false, message: isColdStart(result) ? COLD_START_MESSAGE : result.error };
+  }
+
+  return { ok: true, data: result.data };
+}
+
+export async function uploadCustomerDocumentAction(
+  partyId: string,
+  formData: FormData,
+): Promise<{ ok: true; data: CustomerDocumentSummary } | { ok: false; message: string }> {
+  const token = await getSessionToken();
+
+  if (!token) return { ok: false, message: 'Not signed in.' };
+
+  try {
+    // The Content-Type header is deliberately NOT set: fetch derives it from
+    // the FormData, including the multipart boundary, and setting it by hand
+    // produces a boundary that does not match the body.
+    const response = await fetch(`${env.apiUrl}/api/v1/parties/${partyId}/documents`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+      signal: AbortSignal.timeout(60_000),
+    });
+
+    if (!response.ok) {
+      const body: unknown = await response.json().catch(() => null);
+      const message =
+        body && typeof body === 'object' && 'message' in body
+          ? String(
+              Array.isArray((body as { message: unknown }).message)
+                ? ((body as { message: string[] }).message ?? []).join(' ')
+                : (body as { message: unknown }).message,
+            )
+          : `Upload failed (${response.status}).`;
+
+      return { ok: false, message };
+    }
+
+    revalidatePath('/master-data', 'layout');
+
+    return { ok: true, data: (await response.json()) as CustomerDocumentSummary };
+  } catch {
+    return {
+      ok: false,
+      message:
+        'The upload did not complete. Check the connection and try again — nothing was saved.',
+    };
+  }
+}
+
+export async function deleteCustomerDocumentAction(
+  partyId: string,
+  documentId: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  const result = await apiFetch<void>(`/api/v1/parties/${partyId}/documents/${documentId}`, {
+    method: 'DELETE',
+    authenticated: true,
+    timeoutMs: 20_000,
+  });
+
+  if (!result.ok) {
+    return { ok: false, message: isColdStart(result) ? COLD_START_MESSAGE : result.error };
+  }
+
+  return { ok: true };
 }
