@@ -40,16 +40,25 @@ export interface WorkflowStep {
   /** URL segment, unique within its workflow. */
   key: string;
   label: string;
-  /** One line on what happens at this step. Rendered as the page's subtitle. */
-  purpose: string;
+  /**
+   * One line on what happens at this step. Rendered as the page's subtitle and
+   * as the sub-tab's hover title.
+   *
+   * OPTIONAL. A workflow whose screens say what they are — a register of tiles
+   * with its own heading, a form whose fields are self-evident — does not need
+   * a sentence above it explaining the obvious, and Production & Quality Gate
+   * omits it throughout for that reason. Absent means nothing is rendered at
+   * all, not an empty paragraph holding space.
+   */
+  purpose?: string;
   state: WorkflowStepState;
 }
 
 export interface Workflow {
   key: WorkflowKey;
   label: string;
-  /** Shown under the tab row, so the tab's scope is never in doubt. */
-  purpose: string;
+  /** Shown under the tab row, so the tab's scope is never in doubt. Optional; see WorkflowStep.purpose. */
+  purpose?: string;
   steps: readonly WorkflowStep[];
 }
 
@@ -119,32 +128,38 @@ export const WORKFLOWS: readonly Workflow[] = [
     ],
   },
   {
+    // NO `purpose` ON THIS WORKFLOW OR ANY OF ITS STEPS, deliberately.
+    //
+    // Its screens carry their own headings and the tiles and tables say what
+    // they hold, so the subtitle was restating the tab name in a longer form —
+    // "Formulations" above "Bills of material and standard manufacturing
+    // instructions." Removed at the product owner's request on 2026-09-17,
+    // including the hover titles, which were the same sentence again.
+    //
+    // The other three workflows keep theirs. If they are ever dropped too, the
+    // field becomes dead weight and should go from the interface rather than
+    // being left as an option nobody takes.
     key: 'production-quality',
     label: 'Production & Quality Gate',
-    purpose: 'Manufacturing a batch and clearing every quality check before it can be sold.',
     steps: [
       {
         key: 'formulations',
         label: 'Formulations',
-        purpose: 'Bills of material and standard manufacturing instructions.',
         state: 'ready',
       },
       {
         key: 'production-orders',
         label: 'Production orders',
-        purpose: 'What to make, how much, and against which formulation version.',
         state: 'ready',
       },
       {
         key: 'material-issue',
         label: 'Material issue',
-        purpose: 'Dispensing raw material to the shop floor, lot by lot.',
         state: 'ready',
       },
       {
         key: 'batch-record',
         label: 'Batch record',
-        purpose: 'The batch manufacturing record: every stage, signed as it happens.',
         state: 'ready',
       },
       // REMOVED, NOT BUILT: 'in-process-checks' and 'finished-goods-testing'
@@ -167,7 +182,6 @@ export const WORKFLOWS: readonly Workflow[] = [
       {
         key: 'batch-release',
         label: 'Batch release',
-        purpose: 'The quality gate itself: release, hold or reject. Nothing ships before this.',
         state: 'ready',
       },
     ],

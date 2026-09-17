@@ -75,6 +75,17 @@ export interface GridColumn<Row> {
 /** Everything on a row that the search box should match against. */
 type SearchText<Row> = (row: Row) => string;
 
+/**
+ * Rows per page, and the sizes offered.
+ *
+ * Ten is the default because that is the brief, and because a register is read
+ * by scanning — a page you can take in without scrolling is the point of
+ * paging it at all. The larger sizes are there for the times someone is
+ * comparing rather than looking something up.
+ */
+const DEFAULT_PAGE_SIZE = 10;
+const PAGE_SIZES = [10, 25, 50, 100] as const;
+
 function Toolbar({
   count,
   total,
@@ -155,6 +166,89 @@ function HeadRow({ labels }: { labels: readonly string[] }) {
 }
 
 /**
+ * The footer: which slice of the register is on screen, and how to move.
+ *
+ * It sits OUTSIDE the scrolling box rather than under the last row, so it stays
+ * reachable without scrolling to the bottom of the page you are on — the
+ * controls for changing pages should not themselves need paging to reach.
+ *
+ * Prev/Next plus a page count, not a numbered strip. A register of two hundred
+ * parties is 20 pages, and twenty little numbers is a lot of furniture for a
+ * decision that is almost always "the next one" or "search instead".
+ */
+function Pager({
+  page,
+  pageCount,
+  first,
+  last,
+  total,
+  noun,
+  pageSize,
+  onPage,
+  onPageSize,
+}: {
+  page: number;
+  pageCount: number;
+  /** 1-based, inclusive — the row numbers actually on screen. */
+  first: number;
+  last: number;
+  total: number;
+  noun: string;
+  pageSize: number;
+  onPage: (page: number) => void;
+  onPageSize: (size: number) => void;
+}) {
+  return (
+    <div className="flex flex-none flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white px-4 py-2.5">
+      <p className="text-xs tabular-nums text-slate-600">
+        Showing <strong className="font-semibold text-slate-900">{first}</strong>–
+        <strong className="font-semibold text-slate-900">{last}</strong> of {total} {noun}
+      </p>
+
+      <div className="flex flex-wrap items-center gap-3">
+        <label className="flex items-center gap-1.5 whitespace-nowrap text-xs text-slate-600">
+          Rows
+          <select
+            value={pageSize}
+            onChange={(event) => onPageSize(Number(event.target.value))}
+            aria-label={`Rows of ${noun} per page`}
+            className="rounded-md border border-slate-300 bg-white px-1.5 py-1 text-xs tabular-nums text-slate-900"
+          >
+            {PAGE_SIZES.map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={() => onPage(page - 1)}
+            disabled={page <= 1}
+            className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Previous
+          </button>
+          <span className="whitespace-nowrap px-1.5 text-xs tabular-nums text-slate-600">
+            Page {page} of {pageCount}
+          </span>
+          <button
+            type="button"
+            onClick={() => onPage(page + 1)}
+            disabled={page >= pageCount}
+            className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * The table itself. Generic over the row so each register keeps its own
  * types — the alternative, a shared `Record<string, unknown>` row, throws away
  * exactly the checking that stops a column reading a field that no longer
@@ -183,12 +277,34 @@ export function Grid<Row>({
   notice?: ReactNode;
 }) {
   const [query, setQuery] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
     if (!needle) return rows;
     return rows.filter((row) => searchText(row).toLowerCase().includes(needle));
   }, [rows, query, searchText]);
+
+  // At least 1, so an empty register reads "Page 1 of 1" rather than "of 0".
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+
+  // Clamped rather than stored blindly. Searching, changing the page size, and
+  // deleting the last row of the last page all shrink the list under whatever
+  // page is current — and a page past the end renders an empty table that looks
+  // exactly like "nothing matches". Deriving the effective page keeps the two
+  // apart without a corrective effect that flashes the empty state first.
+  const current = Math.min(page, pageCount);
+  const start = (current - 1) * pageSize;
+  const visible = filtered.slice(start, start + pageSize);
+
+  function goTo(next: number) {
+    setPage(Math.min(Math.max(1, next), pageCount));
+    // Back to the top of the new page: paging while scrolled halfway down
+    // otherwise lands you in the middle of the next set of rows.
+    scrollRef.current?.scrollTo({ top: 0 });
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -198,7 +314,12 @@ export function Grid<Row>({
         noun={noun}
         singular={singular}
         query={query}
-        onQuery={setQuery}
+        onQuery={(value) => {
+          setQuery(value);
+          // A new search is a new list; keeping the old page number would show
+          // page 4 of a result that has one page.
+          setPage(1);
+        }}
         onNew={onNew}
         disabled={rows.length === 0}
       />
@@ -207,7 +328,7 @@ export function Grid<Row>({
 
       {/* The grid scrolls in both directions inside its own box, so a wide
           register never makes the page itself scroll sideways. */}
-      <div className="min-h-0 flex-1 overflow-auto overscroll-contain">
+      <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto overscroll-contain">
         <table className="w-full border-separate border-spacing-0 text-left text-sm">
           {/* Sticky so the column names stay readable once the register is
               longer than the box — which is the entire point of a grid. */}
@@ -249,7 +370,7 @@ export function Grid<Row>({
                 </td>
               </tr>
             ) : (
-              filtered.map((row) => (
+              visible.map((row) => (
                 <tr key={rowKey(row)} className="group transition hover:bg-slate-50">
                   {columns.map((column) => (
                     <td
@@ -275,6 +396,31 @@ export function Grid<Row>({
           </tbody>
         </table>
       </div>
+
+      {/* Hidden when there is nothing to page through: a single page of four
+          rows does not need a "Page 1 of 1" and a pair of dead buttons under
+          it. It reappears the moment a register outgrows one page. */}
+      {filtered.length > 0 && (filtered.length > pageSize || pageSize !== DEFAULT_PAGE_SIZE) && (
+        <Pager
+          page={current}
+          pageCount={pageCount}
+          first={start + 1}
+          last={start + visible.length}
+          total={filtered.length}
+          noun={noun}
+          pageSize={pageSize}
+          onPage={goTo}
+          onPageSize={(size) => {
+            setPageSize(size);
+            // Row 1 again rather than trying to keep the current rows in view:
+            // the arithmetic for "which page holds the row I was looking at"
+            // is guesswork once the size changes, and landing at the top is
+            // the one outcome nobody has to work out.
+            setPage(1);
+            scrollRef.current?.scrollTo({ top: 0 });
+          }}
+        />
+      )}
     </div>
   );
 }

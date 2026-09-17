@@ -325,12 +325,20 @@ export class RecordBatchDto {
 }
 
 /**
- * Picking a lot other than the one FEFO proposed — US-PROD-02.
+ * Naming the lot to draw from, rather than taking the one FEFO proposed —
+ * US-PROD-02.
  *
- * `reason` is required and must not be blank: the criterion allows departing
- * from the suggestion, and the column's CHECK constraint refuses a reasonless
- * override, so asking here turns that into a readable message rather than a
- * constraint violation.
+ * `reason` is OPTIONAL HERE and required by the service, which is the only
+ * layer that can tell whether this is a departure at all. The criterion is
+ * "mandatory only if Actual Batch ≠ Suggested Batch", and whether it differs
+ * depends on the FEFO plan for this order at this moment — something a DTO
+ * validating one object in isolation cannot know.
+ *
+ * It was `@IsString()` here, which made the reason unconditional and meant
+ * confirming the suggested lot by hand was rejected at the boundary for having
+ * nothing to explain. See MaterialIssueService.applyOverrides, which compares
+ * the chosen lot against the plan and refuses a reasonless DEPARTURE; the
+ * column's CHECK constraint is the backstop under that.
  */
 export class MaterialIssueOverrideDto {
   @IsUUID()
@@ -342,10 +350,11 @@ export class MaterialIssueOverrideDto {
   @Matches(QUANTITY, { message: `quantity ${QUANTITY_MESSAGE}` })
   quantity!: string;
 
+  @IsOptional()
   @IsString()
   @MaxLength(500)
   @Matches(/\S/, { message: 'reason must not be blank' })
-  reason!: string;
+  reason?: string;
 }
 
 export class IssueMaterialDto {
