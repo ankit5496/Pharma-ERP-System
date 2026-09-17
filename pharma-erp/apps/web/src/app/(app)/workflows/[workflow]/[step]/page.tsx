@@ -61,7 +61,7 @@ export default async function WorkflowStepPage({ params, searchParams }: PagePro
       <h2 id="step-heading" className="text-lg font-semibold text-slate-900">
         {step.label}
       </h2>
-      <p className="mt-1 max-w-3xl text-sm text-slate-600">{step.purpose}</p>
+      {step.purpose && <p className="mt-1 max-w-3xl text-sm text-slate-600">{step.purpose}</p>}
 
       <div className="mt-5">
         {/* The extension point promised in WORKFLOWS: a step whose `state` is

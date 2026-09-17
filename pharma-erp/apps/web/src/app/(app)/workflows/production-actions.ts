@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 
 import type {
   BatchView,
+  MaterialIssuePlan,
   MaterialIssueView,
   ProductionOrderSummary,
   WorkOrderFeasibility,
@@ -79,7 +80,7 @@ export async function issueMaterialAction(
   // field name itself and the rows need no hidden inputs and no stable
   // numbering across materials. The reason is per material, not per row:
   // splitting one material across two lots is one decision, explained once.
-  const overrides: { itemId: string; lotId: string; quantity: string; reason: string }[] = [];
+  const overrides: { itemId: string; lotId: string; quantity: string; reason?: string }[] = [];
   const missingReason = new Set<string>();
 
   for (const [key, value] of formData.entries()) {
@@ -98,12 +99,26 @@ export async function issueMaterialAction(
 
     const reason = String(formData.get(`override.${itemId}.reason`) ?? '').trim();
 
-    if (!reason) {
+    // US-PROD-02: a reason is needed only when the lot named is NOT one the
+    // FEFO plan proposed. Naming the suggested lot is confirming it — the
+    // story's "Actual Batch Issued, manually confirmed, defaults to the
+    // suggestion" — and demanding an explanation for agreeing would both
+    // obstruct the normal path and record a deviation that did not occur.
+    //
+    // The API makes this same comparison against the plan it computes itself;
+    // this one only decides whether to spend a round trip to be told so.
+    const suggested = String(formData.get(`suggested.${itemId}`) ?? '')
+      .split(',')
+      .filter(Boolean);
+
+    const deviates = !suggested.includes(value);
+
+    if (deviates && !reason) {
       missingReason.add(itemId);
       continue;
     }
 
-    overrides.push({ itemId, lotId: value, quantity, reason });
+    overrides.push({ itemId, lotId: value, quantity, ...(deviates ? { reason } : {}) });
   }
 
   if (missingReason.size > 0) {
@@ -111,7 +126,8 @@ export async function issueMaterialAction(
       ok: false,
       message:
         'Choosing a lot other than the suggested one needs a reason. Fill in the reason for ' +
-        `${missingReason.size === 1 ? 'the material' : 'each material'} you picked lots for.`,
+        `${missingReason.size === 1 ? 'the material' : 'each material'} where you picked a ` +
+        'different lot.',
     };
   }
 
@@ -285,4 +301,66 @@ export async function checkWorkOrderFeasibilityAction(
   if (!result.ok) return { ok: false, message: result.error };
 
   return { ok: true, data: result.data };
+}
+
+/**
+ * The number the next work order would take — US-PROD-01.
+ *
+ * Asked of the server rather than worked out in the browser: the form only has
+ * the orders on the current page, which a filter or a page boundary can make an
+ * incomplete basis for "the highest so far". Nothing is reserved by asking.
+ */
+export async function nextWorkOrderNumberAction(): Promise<string | null> {
+  const result = await apiFetch<{ orderNumber: string }>('/api/v1/production/orders/next-number', {
+    authenticated: true,
+    timeoutMs: 20_000,
+  });
+
+  // Null rather than an error: this is a convenience on a field nobody types
+  // into, and a failed prediction must not stop a work order being raised.
+  return result.ok ? result.data.orderNumber : null;
+}
+
+/**
+ * The FEFO plan for one work order — what issuing it would consume.
+ *
+ * Fetched on demand so the dispense form can offer a CHOICE of work order. The
+ * panel used to compute one plan on the server, for the oldest order awaiting
+ * material, and the form was wired to that order alone: an officer with three
+ * orders on the floor could dispense against exactly one of them, and nothing
+ * on screen said why.
+ *
+ * Per order rather than all at once, because a plan costs an allocation query
+ * per material — computing every waiting order's plan on every page load would
+ * pay for orders nobody opens.
+ */
+export async function issuePlanAction(
+  productionOrderId: string,
+): Promise<{ ok: true; data: MaterialIssuePlan } | { ok: false; message: string }> {
+  if (!productionOrderId) return { ok: false, message: 'Choose a work order.' };
+
+  const result = await apiFetch<MaterialIssuePlan>(
+    `/api/v1/production/orders/${productionOrderId}/issue-plan`,
+    { authenticated: true, timeoutMs: 20_000 },
+  );
+
+  if (!result.ok) return { ok: false, message: result.error };
+
+  return { ok: true, data: result.data };
+}
+
+/**
+ * The number the next dispensing record would take — US-PROD-02.
+ *
+ * Same shape and same reasoning as the work-order number above: asked of the
+ * server so the form shows the real series, null on failure so a field nobody
+ * types into cannot stop material being dispensed.
+ */
+export async function nextIssueNumberAction(): Promise<string | null> {
+  const result = await apiFetch<{ issueNumber: string }>('/api/v1/production/issues/next-number', {
+    authenticated: true,
+    timeoutMs: 20_000,
+  });
+
+  return result.ok ? result.data.issueNumber : null;
 }
