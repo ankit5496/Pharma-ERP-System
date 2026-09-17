@@ -105,6 +105,17 @@ export const WORKFLOWS: readonly Workflow[] = [
         state: 'ready',
       },
       {
+        // AFTER Incoming QC, because that is the moment material becomes
+        // stock. The ledger records what QC released, what it refused, and
+        // what has since been consumed — read in the order the work actually
+        // happens, it belongs here rather than at the end.
+        key: 'stock-ledger',
+        label: 'Raw material stock',
+        purpose:
+          'Batch-wise raw material stock and every movement behind it, in first-expiry-first-out order.',
+        state: 'ready',
+      },
+      {
         key: 'invoices',
         label: 'Purchase invoices',
         purpose: 'Vendor invoices matched against the order and the receipt, with GST input tax.',

@@ -1,5 +1,10 @@
 'use server';
 
+import {
+  PURCHASE_ORDER_STATUS_LABELS,
+  type PurchaseOrderStatus,
+} from '@pharma-erp/types';
+
 import type { ActionState } from '@/components/procurement/action-state';
 import { apiFetch } from '@/lib/api';
 
@@ -185,6 +190,45 @@ export async function changeRequisitionStatusAction(
   );
 }
 
+/**
+ * Edits an open requisition.
+ *
+ * ONLY THE FOUR FIELDS THE API WILL ACCEPT: quantity, preferred vendor,
+ * required-by date and notes. The item is not among them, and deliberately so —
+ * a requisition for a different item is a different requisition, and changing
+ * it underneath a purchase order raised from it would rewrite what was agreed
+ * with a vendor. The API refuses anything past Open outright.
+ *
+ * An empty vendor or date is sent as `null`, not omitted: omitting a key means
+ * "leave it alone", so clearing a field would silently do nothing.
+ */
+export async function updateRequisitionAction(
+  _previous: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const id = str(form, 'id');
+
+  const values = {
+    requiredQuantity: str(form, 'requiredQuantity'),
+    preferredVendorId: str(form, 'preferredVendorId'),
+    requiredByDate: str(form, 'requiredByDate'),
+    notes: str(form, 'notes'),
+  };
+
+  return submit(
+    `${BASE}/requisitions/${id}`,
+    {
+      requiredQuantity: values.requiredQuantity,
+      preferredVendorId: values.preferredVendorId || null,
+      requiredByDate: values.requiredByDate || null,
+      notes: values.notes || null,
+    },
+    'Requisition updated.',
+    values,
+    'PATCH',
+  );
+}
+
 export async function convertRequisitionAction(
   _previous: ActionState,
   form: FormData,
@@ -216,10 +260,121 @@ export async function changePurchaseOrderStatusAction(
   const id = str(form, 'id');
   const status = str(form, 'status');
 
+  // The shared label, not the raw enum: lower-casing PARTIALLY_RECEIVED gave
+  // 'Purchase order partially_received.' — the underscore visible to the user.
+  // 'ISSUED' was also special-cased here long after that status was removed.
+  const label = PURCHASE_ORDER_STATUS_LABELS[status as PurchaseOrderStatus] ?? status;
+
   return submit(
     `${BASE}/purchase-orders/${id}/status`,
     { status },
-    status === 'ISSUED' ? 'Purchase order issued to the vendor.' : `Purchase order ${status.toLowerCase()}.`,
+    `Purchase order marked ${label.toLowerCase()}.`,
+  );
+}
+
+/**
+ * Creates a purchase order from an approved requisition.
+ *
+ * ONE ACTION, TWO OUTCOMES, decided by which button was pressed: a draft that
+ * commits to nothing, or a placed order. The browser sends only the pressed
+ * button's value, so the choice needs no hidden state.
+ *
+ * The requisition id travels on every line — that link is what makes the order
+ * traceable back to the request that caused it, and the API refuses a line
+ * without one.
+ */
+export async function createPurchaseOrderAction(
+  _previous: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const values = {
+    vendorId: str(form, 'vendorId'),
+    quantity: str(form, 'quantity'),
+    rate: str(form, 'rate'),
+    taxRatePercent: str(form, 'taxRatePercent'),
+  };
+
+  const asDraft = str(form, 'saveAsDraft') === 'true';
+
+  return submit(
+    `${BASE}/purchase-orders`,
+    {
+      vendorId: values.vendorId,
+      expectedDeliveryDate: toIsoDate(opt(form, 'expectedDeliveryDate')),
+      paymentTermsDays: opt(form, 'paymentTermsDays')
+        ? Number(str(form, 'paymentTermsDays'))
+        : undefined,
+      notes: opt(form, 'notes'),
+      saveAsDraft: asDraft,
+      lines: [
+        {
+          itemId: str(form, 'itemId'),
+          requisitionId: str(form, 'requisitionId'),
+          quantity: values.quantity,
+          rate: values.rate,
+          taxRatePercent: values.taxRatePercent || '0',
+        },
+      ],
+    },
+    asDraft
+      ? 'Draft purchase order saved. Nothing can be received against it until you place it.'
+      : 'Purchase order created.',
+    values,
+  );
+}
+
+/** Places a draft: it becomes a real order and its requisition is converted. */
+export async function submitDraftPurchaseOrderAction(
+  _previous: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const id = str(form, 'id');
+
+  return submit(
+    `${BASE}/purchase-orders/${id}/submit`,
+    {},
+    'Purchase order placed. The requisition behind it is now marked converted.',
+  );
+}
+
+/**
+ * Edits a purchase order that has not yet been received against.
+ *
+ * THE LINES ARE NOT TOUCHED HERE. The API accepts wholesale line replacement on
+ * a draft, but doing it from this form would mean rebuilding every line from
+ * scratch on each save, and a line already carrying a goods receipt cannot be
+ * deleted at all — the foreign key refuses it. The order-level terms are what a
+ * buyer actually renegotiates; changing what is on order is a new order.
+ */
+export async function updatePurchaseOrderAction(
+  _previous: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const id = str(form, 'id');
+
+  const values = {
+    expectedDeliveryDate: str(form, 'expectedDeliveryDate'),
+    paymentTermsDays: str(form, 'paymentTermsDays'),
+    notes: str(form, 'notes'),
+    status: str(form, 'status'),
+  };
+
+  return submit(
+    `${BASE}/purchase-orders/${id}`,
+    {
+      expectedDeliveryDate: values.expectedDeliveryDate || null,
+      // Omitted rather than nulled when blank: the column is a number with no
+      // null state, so "leave it as it is" is the only sane reading of empty.
+      ...(values.paymentTermsDays ? { paymentTermsDays: Number(values.paymentTermsDays) } : {}),
+      notes: values.notes || null,
+      // The API treats "the status it already has" as a no-op, so this is sent
+      // unconditionally rather than diffed here — the server owns the rules
+      // about what a purchase order may become.
+      ...(values.status ? { status: values.status } : {}),
+    },
+    'Purchase order updated.',
+    values,
+    'PATCH',
   );
 }
 
@@ -270,6 +425,39 @@ export async function createGoodsReceiptAction(
       lines,
     },
     'Goods receipt booked. The batches are in quarantine awaiting incoming QC.',
+  );
+}
+
+/**
+ * Corrects the paperwork on a booked goods receipt.
+ *
+ * Quantities and batches are absent, and the API would refuse them anyway: the
+ * receipt has already created batches and written to the append-only stock
+ * ledger. A wrong quantity is corrected by receiving the difference or by
+ * rejecting the batch at QC.
+ */
+export async function updateGoodsReceiptAction(
+  _previous: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const id = str(form, 'id');
+
+  const values = {
+    receiptDate: str(form, 'receiptDate'),
+    vendorDocumentNumber: str(form, 'vendorDocumentNumber'),
+    remarks: str(form, 'remarks'),
+  };
+
+  return submit(
+    `${BASE}/goods-receipts/${id}`,
+    {
+      ...(values.receiptDate ? { receiptDate: values.receiptDate } : {}),
+      vendorDocumentNumber: values.vendorDocumentNumber || null,
+      remarks: values.remarks || null,
+    },
+    'Goods receipt updated.',
+    values,
+    'PATCH',
   );
 }
 
@@ -339,6 +527,41 @@ export async function createInvoiceAction(
   );
 }
 
+/**
+ * Corrects what was transcribed from a vendor's invoice.
+ *
+ * The amounts are not here: they were matched against the order and the
+ * receipt, and editing a total by hand would break that match without anything
+ * recording it. A wrong amount means a wrong invoice — cancel it and book the
+ * one the vendor actually sent.
+ */
+export async function updateInvoiceAction(
+  _previous: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const id = str(form, 'id');
+
+  const values = {
+    vendorInvoiceNumber: str(form, 'vendorInvoiceNumber'),
+    invoiceDate: str(form, 'invoiceDate'),
+    dueDate: str(form, 'dueDate'),
+    notes: str(form, 'notes'),
+  };
+
+  return submit(
+    `${BASE}/invoices/${id}`,
+    {
+      ...(values.vendorInvoiceNumber ? { vendorInvoiceNumber: values.vendorInvoiceNumber } : {}),
+      ...(values.invoiceDate ? { invoiceDate: values.invoiceDate } : {}),
+      ...(values.dueDate ? { dueDate: values.dueDate } : {}),
+      notes: values.notes || null,
+    },
+    'Invoice updated.',
+    values,
+    'PATCH',
+  );
+}
+
 export async function changeInvoiceStatusAction(
   _previous: ActionState,
   form: FormData,
@@ -358,6 +581,40 @@ export async function changeInvoiceStatusAction(
 // ---------------------------------------------------------------------------
 // 6. Payments
 // ---------------------------------------------------------------------------
+
+/**
+ * Corrects how a payment was recorded, never how much it was.
+ *
+ * The amount and the invoice decide what the vendor is still owed. Changing
+ * either here would move a payables balance with nothing recording that it
+ * moved; a payment sent in error is corrected by another payment.
+ */
+export async function updatePaymentAction(
+  _previous: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const id = str(form, 'id');
+
+  const values = {
+    paymentDate: str(form, 'paymentDate'),
+    reference: str(form, 'reference'),
+    method: str(form, 'method'),
+    notes: str(form, 'notes'),
+  };
+
+  return submit(
+    `${BASE}/payments/${id}`,
+    {
+      ...(values.paymentDate ? { paymentDate: values.paymentDate } : {}),
+      reference: values.reference || null,
+      method: values.method || null,
+      notes: values.notes || null,
+    },
+    'Payment updated.',
+    values,
+    'PATCH',
+  );
+}
 
 export async function recordPaymentAction(
   _previous: ActionState,

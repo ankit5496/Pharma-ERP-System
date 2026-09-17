@@ -38,8 +38,7 @@ export default async function DataTablePage({ params }: PageProps) {
 
   if (!dataset) notFound();
 
-  const result =
-    dataset.source.kind === 'endpoint' ? await loadDatasetRecords(dataset) : null;
+  const result = dataset.source.kind === 'endpoint' ? await loadDatasetRecords(dataset) : null;
 
   return (
     <AppShell user={user}>
@@ -92,11 +91,7 @@ export default async function DataTablePage({ params }: PageProps) {
           ) : result.data.length === 0 ? (
             <p className="p-6 text-sm text-slate-600">No records.</p>
           ) : (
-            <RecordTable
-              columns={dataset.columns}
-              rows={result.data}
-              rowKey={dataset.rowKey}
-            />
+            <RecordTable columns={dataset.columns} rows={result.data} rowKey={dataset.rowKey} />
           )}
         </section>
 

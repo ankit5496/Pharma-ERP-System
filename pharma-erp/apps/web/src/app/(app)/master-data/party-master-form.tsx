@@ -1,6 +1,8 @@
 'use client';
 
 import { useActionState, useEffect, useRef, useState } from 'react';
+
+import { useActionToast } from '@/components/toast';
 import { useRouter } from 'next/navigation';
 import {
   COUNTRY_DIAL_CODES,
@@ -16,7 +18,6 @@ import {
 import { savePartyAction, uploadCustomerDocumentAction, type ActionResult } from './actions';
 import { CustomerDocuments } from './customer-documents';
 import {
-  FormError,
   FormGrid,
   FormSection,
   PhoneField,
@@ -115,6 +116,11 @@ export function PartyMasterForm({
   };
 
   const [state, formAction, isPending] = useActionState(saveWithDocument, INITIAL);
+
+  // The result is announced by the application-wide centred toast rather than
+  // by a banner inside this form, which on a form this long sat above the fold
+  // while the submit button being watched was below it.
+  useActionToast(isPending, state.ok ? 'success' : 'error', state.message);
   const router = useRouter();
 
   const [partyType, setPartyType] = useState<string>(party?.partyType ?? '');
@@ -163,9 +169,6 @@ export function PartyMasterForm({
 
   return (
     <form action={formAction} className="flex flex-col gap-8" noValidate>
-      {!state.ok && state.message && (
-        <FormError message={state.message} fieldErrors={state.fieldErrors} />
-      )}
 
       <FormSection title="Identity">
         <FormGrid>

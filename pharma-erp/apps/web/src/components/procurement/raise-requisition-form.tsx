@@ -51,7 +51,11 @@ export function RaiseRequisitionForm({
   }
 
   return (
-    <Disclosure label="Raise requisition" title={`Requisition for ${item.name}`}>
+    <Disclosure
+      label="Raise requisition"
+      title={`Requisition for ${item.name}`}
+      closeWhen={state.status === 'success'}
+    >
       {() => (
         <form action={formAction} className="space-y-3">
           <ActionMessage state={state} />

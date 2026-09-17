@@ -79,3 +79,103 @@
     @apply mt-1.5 text-xs text-slate-400;
   }
 }
+
+/**
+ * The toast host, which is a popover so it can reach the top layer and paint
+ * over an open modal `<dialog>`. Every declaration here undoes a user-agent
+ * rule for `[popover]`: it is sized to its content, given a solid border and
+ * background, and centred by `margin: auto`. None of that suits a
+ * full-viewport, transparent, click-through container.
+ */
+/**
+ * Cells get their spacing from classes, never from the user agent.
+ *
+ * Tailwind's Preflight resets margins and borders but leaves the UA's
+ * `td { padding: 1px }` alone. Any cell that sets only some sides — the nested
+ * order-line and receipt-line tables set `py-2 pr-4` — therefore picks up a
+ * stray pixel on the others, so a column's left edge belongs to no spacing
+ * system at all and two tables that look identical are a pixel out.
+ */
+th,
+td {
+  padding: 0;
+}
+
+/**
+ * Every record in a table is visibly its own record.
+ *
+ * Written here, as a direct-child rule, rather than as classes on each page:
+ * the screens build their own table markup, and the separation has to be the
+ * same on all of them or the tables stop looking like one application. The
+ * `> table > tbody > tr` path is deliberate — it must NOT reach the line tables
+ * nested inside a receipt or an order, which are part of a record rather than a
+ * list of them, and which would turn into a striped block if they were ruled
+ * the same way.
+ *
+ * A hairline was not enough. Rows here are two and three lines tall and carry
+ * pills, links and controls, so a 1px slate-100 line between them disappeared
+ * into the content and consecutive records ran together.
+ */
+.table-scroll > table > tbody > tr {
+  border-top: 1px solid rgb(226 232 240); /* slate-200 */
+}
+
+.table-scroll > table > tbody > tr:first-child {
+  border-top: 0;
+}
+
+/*
+ * Column separators, so a wide row is read across as a set of fields rather
+ * than as one run of text. Deliberately fainter than the row rule: the rows
+ * are what a reader counts, and columns ruled as darkly as records would make
+ * the table a grid of boxes.
+ *
+ * Not on the last cell, which would draw a line down the table's right edge.
+ */
+.table-scroll > table > tbody > tr > td:not(:last-child),
+.table-scroll > table > thead > tr > th:not(:last-child) {
+  border-right: 1px solid rgb(241 245 249); /* slate-100 */
+}
+
+/* The header needs a firmer edge than the rows, or the first record reads as
+   part of it. */
+.table-scroll > table > thead > tr > th {
+  border-bottom: 2px solid rgb(226 232 240);
+}
+
+/*
+ * Hover marks the row under the pointer across its whole width, which is what
+ * makes a wide table readable when scanning to a column on the far right.
+ * `:hover` only on a device that actually has a pointer: on a touch screen it
+ * sticks to whatever was last tapped and reads as a selection.
+ */
+@media (hover: hover) {
+  .table-scroll > table > tbody > tr:hover {
+    box-shadow: inset 0 0 0 9999px rgb(15 23 42 / 0.03);
+  }
+}
+
+/**
+ * A scrolling table keeps its column names visible.
+ *
+ * Written as a descendant rule rather than classes on each <thead> because the
+ * screens build their own table markup: a rule here applies to every table in
+ * the application, including ones written after this. `background` is not
+ * optional — a sticky header is still transparent, and the rows would scroll
+ * underneath and show through it.
+ */
+.table-scroll thead th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background-color: #fff;
+}
+
+#toast-host {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  overflow: visible;
+}
