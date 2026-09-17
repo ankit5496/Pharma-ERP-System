@@ -1,8 +1,17 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useActionState, useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  useActionState,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { useFormStatus } from 'react-dom';
+
+import { useActionToast } from '../toast';
 
 import { IDLE, type ActionState } from './action-state';
 
@@ -20,10 +29,19 @@ export function SubmitButton({
   children,
   pendingLabel,
   variant = 'primary',
+  name,
+  value,
 }: {
   children: ReactNode;
   pendingLabel?: string;
   variant?: 'primary' | 'secondary' | 'danger';
+  /**
+   * Submits a value of its own, so one form can offer two outcomes — save as
+   * draft, or place the order — without a second form or a hidden radio. The
+   * browser sends only the button that was actually pressed.
+   */
+  name?: string;
+  value?: string;
 }) {
   const { pending } = useFormStatus();
 
@@ -37,6 +55,8 @@ export function SubmitButton({
   return (
     <button
       type="submit"
+      name={name}
+      value={value}
       disabled={pending}
       // aria-busy so a screen reader announces the wait, not just the sighted
       // change of label.
@@ -48,23 +68,89 @@ export function SubmitButton({
   );
 }
 
-/** Result banner for a completed action. */
-export function ActionMessage({ state }: { state: ActionState }) {
-  if (state.status === 'idle' || !state.message) return null;
+/**
+ * Kept as a no-op so the forms that render it need no edit.
+ *
+ * Results are now announced by the centred toast host, raised from `useAction`
+ * where every action already passes. This used to print a banner beside the
+ * control that was submitted, which put the confirmation wherever the row
+ * happened to sit — frequently off-screen on a long table, and on the row
+ * actions it appeared next to a button the success had just removed.
+ */
+export function ActionMessage(_: { state: ActionState }) {
+  return null;
+}
 
-  const isError = state.status === 'error';
+/** One choice in a {@link StatusSelect}. */
+export interface StatusOption {
+  value: string;
+  label: string;
+  /** Why it cannot be chosen. Present means disabled. */
+  blocked?: string | null;
+}
+
+/**
+ * The status control used by every row that has one.
+ *
+ * FIXED, NARROW WIDTH. A native select sizes itself to its widest option, so a
+ * single long entry stretches the control across the row and shunts the button
+ * beside it out of line with every other row in the table. Pinning the width
+ * means the column is the same width on all rows whatever any one of them
+ * happens to contain.
+ *
+ * THE REASON A STATUS IS UNAVAILABLE IS A TOOLTIP, NOT PART OF THE LABEL. It
+ * used to be appended to the option text — "Approved — Only an open order can
+ * be approved." — which is what made these controls wide in the first place.
+ * The option is still visibly disabled, and the explanation is on hover.
+ *
+ * The selected value carries its own `title` so a label clipped by the fixed
+ * width can still be read in full, which is the only way truncation is
+ * acceptable on a control that reports state.
+ */
+export function StatusSelect({
+  id,
+  name = 'status',
+  label,
+  defaultValue,
+  options,
+}: {
+  id: string;
+  name?: string;
+  /** Names the control for assistive technology; never painted. */
+  label: string;
+  defaultValue: string;
+  options: readonly StatusOption[];
+}) {
+  const [value, setValue] = useState(defaultValue);
+
+  const selected = options.find((option) => option.value === value);
 
   return (
-    <div
-      role={isError ? 'alert' : 'status'}
-      className={`mb-4 rounded-md border p-3 text-sm ${
-        isError
-          ? 'border-red-200 bg-red-50 text-red-800'
-          : 'border-green-200 bg-green-50 text-green-900'
-      }`}
-    >
-      {state.message}
-    </div>
+    <>
+      <label className="sr-only" htmlFor={id}>
+        {label}
+      </label>
+
+      <select
+        id={id}
+        name={name}
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        title={selected?.label}
+        className="field-sm w-36 shrink-0 truncate"
+      >
+        {options.map((option) => (
+          <option
+            key={option.value}
+            value={option.value}
+            disabled={Boolean(option.blocked)}
+            title={option.blocked ?? option.label}
+          >
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </>
   );
 }
 
@@ -96,51 +182,129 @@ export function Field({
 }
 
 /**
- * A form that opens from a button rather than sitting permanently on the page.
+ * A form that opens from a button, in a modal dialog over the list.
  *
- * The lists are the point of these screens; a create form always expanded
- * pushes the rows below the fold on every visit. It closes itself on success,
- * which is the signal that the new row is now in the table behind it.
+ * WHY A DIALOG AND NOT THE PANEL THIS USED TO BE. The form used to expand in
+ * place, which pushed the table it was about down the page: the rows a person
+ * came to look at moved the moment they went to add one. In a dialog the list
+ * stays exactly where it was and is still readable behind the form.
+ *
+ * A NATIVE <dialog>, not a div pretending to be one. The element gives focus
+ * trapping, Escape-to-close, inertness of the page behind it and top-layer
+ * stacking for free — all of which a hand-rolled overlay has to reimplement,
+ * and usually reimplements incompletely. Inertness is the one that matters
+ * most here: it is what stops someone editing the list underneath a form that
+ * is about to change it.
+ *
+ * CLOSING IS THE CALLER'S DECISION, through `closeWhen`. The dialog cannot see
+ * the result of the action inside it, and closing on submit rather than on
+ * success would throw away a rejected form and everything typed into it — the
+ * one thing a failed save must never do.
  */
 export function Disclosure({
   label,
   title,
+  subtitle,
   children,
   openLabel,
+  closeWhen = false,
+  defaultOpen = false,
+  width = '48rem',
 }: {
   label: string;
   title: string;
+  subtitle?: string;
   openLabel?: string;
+  /** Set once the enclosed action has succeeded; closes and resets the form. */
+  closeWhen?: boolean;
+  /** Opens on mount — for arriving from another screen ready to fill it in. */
+  defaultOpen?: boolean;
+  width?: string;
   children: (close: () => void) => ReactNode;
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
+  const dialog = useRef<HTMLDialogElement>(null);
 
-  if (!open) {
-    return (
+  const close = useCallback(() => setOpen(false), []);
+
+  // showModal() rather than the `open` attribute: only the former puts the
+  // dialog in the top layer and makes the rest of the page inert.
+  useEffect(() => {
+    const element = dialog.current;
+
+    if (!element) return;
+
+    if (open && !element.open) element.showModal();
+    if (!open && element.open) element.close();
+  }, [open]);
+
+  // The pause is deliberate: closing the instant the action returns would take
+  // the confirmation off the screen before it could be read.
+  useEffect(() => {
+    if (!closeWhen || !open) return undefined;
+
+    const timer = setTimeout(close, 900);
+
+    return () => clearTimeout(timer);
+  }, [closeWhen, open, close]);
+
+  return (
+    <>
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="whitespace-nowrap rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white transition hover:bg-slate-800"
+        className="h-9 whitespace-nowrap rounded-md bg-slate-900 px-3 text-sm font-medium text-white transition hover:bg-slate-800"
       >
         {label}
       </button>
-    );
-  }
 
-  return (
-    <div className="w-full rounded-lg border border-slate-300 bg-slate-50 p-4">
-      <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-sm font-semibold text-slate-900">{openLabel ?? title}</h3>
-        <button
-          type="button"
-          onClick={() => setOpen(false)}
-          className="rounded px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-200"
-        >
-          Cancel
-        </button>
-      </div>
-      {children(() => setOpen(false))}
-    </div>
+      <dialog
+        ref={dialog}
+        onCancel={(event) => {
+          // Escape fires `cancel`; handling it here keeps closing in one place
+          // so React state and the element never disagree about being open.
+          event.preventDefault();
+          close();
+        }}
+        style={{ width: `min(${width}, 92vw)` }}
+        // `overflow-hidden` is load-bearing: a <dialog> is `overflow: auto` in
+        // the user-agent stylesheet, so it scrolled sideways itself, underneath
+        // the inner container meant to own the scrolling — two horizontal bars
+        // for one overflowing table.
+        className="overflow-hidden rounded-lg border border-slate-200 p-0 shadow-xl backdrop:bg-slate-900/40"
+      >
+        {/* Unmounted while closed, so reopening gives a clean form rather than
+            whatever was half-typed and abandoned last time. */}
+        {open && (
+          /* ONE SCROLLBAR, NOT TWO. `overflow-y: auto` alone is not enough:
+             CSS will not let one axis stay `visible` while the other scrolls,
+             so the browser silently promotes overflow-x to auto as well — and
+             wide content inside, such as the receipt-line table, then drew a
+             second horizontal scrollbar across the whole dialog underneath the
+             table's own. Pinning overflow-x to hidden leaves exactly one
+             vertical scrollbar here, and lets wide content scroll in its own
+             box where the header stays above the right columns. */
+          <div className="max-h-[85vh] overflow-y-auto overflow-x-hidden p-5">
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <h3 className="text-base font-semibold text-slate-900">{openLabel ?? title}</h3>
+                {subtitle && <p className="mt-0.5 text-sm text-slate-600">{subtitle}</p>}
+              </div>
+
+              <button
+                type="button"
+                onClick={close}
+                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+            </div>
+
+            {children(close)}
+          </div>
+        )}
+      </dialog>
+    </>
   );
 }
 
@@ -192,6 +356,11 @@ export function useAction(action: (state: ActionState, form: FormData) => Promis
 
     router.refresh();
   }, [isPending, state.status, router]);
+
+  // Every action in the module passes through here, so announcing the result
+  // in one place is what makes success and failure look the same on all of
+  // them without editing each form.
+  useActionToast(isPending, state.status === 'error' ? 'error' : 'success', state.message);
 
   return [state, formAction] as const;
 }

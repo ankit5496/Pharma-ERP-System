@@ -1,7 +1,13 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { Prisma } from '@pharma-erp/database';
 import type {
+  Paginated,
   ProcurementListQuery,
   PurchaseOrderListItem,
   PurchaseOrderLineItem,
@@ -27,7 +33,7 @@ import type {
   CreatePurchaseOrderDto,
   UpdatePurchaseOrderDto,
 } from './dto/purchase-order.dto';
-import { dateRange } from './filters.util';
+import { dateRange, paginate } from './filters.util';
 import { ITEM_SELECT, PARTY_SELECT, collectIds, toItemSummary, toPartySummary } from './mappers';
 import { NumberingService } from './numbering.service';
 import { PeopleService } from './people.service';
@@ -73,13 +79,12 @@ type PurchaseOrderRow = Prisma.PurchaseOrderGetPayload<{ include: typeof PO_INCL
  * have existed, and no material may be received against it at all.
  */
 const ALLOWED_TRANSITIONS: Record<PurchaseOrderStatus, readonly PurchaseOrderStatus[]> = {
+  // A draft leaves by being submitted — which is `submitDraft`, not a status
+  // change, because it also converts the requisition — or by being abandoned.
+  DRAFT: ['CANCELLED'],
   OPEN: ['APPROVED', 'CLOSED', 'CANCELLED'],
   APPROVED: ['OPEN', 'CLOSED', 'CANCELLED'],
   PARTIALLY_RECEIVED: ['CLOSED', 'CANCELLED'],
-  // Terminal as a DECISION, not as a barrier. Closing no longer hides an order
-  // from goods receipt — receivability follows the pending quantity — so an
-  // order closed early still accepts the balance if it turns up, and the next
-  // receipt recomputes the status from what is actually on the lines.
   CLOSED: [],
   CANCELLED: [],
 };
@@ -110,12 +115,19 @@ export class PurchaseOrdersService {
     private readonly numbering: NumberingService,
   ) {}
 
-  async list(query: ProcurementListQuery): Promise<PurchaseOrderListItem[]> {
+  async list(query: ProcurementListQuery): Promise<Paginated<PurchaseOrderListItem>> {
     const where: Prisma.PurchaseOrderWhereInput = { deletedAt: null };
 
     if (query.status) where.status = query.status as PurchaseOrderStatus;
     if (query.vendorId) where.vendorId = query.vendorId;
-    if (query.itemId) where.lines = { some: { itemId: query.itemId } };
+    const lineFilters: Prisma.PurchaseOrderLineWhereInput[] = [];
+
+    if (query.itemId) lineFilters.push({ itemId: query.itemId });
+    if (query.requisitionId) lineFilters.push({ requisitionId: query.requisitionId });
+
+    if (lineFilters.length > 0) {
+      where.AND = lineFilters.map((filter) => ({ lines: { some: filter } }));
+    }
 
     const between = dateRange(query.dateFrom, query.dateTo);
 
@@ -132,16 +144,21 @@ export class PurchaseOrdersService {
       ];
     }
 
+    const { skip, take, page, pageSize } = paginate(query);
+
     const rows = await this.prisma.scoped.purchaseOrder.findMany({
       where,
       include: PO_INCLUDE,
       orderBy: [{ createdAt: 'desc' }],
-      take: 500,
+      skip,
+      take,
     });
+
+    const total = await this.prisma.scoped.purchaseOrder.count({ where });
 
     const people = await this.people.load(collectIds(...rows.map((row) => row.createdById)));
 
-    return rows.map((row) => this.toListItem(row, people));
+    return { rows: rows.map((row) => this.toListItem(row, people)), total, page, pageSize };
   }
 
   async findOne(id: string): Promise<PurchaseOrderListItem> {
@@ -153,6 +170,11 @@ export class PurchaseOrdersService {
 
   /** Creates an order directly, with one or more lines. */
   async create(dto: CreatePurchaseOrderDto): Promise<PurchaseOrderListItem> {
+    // A draft is an order being prepared: inert, editable, and not yet a
+    // commitment to the vendor. Everything else about creating it is identical,
+    // which is why this is a flag rather than a second code path.
+    const asDraft = dto.saveAsDraft === true;
+
     const tenantId = this.tenantContext.requireTenantId();
     const createdById = this.requireActingUser();
 
@@ -210,7 +232,7 @@ export class PurchaseOrdersService {
           paymentTermsDays: dto.paymentTermsDays ?? vendor.paymentTermsDays,
           notes: dto.notes ?? null,
           createdById,
-          status: 'OPEN',
+          status: asDraft ? 'DRAFT' : 'OPEN',
           taxableAmount: totals.taxableAmount,
           taxAmount: totals.taxAmount,
           totalAmount: totals.totalAmount,
@@ -219,16 +241,23 @@ export class PurchaseOrdersService {
         include: PO_INCLUDE,
       });
 
-      // Requisitions that fed this order are marked converted in the same
-      // transaction, so the two can never disagree about whether the order
-      // exists.
-      const requisitionIds = collectIds(...lines.map((line) => line.requisitionId));
+      // A DRAFT leaves its requisitions APPROVED. They are converted when the
+      // draft is submitted, because until then no order has been placed — and
+      // a requisition showing "converted" against an order that may never
+      // exist is the sort of thing a buyer chases for an afternoon.
+      //
+      // The draft still BLOCKS a second order on the same requisition; that
+      // guard is `assertRequisitionConvertible`, which looks at the order
+      // lines rather than at the requisition's status.
+      if (!asDraft) {
+        const requisitionIds = collectIds(...lines.map((line) => line.requisitionId));
 
-      if (requisitionIds.length > 0) {
-        await tx.purchaseRequisition.updateMany({
-          where: { id: { in: requisitionIds } },
-          data: { status: 'CONVERTED_TO_PO' },
-        });
+        if (requisitionIds.length > 0) {
+          await tx.purchaseRequisition.updateMany({
+            where: { id: { in: requisitionIds } },
+            data: { status: 'CONVERTED_TO_PO' },
+          });
+        }
       }
 
       return order;
@@ -285,9 +314,23 @@ export class PurchaseOrdersService {
   async update(id: string, dto: UpdatePurchaseOrderDto): Promise<PurchaseOrderListItem> {
     const before = await this.requireOrder(id);
 
-    if (before.status !== 'OPEN') {
+    // THE STATUS IS NOT SUBJECT TO THE SAME RESTRICTION AS THE FIELDS, and the
+    // difference is the point. A partially received order must still be
+    // closable, and a live one cancellable — those are exactly the stages where
+    // its terms are no longer anybody's to rewrite. What a status may become is
+    // decided by ALLOWED_TRANSITIONS, further down, in one place.
+    const changingStatus = dto.status !== undefined && dto.status !== before.status;
+
+    const changingFields =
+      dto.expectedDeliveryDate !== undefined ||
+      dto.paymentTermsDays !== undefined ||
+      dto.notes !== undefined ||
+      dto.vendorId !== undefined ||
+      dto.lines !== undefined;
+
+    if (changingFields && before.status !== 'OPEN' && before.status !== 'DRAFT') {
       throw new ConflictException(
-        'Only an open purchase order can be edited — one with receipts against it cannot.',
+        'Only a draft or open purchase order can be edited — one with receipts against it cannot.',
       );
     }
 
@@ -301,13 +344,98 @@ export class PurchaseOrdersService {
 
     if (dto.paymentTermsDays !== undefined) data.paymentTermsDays = dto.paymentTermsDays;
     if (dto.notes !== undefined) data.notes = dto.notes || null;
+    if (dto.vendorId !== undefined) {
+      const vendor = await this.requireVendor(dto.vendorId);
 
-    if (Object.keys(data).length === 0) throw new BadRequestException('Nothing to update.');
+      data.vendor = { connect: { id: vendor.id } };
+    }
 
-    const after = await this.prisma.scoped.purchaseOrder.update({
-      where: { id },
-      data,
-      include: PO_INCLUDE,
+    // Lines are replaceable ON A DRAFT ONLY. A live order's lines carry a
+    // received quantity, and rewriting them would leave goods receipts citing
+    // quantities that no longer exist on the order they were booked against.
+    const replacingLines = dto.lines !== undefined;
+
+    if (replacingLines && before.status !== 'DRAFT') {
+      throw new ConflictException(
+        `${before.number} has been placed, so its lines can no longer be rewritten. ` +
+          'Cancel it and raise a new order if the requirement has changed.',
+      );
+    }
+
+    if (Object.keys(data).length === 0 && !replacingLines && !changingStatus) {
+      throw new BadRequestException('Nothing to update.');
+    }
+
+    const after = await this.prisma.transaction(async (tx) => {
+      if (replacingLines) {
+        const tenantId = this.tenantContext.requireTenantId();
+
+        const rebuilt = await Promise.all(
+          dto.lines!.map(async (line) => {
+            const item = await this.requireItem(line.itemId);
+            const quantity = parsePositive(line.quantity, `Quantity for ${item.code}`);
+            const rate = parseNonNegative(line.rate, `Rate for ${item.code}`);
+            const taxRatePercent = parseNonNegative(
+              line.taxRatePercent,
+              `Tax rate for ${item.code}`,
+            );
+
+            if (!line.requisitionId) {
+              throw new BadRequestException(
+                `${item.code}: a purchase order line must come from an approved requisition.`,
+              );
+            }
+
+            // The draft's own lines are excluded, or editing a draft would
+            // report the draft itself as a duplicate of the requisition.
+            await this.assertRequisitionConvertible(line.requisitionId, id);
+
+            return {
+              tenantId,
+              itemId: item.id,
+              requisitionId: line.requisitionId,
+              quantity,
+              rate,
+              taxRatePercent,
+              ...computeLineAmounts(quantity, rate, taxRatePercent),
+            };
+          }),
+        );
+
+        const totals = sumLineAmounts(rebuilt);
+
+        // Belt and braces. A draft cannot be received against, so this should
+        // never fire — but the foreign key from goods_receipt_lines is
+        // RESTRICT, and without this check a line that somehow has a receipt
+        // would surface as a raw 23001 from Postgres rather than as something
+        // a user can act on.
+        const received = await tx.goodsReceiptLine.findFirst({
+          where: { purchaseOrderLine: { purchaseOrderId: id } },
+          select: { goodsReceipt: { select: { number: true } } },
+        });
+
+        if (received) {
+          throw new ConflictException(
+            `${before.number} has material received against it on ` +
+              `${received.goodsReceipt.number}, so its lines can no longer be rewritten.`,
+          );
+        }
+
+        await tx.purchaseOrderLine.deleteMany({ where: { purchaseOrderId: id } });
+        await tx.purchaseOrderLine.createMany({
+          data: rebuilt.map((line) => ({ ...line, purchaseOrderId: id })),
+        });
+
+        data.taxableAmount = totals.taxableAmount;
+        data.taxAmount = totals.taxAmount;
+        data.totalAmount = totals.totalAmount;
+      }
+
+      return tx.purchaseOrder.update({
+        where: { id },
+        data,
+        include: PO_INCLUDE,
+      });
     });
 
     await this.audit.record({
@@ -317,6 +445,12 @@ export class PurchaseOrdersService {
       before: { notes: before.notes, paymentTermsDays: before.paymentTermsDays },
       after: { notes: after.notes, paymentTermsDays: after.paymentTermsDays },
     });
+
+    // LAST, and through the same method the status endpoint uses. The
+    // transition rules, the no-op case and the separate audit entry all live
+    // there; duplicating them here to save a round trip is how two callers stop
+    // agreeing about what a purchase order may become.
+    if (changingStatus) return this.changeStatus(id, dto.status!);
 
     const people = await this.people.load(collectIds(after.createdById));
 
@@ -425,7 +559,22 @@ export class PurchaseOrdersService {
     return row;
   }
 
-  private async assertRequisitionConvertible(requisitionId: string) {
+  /**
+   * Checks a requisition may still become a purchase order, and refuses a
+   * second one.
+   *
+   * THE DUPLICATE GUARD READS THE ORDER LINES, not the requisition's status,
+   * and that distinction is the whole reason it works. A requisition with a
+   * DRAFT order against it is still APPROVED — it has not been converted,
+   * because no order has been placed — so a status check alone would happily
+   * allow a second draft, and the buyer would end up with two orders for one
+   * request. Cancelled orders are excluded: abandoning a draft must leave the
+   * requisition usable again.
+   *
+   * `excludeOrderId` is for submitting a draft, where the draft's own line is
+   * the one line that must not count against it.
+   */
+  private async assertRequisitionConvertible(requisitionId: string, excludeOrderId?: string) {
     const requisition = await this.prisma.scoped.purchaseRequisition.findFirst({
       where: { id: requisitionId, deletedAt: null },
       select: { id: true, number: true, itemId: true, requiredQuantity: true, status: true },
@@ -440,7 +589,87 @@ export class PurchaseOrdersService {
       );
     }
 
+    const existing = await this.prisma.scoped.purchaseOrderLine.findFirst({
+      where: {
+        requisitionId,
+        ...(excludeOrderId ? { purchaseOrderId: { not: excludeOrderId } } : {}),
+        purchaseOrder: { deletedAt: null, status: { not: 'CANCELLED' } },
+      },
+      select: { purchaseOrder: { select: { number: true, status: true } } },
+    });
+
+    if (existing) {
+      throw new ConflictException(
+        `Requisition ${requisition.number} already has ${existing.purchaseOrder.number} ` +
+          `against it (${label(existing.purchaseOrder.status)}). Edit that order rather than ` +
+          'raising a second one, or cancel it first.',
+      );
+    }
+
     return requisition;
+  }
+
+  /**
+   * Turns a draft into a real purchase order.
+   *
+   * SEPARATE FROM A STATUS CHANGE because it does two things that must happen
+   * together: the order becomes live, and the requisition behind it is marked
+   * converted. Doing the first without the second would leave a placed order
+   * whose requisition still looks outstanding, and the reorder check would
+   * eventually raise another one for the same shortage.
+   */
+  async submitDraft(id: string): Promise<PurchaseOrderListItem> {
+    const before = await this.requireOrder(id);
+
+    if (before.status !== 'DRAFT') {
+      throw new ConflictException(
+        `${before.number} is ${label(before.status)}, not a draft — it has already been placed.`,
+      );
+    }
+
+    if (before.lines.length === 0) {
+      throw new BadRequestException(
+        'A purchase order needs at least one line before it is placed.',
+      );
+    }
+
+    // Re-checked at submission, not merely at creation: a draft may have sat
+    // for a week, and the requisition behind it could have been cancelled or
+    // converted by another route in the meantime.
+    const requisitionIds = collectIds(...before.lines.map((line) => line.requisitionId));
+
+    for (const requisitionId of requisitionIds) {
+      await this.assertRequisitionConvertible(requisitionId, before.id);
+    }
+
+    const after = await this.prisma.transaction(async (tx) => {
+      const order = await tx.purchaseOrder.update({
+        where: { id },
+        data: { status: 'OPEN' },
+        include: PO_INCLUDE,
+      });
+
+      if (requisitionIds.length > 0) {
+        await tx.purchaseRequisition.updateMany({
+          where: { id: { in: requisitionIds } },
+          data: { status: 'CONVERTED_TO_PO' },
+        });
+      }
+
+      return order;
+    });
+
+    await this.audit.record({
+      entityType: 'PurchaseOrder',
+      entityId: id,
+      action: 'UPDATE',
+      before: { status: 'DRAFT' },
+      after: { status: after.status, placed: true, totalAmount: money(after.totalAmount) },
+    });
+
+    const people = await this.people.load(collectIds(after.createdById));
+
+    return this.toListItem(after, people);
   }
 
   private async requireVendor(vendorId: string) {

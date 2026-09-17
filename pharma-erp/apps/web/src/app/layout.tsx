@@ -1,6 +1,8 @@
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 
+import { ToastHost } from '@/components/toast';
+
 import './globals.css';
 
 export const metadata: Metadata = {
@@ -16,7 +18,13 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body className="min-h-screen font-sans">{children}</body>
+      <body className="min-h-screen font-sans">
+        {children}
+        {/* One host for the whole application, outside every route group, so
+            admin, master data, platform and workflow screens all report the
+            result of an action in the same place. */}
+        <ToastHost />
+      </body>
     </html>
   );
 }

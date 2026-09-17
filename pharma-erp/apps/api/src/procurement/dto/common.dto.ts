@@ -1,5 +1,15 @@
-import { Transform } from 'class-transformer';
-import { IsISO8601, IsOptional, IsString, IsUUID, Matches, MaxLength } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import {
+  IsISO8601,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Matches,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 import type { ProcurementListQuery } from '@pharma-erp/types';
 
@@ -50,12 +60,45 @@ export class ProcurementListQueryDto implements ProcurementListQuery {
   itemId?: string;
 
   @IsOptional()
+  @IsString()
+  @trim()
+  @MaxLength(40)
+  triggerType?: string;
+
+  @IsOptional()
+  @IsUUID()
+  raisedById?: string;
+
+  @IsOptional()
+  @IsUUID()
+  requisitionId?: string;
+
+  @IsOptional()
   @IsISO8601()
   dateFrom?: string;
 
   @IsOptional()
   @IsISO8601()
   dateTo?: string;
+
+  // Query parameters arrive as strings, so they are coerced before validation
+  // — without the @Type, @IsInt rejects every page number ever sent.
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
+
+  /**
+   * Capped rather than unbounded. The cap is what stops a caller asking for
+   * every row at once and turning pagination back into the thing it replaced.
+   */
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  pageSize?: number;
 }
 
 /**

@@ -1,9 +1,15 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { Prisma } from '@pharma-erp/database';
 import type {
   GoodsReceiptListItem,
   GoodsReceiptLineItem,
+  Paginated,
   ProcurementListQuery,
 } from '@pharma-erp/types';
 
@@ -19,8 +25,8 @@ import {
   positiveDifference,
   qty,
 } from './decimal.util';
-import type { CreateGoodsReceiptDto } from './dto/goods-receipt.dto';
-import { dateRange } from './filters.util';
+import type { CreateGoodsReceiptDto, UpdateGoodsReceiptDto } from './dto/goods-receipt.dto';
+import { dateRange, paginate } from './filters.util';
 import {
   ITEM_SELECT,
   LOT_SELECT,
@@ -77,7 +83,7 @@ export class GoodsReceiptsService {
     private readonly numbering: NumberingService,
   ) {}
 
-  async list(query: ProcurementListQuery): Promise<GoodsReceiptListItem[]> {
+  async list(query: ProcurementListQuery): Promise<Paginated<GoodsReceiptListItem>> {
     const where: Prisma.GoodsReceiptWhereInput = { deletedAt: null };
 
     if (query.vendorId) where.vendorId = query.vendorId;
@@ -92,7 +98,10 @@ export class GoodsReceiptsService {
     if (query.status === 'QC_PENDING') {
       where.lines = { ...(where.lines ?? {}), some: { stockLot: { status: 'QUARANTINE' } } };
     } else if (query.status === 'QC_COMPLETE') {
-      where.lines = { ...(where.lines ?? {}), every: { stockLot: { status: { not: 'QUARANTINE' } } } };
+      where.lines = {
+        ...(where.lines ?? {}),
+        every: { stockLot: { status: { not: 'QUARANTINE' } } },
+      };
     }
 
     if (query.search) {
@@ -108,16 +117,70 @@ export class GoodsReceiptsService {
       ];
     }
 
+    const { skip, take, page, pageSize } = paginate(query);
+
     const rows = await this.prisma.scoped.goodsReceipt.findMany({
       where,
       include: GRN_INCLUDE,
       orderBy: [{ receiptDate: 'desc' }, { createdAt: 'desc' }],
-      take: 500,
+      skip,
+      take,
     });
+
+    const total = await this.prisma.scoped.goodsReceipt.count({ where });
 
     const people = await this.people.load(collectIds(...rows.map((row) => row.receivedById)));
 
-    return rows.map((row) => this.toListItem(row, people));
+    return { rows: rows.map((row) => this.toListItem(row, people)), total, page, pageSize };
+  }
+
+  /**
+   * Corrects the paperwork on a booked receipt.
+   *
+   * Deliberately narrow. Everything that moved stock — the lines, the batches,
+   * the quantities — is settled by the time this can be called, and the stock
+   * ledger it wrote to is append-only. What is left is what a person transcribed
+   * from the delivery: the vendor's document number, the date it arrived, and
+   * any remark about the delivery.
+   */
+  async update(id: string, dto: UpdateGoodsReceiptDto): Promise<GoodsReceiptListItem> {
+    const before = await this.requireReceipt(id);
+
+    const data: Prisma.GoodsReceiptUpdateInput = {};
+
+    if (dto.receiptDate !== undefined) data.receiptDate = new Date(dto.receiptDate);
+    if (dto.vendorDocumentNumber !== undefined) {
+      data.vendorDocumentNumber = dto.vendorDocumentNumber || null;
+    }
+    if (dto.remarks !== undefined) data.remarks = dto.remarks || null;
+
+    if (Object.keys(data).length === 0) throw new BadRequestException('Nothing to update.');
+
+    const after = await this.prisma.scoped.goodsReceipt.update({
+      where: { id },
+      data,
+      include: GRN_INCLUDE,
+    });
+
+    await this.audit.record({
+      entityType: 'GoodsReceipt',
+      entityId: id,
+      action: 'UPDATE',
+      before: {
+        receiptDate: before.receiptDate,
+        vendorDocumentNumber: before.vendorDocumentNumber,
+        remarks: before.remarks,
+      },
+      after: {
+        receiptDate: after.receiptDate,
+        vendorDocumentNumber: after.vendorDocumentNumber,
+        remarks: after.remarks,
+      },
+    });
+
+    const people = await this.people.load(collectIds(after.receivedById));
+
+    return this.toListItem(after, people);
   }
 
   async findOne(id: string): Promise<GoodsReceiptListItem> {
@@ -160,6 +223,14 @@ export class GoodsReceiptsService {
     if (order.status === 'CANCELLED') {
       throw new ConflictException(
         `${order.number} is cancelled, so no material can be received against it.`,
+      );
+    }
+
+    // A draft is not an order yet — it has not been placed with the vendor, so
+    // nothing can have arrived against it.
+    if (order.status === 'DRAFT') {
+      throw new ConflictException(
+        `${order.number} is still a draft. Place the order before receiving against it.`,
       );
     }
 
@@ -491,4 +562,3 @@ export class GoodsReceiptsService {
     };
   }
 }
-

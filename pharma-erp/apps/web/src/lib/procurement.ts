@@ -7,9 +7,11 @@ import type {
   ItemSummary,
   LowStockItem,
   PartySummary,
+  Paginated,
   ProcurementListQuery,
   ProcurementSettings,
   ProcurementSummary,
+  StockLedgerRow,
   PurchaseInvoiceListItem,
   PurchaseOrderListItem,
   QcQueueItem,
@@ -42,16 +44,36 @@ export function toListQuery(params: Record<string, string | string[] | undefined
     status: first('status'),
     vendorId: first('vendorId'),
     itemId: first('itemId'),
+    triggerType: first('triggerType'),
+    raisedById: first('raisedById'),
+    requisitionId: first('requisitionId'),
     dateFrom: first('dateFrom'),
     dateTo: first('dateTo'),
+    page: toPositiveInt(first('page')),
+    pageSize: toPositiveInt(first('pageSize')),
   };
+}
+
+/**
+ * A query-string number, or undefined.
+ *
+ * Anything that is not a positive whole number is dropped rather than passed
+ * on: the API clamps what it is given, and a `page=abc` that reaches it as NaN
+ * would be a validation error for what is really just a bad link.
+ */
+function toPositiveInt(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+
+  const parsed = Number(value);
+
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
 }
 
 function queryString(query: ProcurementListQuery): string {
   const params = new URLSearchParams();
 
   for (const [key, value] of Object.entries(query)) {
-    if (value) params.set(key, value);
+    if (value) params.set(key, String(value));
   }
 
   return params.toString() ? `?${params}` : '';
@@ -94,6 +116,13 @@ export async function fetchProductionPlans(): Promise<ApiResult<ProductionPlanSu
 }
 
 /** The aged outstanding-payables report, optionally narrowed to one vendor. */
+/** The stock ledger — every movement, newest first. Optionally one item. */
+export async function fetchStockLedger(itemId?: string): Promise<ApiResult<StockLedgerRow[]>> {
+  const suffix = itemId ? `?itemId=${encodeURIComponent(itemId)}` : '';
+
+  return apiFetch<StockLedgerRow[]>(`${BASE}/stock/ledger${suffix}`, { authenticated: true });
+}
+
 export async function fetchPayablesReport(vendorId?: string): Promise<ApiResult<PayablesReport>> {
   const suffix = vendorId ? `?vendorId=${encodeURIComponent(vendorId)}` : '';
 
@@ -102,16 +131,16 @@ export async function fetchPayablesReport(vendorId?: string): Promise<ApiResult<
 
 export async function fetchRequisitions(
   query: ProcurementListQuery,
-): Promise<ApiResult<RequisitionListItem[]>> {
-  return apiFetch<RequisitionListItem[]>(`${BASE}/requisitions${queryString(query)}`, {
+): Promise<ApiResult<Paginated<RequisitionListItem>>> {
+  return apiFetch<Paginated<RequisitionListItem>>(`${BASE}/requisitions${queryString(query)}`, {
     authenticated: true,
   });
 }
 
 export async function fetchPurchaseOrders(
   query: ProcurementListQuery,
-): Promise<ApiResult<PurchaseOrderListItem[]>> {
-  return apiFetch<PurchaseOrderListItem[]>(`${BASE}/purchase-orders${queryString(query)}`, {
+): Promise<ApiResult<Paginated<PurchaseOrderListItem>>> {
+  return apiFetch<Paginated<PurchaseOrderListItem>>(`${BASE}/purchase-orders${queryString(query)}`, {
     authenticated: true,
   });
 }
@@ -130,30 +159,30 @@ export async function fetchInvoiceableOrders(): Promise<ApiResult<PurchaseOrderL
 
 export async function fetchGoodsReceipts(
   query: ProcurementListQuery,
-): Promise<ApiResult<GoodsReceiptListItem[]>> {
-  return apiFetch<GoodsReceiptListItem[]>(`${BASE}/goods-receipts${queryString(query)}`, {
+): Promise<ApiResult<Paginated<GoodsReceiptListItem>>> {
+  return apiFetch<Paginated<GoodsReceiptListItem>>(`${BASE}/goods-receipts${queryString(query)}`, {
     authenticated: true,
   });
 }
 
 export async function fetchQcQueue(
   query: ProcurementListQuery,
-): Promise<ApiResult<QcQueueItem[]>> {
-  return apiFetch<QcQueueItem[]>(`${BASE}/qc/lots${queryString(query)}`, { authenticated: true });
+): Promise<ApiResult<Paginated<QcQueueItem>>> {
+  return apiFetch<Paginated<QcQueueItem>>(`${BASE}/qc/lots${queryString(query)}`, { authenticated: true });
 }
 
 export async function fetchInvoices(
   query: ProcurementListQuery,
-): Promise<ApiResult<PurchaseInvoiceListItem[]>> {
-  return apiFetch<PurchaseInvoiceListItem[]>(`${BASE}/invoices${queryString(query)}`, {
+): Promise<ApiResult<Paginated<PurchaseInvoiceListItem>>> {
+  return apiFetch<Paginated<PurchaseInvoiceListItem>>(`${BASE}/invoices${queryString(query)}`, {
     authenticated: true,
   });
 }
 
 export async function fetchPayables(
   query: ProcurementListQuery,
-): Promise<ApiResult<VendorPayableRow[]>> {
-  return apiFetch<VendorPayableRow[]>(`${BASE}/payables${queryString(query)}`, {
+): Promise<ApiResult<Paginated<VendorPayableRow>>> {
+  return apiFetch<Paginated<VendorPayableRow>>(`${BASE}/payables${queryString(query)}`, {
     authenticated: true,
   });
 }

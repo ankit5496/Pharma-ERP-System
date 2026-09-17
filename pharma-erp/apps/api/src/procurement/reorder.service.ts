@@ -6,7 +6,7 @@ import { AuditService } from '../common/audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
-import { ZERO, qty } from './decimal.util';
+import { ZERO, pendingOn, qty } from './decimal.util';
 import { NumberingService } from './numbering.service';
 import { SettingsService } from './settings.service';
 
@@ -73,7 +73,10 @@ export class ReorderService {
 
     const outcome = await this.prisma.transaction(async (tx) => {
       const items = await tx.item.findMany({
-        where: { deletedAt: null, type: { in: ['RAW_MATERIAL', 'PACKING_MATERIAL', 'SEMI_FINISHED'] } },
+        where: {
+          deletedAt: null,
+          type: { in: ['RAW_MATERIAL', 'PACKING_MATERIAL', 'SEMI_FINISHED'] },
+        },
         select: {
           id: true,
           code: true,
@@ -92,7 +95,7 @@ export class ReorderService {
       // Both as single grouped queries rather than per item: a company with a
       // few hundred materials would otherwise issue a few hundred round trips
       // every time anything moved.
-      const [usable, open] = await Promise.all([
+      const [usable, open, onOrder] = await Promise.all([
         tx.stockLot.groupBy({
           by: ['itemId'],
           where: { itemId: { in: itemIds }, status: 'USABLE' },
@@ -107,12 +110,50 @@ export class ReorderService {
           select: { itemId: true, number: true },
           distinct: ['itemId'],
         }),
+        // MATERIAL ALREADY ON ORDER, which a requisition alone does not cover.
+        // Converting a requisition to a purchase order moves it to
+        // CONVERTED_TO_PO, so the clause above stops matching it — and the
+        // shortage is still real until the goods arrive and pass QC. Without
+        // this, the next reorder check raised a SECOND requisition for material
+        // already bought, and since the check runs on every stock consumption
+        // it would keep doing so for the whole of the vendor's lead time.
+        //
+        // Drafts are excluded deliberately: a draft leaves its requisition
+        // APPROVED, so it is already covered above, and a draft is not an order
+        // anybody has placed.
+        tx.purchaseOrderLine.findMany({
+          where: {
+            itemId: { in: itemIds },
+            purchaseOrder: {
+              deletedAt: null,
+              status: { notIn: ['DRAFT', 'CANCELLED'] },
+            },
+          },
+          select: {
+            itemId: true,
+            quantity: true,
+            quantityReceived: true,
+            quantityCancelled: true,
+            purchaseOrder: { select: { number: true } },
+          },
+        }),
       ]);
 
       const stockByItem = new Map(
         usable.map((row) => [row.itemId, row._sum.quantityAvailable ?? ZERO] as const),
       );
       const openByItem = new Map(open.map((row) => [row.itemId, row.number] as const));
+
+      // Only lines with something still to come. A fully received line is
+      // settled, and its stock is already counted above.
+      const onOrderByItem = new Map<string, string>();
+
+      for (const line of onOrder) {
+        if (pendingOn(line).lessThanOrEqualTo(0)) continue;
+        if (!onOrderByItem.has(line.itemId)) {
+          onOrderByItem.set(line.itemId, line.purchaseOrder.number);
+        }
+      }
 
       const createdIds: string[] = [];
       const skipped: { itemCode: string; itemName: string; reason: string }[] = [];
@@ -138,6 +179,19 @@ export class ReorderService {
             itemCode: item.code,
             itemName: item.name,
             reason: `Requisition ${existing} is already open for this item.`,
+          });
+          continue;
+        }
+
+        // The same guard, one step further along the workflow. The shortage is
+        // being dealt with by an order that has not arrived yet.
+        const ordered = onOrderByItem.get(item.id);
+
+        if (ordered) {
+          skipped.push({
+            itemCode: item.code,
+            itemName: item.name,
+            reason: `Purchase order ${ordered} is already outstanding for this item.`,
           });
           continue;
         }

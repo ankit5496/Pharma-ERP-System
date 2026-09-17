@@ -130,10 +130,7 @@ export function sumLineAmounts(
  * An expected value of zero returns 100 rather than dividing: anything billed
  * against nothing received is a total mismatch, not an infinite one.
  */
-export function percentageDrift(
-  actual: Prisma.Decimal,
-  expected: Prisma.Decimal,
-): Prisma.Decimal {
+export function percentageDrift(actual: Prisma.Decimal, expected: Prisma.Decimal): Prisma.Decimal {
   if (expected.isZero()) {
     return actual.isZero() ? ZERO : new Prisma.Decimal(100);
   }
@@ -219,8 +216,13 @@ export function pendingOn(line: FulfilmentQuantities): Prisma.Decimal {
  */
 export function fulfilmentStatus(
   lines: readonly FulfilmentQuantities[],
-  current: 'OPEN' | 'APPROVED' | 'PARTIALLY_RECEIVED' | 'CLOSED' | 'CANCELLED',
-): 'OPEN' | 'APPROVED' | 'PARTIALLY_RECEIVED' | 'CLOSED' {
+  current: 'DRAFT' | 'OPEN' | 'APPROVED' | 'PARTIALLY_RECEIVED' | 'CLOSED' | 'CANCELLED',
+): 'DRAFT' | 'OPEN' | 'APPROVED' | 'PARTIALLY_RECEIVED' | 'CLOSED' {
+  // A draft accepts no receipts, so this can only be reached on one by a
+  // caller that should not have got here. Returned unchanged rather than
+  // promoted: nothing arrived, and a draft is not an order yet.
+  if (current === 'DRAFT') return 'DRAFT';
+
   if (current === 'CANCELLED') return 'CLOSED';
 
   const anythingPending = lines.some((line) => pendingOn(line).greaterThan(0));

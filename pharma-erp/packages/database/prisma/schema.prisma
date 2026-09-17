@@ -826,14 +826,15 @@ enum ProductionPlanStatus {
 /// hand — an order that claims to be received when nothing arrived is exactly
 /// what that removes.
 enum PurchaseOrderStatus {
+  /// Being prepared. Not receivable, not invoiceable, editable in full —
+  /// submitting it is what makes it a real order.
+  DRAFT
   OPEN
   /// Authorised to send to the vendor. Set by hand; everything below it is
   /// computed from what has actually been received.
   APPROVED
   PARTIALLY_RECEIVED
-  /// Finished. Either every unit arrived, or the balance was short closed —
-  /// which of the two is recoverable from the lines, where a short-closed
-  /// order carries a cancelled quantity and a fully received one does not.
+  /// Finished. Either every unit arrived, or the balance was short closed.
   CLOSED
   CANCELLED
 }

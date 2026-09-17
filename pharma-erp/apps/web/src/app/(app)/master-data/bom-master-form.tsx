@@ -1,5 +1,6 @@
 'use client';
 
+import { useActionToast } from '@/components/toast';
 import { useActionState, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ITEM_TYPE_LABELS, type ItemSummary } from '@pharma-erp/types';
@@ -8,7 +9,6 @@ import { saveBomAction, type ActionResult } from './actions';
 import {
   AddLineButton,
   CheckboxField,
-  FormError,
   FormGrid,
   FormSection,
   LineList,
@@ -50,6 +50,11 @@ export function BomMasterForm({
   onSaved?: () => void;
 }) {
   const [state, formAction, isPending] = useActionState(saveBomAction, INITIAL);
+
+  // The result is announced by the application-wide centred toast rather
+  // than by a banner inside this form, which on a form this long sat above
+  // the fold while the submit button being watched was below it.
+  useActionToast(isPending, state.ok ? 'success' : 'error', state.message);
   const router = useRouter();
 
   const rawMaterials = useLineRows(2);
@@ -92,8 +97,6 @@ export function BomMasterForm({
 
   return (
     <form action={formAction} className="flex flex-col gap-8" noValidate>
-      {!state.ok && state.message && <FormError message={state.message} />}
-
       <FormSection title="Formulation">
         <FormGrid>
           <SelectField

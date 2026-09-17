@@ -1,8 +1,14 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import { Prisma } from '@pharma-erp/database';
 import type {
   PaymentStatus,
+  Paginated,
   ProcurementListQuery,
   PurchaseInvoiceListItem,
   PurchaseInvoiceStatus,
@@ -24,8 +30,8 @@ import {
   qty,
   sumLineAmounts,
 } from './decimal.util';
-import type { CreatePurchaseInvoiceDto } from './dto/invoice.dto';
-import { dateRange } from './filters.util';
+import type { CreatePurchaseInvoiceDto, UpdateInvoiceDto } from './dto/invoice.dto';
+import { dateRange, paginate } from './filters.util';
 import { ITEM_SELECT, PARTY_SELECT, collectIds, toItemSummary, toPartySummary } from './mappers';
 import { NumberingService } from './numbering.service';
 import { PeopleService } from './people.service';
@@ -58,7 +64,7 @@ export class InvoicesService {
     private readonly numbering: NumberingService,
   ) {}
 
-  async list(query: ProcurementListQuery): Promise<PurchaseInvoiceListItem[]> {
+  async list(query: ProcurementListQuery): Promise<Paginated<PurchaseInvoiceListItem>> {
     const where: Prisma.PurchaseInvoiceWhereInput = { deletedAt: null };
 
     if (query.vendorId) where.vendorId = query.vendorId;
@@ -89,6 +95,15 @@ export class InvoicesService {
       ];
     }
 
+    const { page, pageSize } = paginate(query);
+
+    // PAGINATED IN MEMORY, NOT IN THE DATABASE, and only here and in payables.
+    // The payment status below is DERIVED from what has been paid against the
+    // invoice, so it cannot be a WHERE clause — which means the database
+    // cannot know how many rows survive the filter. Taking a page from the
+    // database first would hand back a short page and a total counting rows
+    // the filter then removes. The 500-row working set is unchanged from
+    // before; the slice happens on the server, never in the browser.
     const rows = await this.prisma.scoped.purchaseInvoice.findMany({
       where,
       include: INVOICE_INCLUDE,
@@ -107,11 +122,76 @@ export class InvoicesService {
 
     // Payment-status filtering happens after mapping because the status is
     // derived, not stored — there is no column to put in the WHERE clause.
-    if (query.status && !documentStatuses.includes(query.status)) {
-      return mapped.filter((invoice) => invoice.paymentStatus === query.status);
+    const filtered =
+      query.status && !documentStatuses.includes(query.status)
+        ? mapped.filter((invoice) => invoice.paymentStatus === query.status)
+        : mapped;
+
+    return {
+      rows: filtered.slice((page - 1) * pageSize, page * pageSize),
+      total: filtered.length,
+      page,
+      pageSize,
+    };
+  }
+
+  /**
+   * Corrects what was transcribed from the vendor's invoice.
+   *
+   * Refused once cancelled: a cancelled document is a record of something that
+   * was withdrawn, and editing it would quietly change what was withdrawn.
+   *
+   * The amounts are not editable here — see `UpdateInvoiceDto`. Changing the due
+   * date DOES move the invoice's position on the payables ageing, which is the
+   * point of allowing it: a mistyped date puts a bill in the wrong bucket.
+   */
+  async update(id: string, dto: UpdateInvoiceDto): Promise<PurchaseInvoiceListItem> {
+    const before = await this.requireInvoice(id);
+
+    if (before.status === 'CANCELLED') {
+      throw new ConflictException(`${before.number} is cancelled and can no longer be edited.`);
     }
 
-    return mapped;
+    const data: Prisma.PurchaseInvoiceUpdateInput = {};
+
+    if (dto.vendorInvoiceNumber !== undefined) {
+      data.vendorInvoiceNumber = dto.vendorInvoiceNumber;
+    }
+    if (dto.invoiceDate !== undefined) data.invoiceDate = new Date(dto.invoiceDate);
+    if (dto.dueDate !== undefined) data.dueDate = new Date(dto.dueDate);
+    if (dto.notes !== undefined) data.notes = dto.notes || null;
+
+    if (Object.keys(data).length === 0) throw new BadRequestException('Nothing to update.');
+
+    const after = await this.prisma.scoped.purchaseInvoice.update({
+      where: { id },
+      data,
+      include: INVOICE_INCLUDE,
+    });
+
+    await this.audit.record({
+      entityType: 'PurchaseInvoice',
+      entityId: id,
+      action: 'UPDATE',
+      before: {
+        vendorInvoiceNumber: before.vendorInvoiceNumber,
+        invoiceDate: before.invoiceDate,
+        dueDate: before.dueDate,
+        notes: before.notes,
+      },
+      after: {
+        vendorInvoiceNumber: after.vendorInvoiceNumber,
+        invoiceDate: after.invoiceDate,
+        dueDate: after.dueDate,
+        notes: after.notes,
+      },
+    });
+
+    const people = await this.people.load(
+      collectIds(after.recordedById, ...after.payments.map((payment) => payment.recordedById)),
+    );
+
+    return this.toListItem(after, people);
   }
 
   async findOne(id: string): Promise<PurchaseInvoiceListItem> {
@@ -191,10 +271,7 @@ export class InvoicesService {
         new Prisma.Decimal(line.quantityRejected),
       );
 
-      receivedByItem.set(
-        line.itemId,
-        (receivedByItem.get(line.itemId) ?? ZERO).plus(accepted),
-      );
+      receivedByItem.set(line.itemId, (receivedByItem.get(line.itemId) ?? ZERO).plus(accepted));
     }
 
     const orderedRateByItem = new Map(

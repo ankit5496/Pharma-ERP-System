@@ -11,12 +11,16 @@
  */
 import type { PartyStatus } from './parties';
 
-
 // ---------------------------------------------------------------------------
 // Enumerations — mirrored from the Prisma schema
 // ---------------------------------------------------------------------------
 
-export const ITEM_TYPES = ['RAW_MATERIAL', 'PACKING_MATERIAL', 'SEMI_FINISHED', 'FINISHED_GOOD'] as const;
+export const ITEM_TYPES = [
+  'RAW_MATERIAL',
+  'PACKING_MATERIAL',
+  'SEMI_FINISHED',
+  'FINISHED_GOOD',
+] as const;
 export type ItemType = (typeof ITEM_TYPES)[number];
 
 /**
@@ -51,12 +55,7 @@ export const ITEM_TYPE_LABELS: Record<ItemType, string> = {
 export const PARTY_TYPES = ['VENDOR', 'CUSTOMER', 'JOB_WORK_PRINCIPAL'] as const;
 export type PartyType = (typeof PARTY_TYPES)[number];
 
-export const REQUISITION_STATUSES = [
-  'OPEN',
-  'APPROVED',
-  'CONVERTED_TO_PO',
-  'CANCELLED',
-] as const;
+export const REQUISITION_STATUSES = ['OPEN', 'APPROVED', 'CONVERTED_TO_PO', 'CANCELLED'] as const;
 export type RequisitionStatus = (typeof REQUISITION_STATUSES)[number];
 
 /** Why a requisition exists: raised by the reorder check, or by a person. */
@@ -64,8 +63,20 @@ export const REQUISITION_TRIGGER_TYPES = ['AUTO_REORDER', 'MANUAL'] as const;
 export type RequisitionTriggerType = (typeof REQUISITION_TRIGGER_TYPES)[number];
 
 export const REQUISITION_TRIGGER_LABELS: Record<RequisitionTriggerType, string> = {
-  AUTO_REORDER: 'Auto-reorder',
+  AUTO_REORDER: 'Auto Create',
   MANUAL: 'Manual',
+};
+
+/**
+ * What each trigger means, shown on hover.
+ *
+ * The stored value stays `AUTO_REORDER`: renaming a database enum to change a
+ * word on screen would rewrite history on every requisition ever raised, and
+ * the label is a presentation concern.
+ */
+export const REQUISITION_TRIGGER_HINTS: Record<RequisitionTriggerType, string> = {
+  AUTO_REORDER: 'Low stock is reported but raises nothing. Create requisitions on the form.',
+  MANUAL: 'Raised by a person on the requisition form.',
 };
 
 /** Where a packaging component sits: blister, carton, shipper. */
@@ -87,13 +98,14 @@ export const PRODUCTION_PLAN_STATUSES = [
 ] as const;
 export type ProductionPlanStatus = (typeof PRODUCTION_PLAN_STATUSES)[number];
 
-
 export const PURCHASE_ORDER_STATUSES = [
+  /** Being prepared: inert until submitted. */
+  'DRAFT',
   'OPEN',
   /** Authorised to send to the vendor. The one status a person sets. */
   'APPROVED',
   'PARTIALLY_RECEIVED',
-  /** Finished: fully received, or short closed with the balance cancelled. */
+  /** Finished: fully received, or closed with a balance outstanding. */
   'CLOSED',
   'CANCELLED',
 ] as const;
@@ -136,6 +148,7 @@ export const REQUISITION_STATUS_LABELS: Record<RequisitionStatus, string> = {
 };
 
 export const PURCHASE_ORDER_STATUS_LABELS: Record<PurchaseOrderStatus, string> = {
+  DRAFT: 'Draft',
   OPEN: 'Open',
   APPROVED: 'Approved',
   PARTIALLY_RECEIVED: 'Partially received',
@@ -274,6 +287,15 @@ export interface LowStockItem {
   shortfall: string;
   /** True when a requisition for this item is already open, to avoid duplicates. */
   hasOpenRequisition: boolean;
+  /**
+   * True when material is already on order and has not arrived.
+   *
+   * Separate from the flag above because a requisition STOPS being open the
+   * moment it becomes a purchase order, while the shortage carries on until the
+   * goods land and QC clears them. Without this the screen would report an item
+   * as unattended for the whole of the vendor's lead time.
+   */
+  hasOpenPurchaseOrder: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -310,6 +332,8 @@ export interface RequisitionListItem {
   isMandatory: boolean;
   /** Null when the system raised it — an auto-reorder has no author. */
   requestedBy: string | null;
+  /** The same person as `requestedBy`, by id, so a filter can name them. */
+  requestedById: string | null;
   approvedBy: string | null;
   requestDate: string;
   requiredByDate: string | null;
@@ -489,6 +513,8 @@ export interface CreatePurchaseOrderRequest {
   expectedDeliveryDate?: string;
   paymentTermsDays?: number;
   notes?: string;
+  /** Save without placing the order. Absent means a real, placed order. */
+  saveAsDraft?: boolean;
   lines: CreatePurchaseOrderLineRequest[];
 }
 
@@ -624,12 +650,33 @@ export interface StockLedgerRow {
   id: string;
   itemCode: string;
   itemName: string;
+  /** The item's unit, so a quantity on this row reads without a lookup. */
+  itemUom: string;
+  /** Our own lot number, allocated at goods receipt. */
   lotNumber: string | null;
+  /**
+   * THE VENDOR'S BATCH NUMBER, carried from the goods receipt unchanged.
+   *
+   * This is the number on the drum and on the vendor's certificate of
+   * analysis, and it is what a recall or an inspection is conducted by. It
+   * travels with the batch through QC into stock and is never re-keyed.
+   */
+  vendorBatchNumber: string | null;
+  expiryDate: string | null;
   entryType: string;
+  /** Signed: positive adds, negative removes. */
   quantityDelta: string;
+  /**
+   * Whether this movement changed USABLE stock.
+   *
+   * False on everything a quarantined or rejected batch does, which is how a
+   * rejection is recorded in full without ever becoming available to
+   * production.
+   */
   affectsUsableStock: boolean;
   reference: string | null;
   notes: string | null;
+  createdBy: string | null;
   createdAt: string;
 }
 
@@ -760,7 +807,13 @@ export interface RecordPaymentRequest {
  * day it falls due, which tells the person paying bills nothing about whether
  * they are late.
  */
-export const AGEING_BUCKETS = ['NOT_DUE', 'DUE_0_30', 'DUE_31_60', 'DUE_61_90', 'DUE_90_PLUS'] as const;
+export const AGEING_BUCKETS = [
+  'NOT_DUE',
+  'DUE_0_30',
+  'DUE_31_60',
+  'DUE_61_90',
+  'DUE_90_PLUS',
+] as const;
 export type AgeingBucket = (typeof AGEING_BUCKETS)[number];
 
 export const AGEING_BUCKET_LABELS: Record<AgeingBucket, string> = {
@@ -834,9 +887,44 @@ export interface ProcurementListQuery {
   status?: string;
   vendorId?: string;
   itemId?: string;
+  /**
+   * Requisitions only. Ignored by the other lists rather than given its own
+   * query shape: one interface across the six tabs is what keeps the filter
+   * bar and the query string identical between them.
+   */
+  triggerType?: string;
+  /** Requisitions only — the user who raised it. */
+  raisedById?: string;
+  /** Purchase orders only — orders with a line sourced from this requisition. */
+  requisitionId?: string;
   /** ISO dates, inclusive, over the document's own primary date. */
   dateFrom?: string;
   dateTo?: string;
+  /** 1-based. Out of range is clamped rather than refused. */
+  page?: number;
+  pageSize?: number;
+}
+
+/** The page sizes the controls offer. */
+export const PAGE_SIZES = [10, 25, 50, 100] as const;
+
+export type PageSize = (typeof PAGE_SIZES)[number];
+
+export const DEFAULT_PAGE_SIZE: PageSize = 25;
+
+/**
+ * One page of a list, with the size of the whole.
+ *
+ * `total` is the count AFTER filtering, which is the number the pager and the
+ * "showing 1-10 of 125" line both need. A total taken before the filters would
+ * promise pages that do not exist.
+ */
+export interface Paginated<T> {
+  rows: T[];
+  total: number;
+  /** Echoed back so the caller can render the pager from the response alone. */
+  page: number;
+  pageSize: number;
 }
 
 /** Routes for the Procure-to-Pay sub-tabs, shared so links cannot drift. */
@@ -846,6 +934,7 @@ export const PROCUREMENT_ROUTES = {
   purchaseOrders: '/workflows/procure-to-pay/purchase-orders',
   goodsReceipts: '/workflows/procure-to-pay/goods-receipts',
   incomingQc: '/workflows/procure-to-pay/incoming-qc',
+  stockLedger: '/workflows/procure-to-pay/stock-ledger',
   invoices: '/workflows/procure-to-pay/invoices',
   payments: '/workflows/procure-to-pay/payments',
   productionPlans: '/workflows/procure-to-pay/requisitions?view=plans',

@@ -34,9 +34,11 @@ export function RecordPaymentForm({ payable }: { payable: VendorPayableRow }) {
       label="Pay"
       title={`Payment against ${payable.invoiceNumber}`}
       openLabel={`Record a payment against ${payable.invoiceNumber}`}
+      closeWhen={state.status === 'success'}
+      width="30rem"
     >
       {() => (
-        <form action={formAction} className="w-[min(26rem,80vw)] space-y-3">
+        <form action={formAction} className="space-y-3">
           <ActionMessage state={state} />
 
           <input type="hidden" name="purchaseInvoiceId" value={payable.invoiceId} />

@@ -29,7 +29,11 @@ export class NumberingService {
    * different timezone may see the roll-over a few hours early or late, which
    * is acceptable for a document number and not worth a per-tenant clock.
    */
-  async next(tx: Prisma.TransactionClient, tenantId: string, docType: DocumentType): Promise<string> {
+  async next(
+    tx: Prisma.TransactionClient,
+    tenantId: string,
+    docType: DocumentType,
+  ): Promise<string> {
     const year = new Date().getUTCFullYear();
 
     // upsert then read would race; this is one statement. `update` on a

@@ -1,6 +1,8 @@
 'use client';
 
 import { useActionState } from 'react';
+
+import { useActionToast } from '@/components/toast';
 import type { ItemSummary, MaterialIssuePlan, ProductionOrderSummary } from '@pharma-erp/types';
 
 import {
@@ -15,26 +17,16 @@ import {
 const IDLE: ActionResult = { ok: true };
 
 /**
- * The result banner every form on this workflow shares.
+ * Announces a finished submission through the application-wide toast.
  *
- * `ok: true` with no message is the idle state, so a fresh form shows nothing
- * rather than a green "success" for something that never happened.
+ * This used to be a banner rendered inline in each of the five forms. It now
+ * raises the same centred message every other module raises — `ok: true` with
+ * no message is still the idle state, so a fresh form announces nothing.
  */
-function Result({ state }: { state: ActionResult }) {
-  if (!state.message) return null;
+function Result({ state, pending }: { state: ActionResult; pending: boolean }) {
+  useActionToast(pending, state.ok ? 'success' : 'error', state.message);
 
-  return (
-    <div
-      role={state.ok ? 'status' : 'alert'}
-      className={`rounded-md border p-3 text-sm ${
-        state.ok
-          ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
-          : 'border-red-200 bg-red-50 text-red-800'
-      }`}
-    >
-      {state.message}
-    </div>
-  );
+  return null;
 }
 
 const FIELD =
@@ -63,7 +55,7 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
 
   return (
     <form action={action} className="space-y-4 px-6 py-5">
-      <Result state={state} />
+      <Result state={state} pending={pending} />
 
       <div className="grid gap-4 sm:grid-cols-3">
         <div className="sm:col-span-2">
@@ -125,7 +117,7 @@ export function IssueMaterialForm({ plan }: { plan: MaterialIssuePlan }) {
     <form action={action} className="space-y-4 border-t border-slate-200 px-6 py-5">
       <input type="hidden" name="orderId" value={plan.productionOrderId} />
 
-      <Result state={state} />
+      <Result state={state} pending={pending} />
 
       {!plan.canIssue && (
         <p className="text-sm text-amber-800">
@@ -160,7 +152,7 @@ export function RecordBatchForm({ orders }: { orders: ProductionOrderSummary[] }
 
   return (
     <form action={action} className="space-y-4 px-6 py-5">
-      <Result state={state} />
+      <Result state={state} pending={pending} />
 
       <div className="grid gap-4 sm:grid-cols-3">
         <div>
@@ -225,7 +217,7 @@ export function RecordPackingForm({
     <form action={action} className="space-y-3 rounded-md bg-slate-50 p-4">
       <input type="hidden" name="batchId" value={batchId} />
 
-      <Result state={state} />
+      <Result state={state} pending={pending} />
 
       <div className="grid gap-3 sm:grid-cols-2">
         <div>
@@ -291,7 +283,7 @@ export function ReleaseDecisionForm({
     <form action={action} className="space-y-3 rounded-md border border-slate-200 bg-slate-50 p-4">
       <input type="hidden" name="batchId" value={batchId} />
 
-      <Result state={state} />
+      <Result state={state} pending={pending} />
 
       <div>
         <label htmlFor={`release-notes-${batchId}`} className={LABEL}>

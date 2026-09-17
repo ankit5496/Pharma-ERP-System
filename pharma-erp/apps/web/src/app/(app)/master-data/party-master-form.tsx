@@ -1,5 +1,6 @@
 'use client';
 
+import { useActionToast } from '@/components/toast';
 import { useActionState, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -12,7 +13,6 @@ import {
 
 import { savePartyAction, type ActionResult } from './actions';
 import {
-  FormError,
   FormGrid,
   FormSection,
   SelectField,
@@ -58,6 +58,11 @@ export function PartyMasterForm({
     savePartyAction.bind(null, party?.id ?? null),
     INITIAL,
   );
+
+  // The result is announced by the application-wide centred toast rather
+  // than by a banner inside this form, which on a form this long sat above
+  // the fold while the submit button being watched was below it.
+  useActionToast(isPending, state.ok ? 'success' : 'error', state.message);
   const router = useRouter();
 
   const [partyType, setPartyType] = useState<string>(party?.partyType ?? '');
@@ -78,8 +83,6 @@ export function PartyMasterForm({
 
   return (
     <form action={formAction} className="flex flex-col gap-8" noValidate>
-      {!state.ok && state.message && <FormError message={state.message} />}
-
       <FormSection title="Identity">
         <FormGrid>
           <TextField

@@ -1,8 +1,10 @@
 import type { Metadata } from 'next';
-import { PROCUREMENT_ROUTES, STOCK_LOT_STATUS_LABELS } from '@pharma-erp/types';
+import { PROCUREMENT_ROUTES } from '@pharma-erp/types';
 
 import { BookReceiptForm } from '@/components/procurement/book-receipt-form';
-import { FilterBar } from '@/components/procurement/filter-bar';
+import { EditGoodsReceiptButton } from '@/components/procurement/edit-dialogs';
+import { FilterButton, FilterPanel } from '@/components/procurement/filter-bar';
+import { Pagination } from '@/components/procurement/pagination';
 import {
   Blank,
   DateText,
@@ -12,8 +14,9 @@ import {
   Pill,
   Qty,
   RecordLink,
-  StatusPill,
   TableWrap,
+  Td,
+  Th,
 } from '@/components/procurement/ui';
 import {
   fetchGoodsReceipts,
@@ -68,36 +71,36 @@ export default async function GoodsReceiptsPage({
   return (
     <div className="space-y-6">
       <Panel
-        title="Create GRN"
-        subtitle="Record material arriving against an issued purchase order. Each line creates a batch, in quarantine until incoming QC clears it."
-      >
-        <div className="p-5">
-          {!receivable.ok ? (
-            <ErrorState message={`Could not load open orders: ${receivable.error}`} />
-          ) : receivable.data.length === 0 ? (
-            <p className="text-sm text-slate-600">
-              No purchase orders are open for receiving. Issue an order first — a draft order
-              cannot receive material.
-            </p>
-          ) : (
-            <BookReceiptForm
-              orders={receivable.data}
-              preselectedOrderId={preselectedOrderId}
-              receivedBy={user.fullName}
-            />
-          )}
-        </div>
-      </Panel>
-
-      <Panel
         title="Goods receipts"
         subtitle={
           receipts.ok
-            ? `${receipts.data.length} receipt${receipts.data.length === 1 ? '' : 's'}`
+            ? `${receipts.data.total} receipt${receipts.data.total === 1 ? '' : 's'}`
             : undefined
         }
+        action={
+          <>
+            <FilterButton />
+
+            {/* The button is only offered when there is something to receive
+                against. Opening a dialog whose only content is "nothing is
+                open" wastes the click; the sentence says it in place. */}
+            {!receivable.ok ? (
+              <span className="text-xs text-red-700">
+                Open orders unavailable: {receivable.error}
+              </span>
+            ) : receivable.data.length === 0 ? (
+              <span className="text-xs text-slate-500">No order is open for receiving.</span>
+            ) : (
+              <BookReceiptForm
+                orders={receivable.data}
+                preselectedOrderId={preselectedOrderId}
+                receivedBy={user.fullName}
+              />
+            )}
+          </>
+        }
       >
-        <FilterBar
+        <FilterPanel
           statuses={QC_FILTERS}
           vendors={vendors.ok ? toOptions(vendors.data) : []}
           items={items.ok ? toOptions(items.data) : []}
@@ -106,175 +109,182 @@ export default async function GoodsReceiptsPage({
 
         {!receipts.ok ? (
           <ErrorState message={`Could not load goods receipts: ${receipts.error}`} />
-        ) : receipts.data.length === 0 ? (
+        ) : receipts.data.rows.length === 0 ? (
           <EmptyState
             title="No goods receipts yet."
             hint="Book one above when material arrives against an issued purchase order."
             filtered={isFiltered}
           />
         ) : (
-          <ul className="divide-y divide-slate-100">
-            {receipts.data.map((receipt) => (
-              <li key={receipt.id} className="px-5 py-4">
-                <div className="flex flex-wrap items-start justify-between gap-4">
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-mono text-sm font-semibold text-slate-900">
-                        {receipt.number}
-                      </span>
-                      {receipt.qcPendingCount > 0 && (
-                        <Pill tone="warn">{receipt.qcPendingCount} awaiting QC</Pill>
-                      )}
-                      {receipt.qcAcceptedCount > 0 && (
-                        <Pill tone="ok">{receipt.qcAcceptedCount} accepted</Pill>
-                      )}
-                      {receipt.qcRejectedCount > 0 && (
-                        <Pill tone="danger">{receipt.qcRejectedCount} rejected / held</Pill>
-                      )}
-                    </div>
+          <>
+            <TableWrap>
+              <table className="w-full min-w-[78rem] text-left text-sm">
+                <thead>
+                  <tr className="text-xs uppercase tracking-wide text-slate-500">
+                    <Th>GRN no.</Th>
+                    <Th>Received</Th>
+                    <Th>PO no.</Th>
+                    <Th>Vendor</Th>
+                    <Th>Item / batch</Th>
+                    <Th align="right">Received</Th>
+                    <Th>QC</Th>
+                    <Th>Received by</Th>
+                    <Th>Invoice</Th>
+                    <Th>Actions</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {receipts.data.rows.map((receipt) => (
+                    <tr key={receipt.id}>
+                      <Td>
+                        <span className="font-mono text-xs font-semibold text-slate-900">
+                          {receipt.number}
+                        </span>
+                        {receipt.vendorDocumentNumber && (
+                          <span
+                            className="mt-0.5 block max-w-[10rem] truncate text-[11px] text-slate-500"
+                            title={`Vendor document ${receipt.vendorDocumentNumber}`}
+                          >
+                            doc {receipt.vendorDocumentNumber}
+                          </span>
+                        )}
+                      </Td>
 
-                    <p className="mt-1 text-sm text-slate-700">{receipt.vendor.name}</p>
+                      <Td>
+                        <DateText value={receipt.receiptDate} />
+                      </Td>
 
-                    <p className="mt-0.5 flex flex-wrap items-center gap-x-3 text-xs text-slate-500">
-                      <span>
-                        Received <DateText value={receipt.receiptDate} />
-                      </span>
-                      <RecordLink
-                        href={`${PROCUREMENT_ROUTES.purchaseOrders}?search=${receipt.purchaseOrder.number}`}
-                      >
-                        {receipt.purchaseOrder.number}
-                      </RecordLink>
-                      {receipt.vendorDocumentNumber && (
-                        <span>Vendor doc {receipt.vendorDocumentNumber}</span>
-                      )}
-                      {receipt.receivedBy && <span>by {receipt.receivedBy}</span>}
-                      {receipt.invoices.map((invoice) => (
+                      <Td>
                         <RecordLink
-                          key={invoice.id}
-                          href={`${PROCUREMENT_ROUTES.invoices}?search=${invoice.number}`}
+                          href={`${PROCUREMENT_ROUTES.purchaseOrders}?search=${receipt.purchaseOrder.number}`}
                         >
-                          {invoice.number}
+                          <span className="font-mono text-xs">{receipt.purchaseOrder.number}</span>
                         </RecordLink>
-                      ))}
-                    </p>
-                  </div>
+                      </Td>
 
-                  {receipt.qcPendingCount > 0 && (
-                    <RecordLink href={`${PROCUREMENT_ROUTES.incomingQc}?status=QUARANTINE`}>
-                      Go to incoming QC →
-                    </RecordLink>
-                  )}
-                </div>
+                      <Td>
+                        {/* Truncated with the full name on hover: a vendor
+                            called "Shree Krishna Pharmaceuticals Pvt Ltd"
+                            would otherwise set the width of the whole
+                            column. */}
+                        <span className="block max-w-[12rem] truncate" title={receipt.vendor.name}>
+                          {receipt.vendor.name}
+                        </span>
+                      </Td>
 
-                <TableWrap>
-                  <table className="mt-3 w-full min-w-[62rem] text-left text-xs">
-                    <thead>
-                      <tr className="border-y border-slate-200 text-[11px] uppercase tracking-wide text-slate-500">
-                        <th scope="col" className="py-2 pr-4 font-medium">
-                          Item
-                        </th>
-                        <th scope="col" className="py-2 pr-4 font-medium">
-                          Batch
-                        </th>
-                        <th scope="col" className="py-2 pr-4 font-medium">
-                          Mfg
-                        </th>
-                        <th scope="col" className="py-2 pr-4 font-medium">
-                          Expiry
-                        </th>
-                        <th scope="col" className="py-2 pr-4 text-right font-medium">
-                          Ordered
-                        </th>
-                        <th scope="col" className="py-2 pr-4 text-right font-medium">
-                          Received
-                        </th>
-                        <th scope="col" className="py-2 pr-4 text-right font-medium">
-                          Rejected
-                        </th>
-                        <th scope="col" className="py-2 pr-4 text-right font-medium">
-                          To quarantine
-                        </th>
-                        <th scope="col" className="py-2 pr-4 font-medium">
-                          Location
-                        </th>
-                        <th scope="col" className="py-2 font-medium">
-                          Inventory status
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {receipt.lines.map((line) => (
-                        <tr key={line.id}>
-                          <td className="py-2 pr-4">
-                            <span className="font-medium text-slate-800">{line.item.name}</span>
-                            <span className="ml-2 font-mono text-[11px] text-slate-500">
-                              {line.item.code}
-                            </span>
-                          </td>
-                          <td className="py-2 pr-4">
-                            {line.lot ? (
-                              <>
-                                <span className="font-mono text-[11px] font-medium text-slate-900">
-                                  {line.lot.lotNumber}
-                                </span>
-                                {line.vendorBatchNumber && (
-                                  <span className="ml-2 text-[11px] text-slate-500">
-                                    vendor {line.vendorBatchNumber}
+                      {/* THE LINES, STACKED INSIDE THE ROW rather than in a
+                          table of their own. A nested table per record was
+                          what made consecutive receipts run together — each
+                          one had its own header row, so the screen showed a
+                          dozen sets of column names and no clear edge between
+                          records. */}
+                      <Td valign="top">
+                        <ul className="space-y-1">
+                          {receipt.lines.map((line) => (
+                            <li key={line.id} className="leading-snug">
+                              <span
+                                className="block max-w-[16rem] truncate text-xs font-medium text-slate-800"
+                                title={`${line.item.name} (${line.item.code})`}
+                              >
+                                {line.item.name}
+                              </span>
+                              <span className="block text-[11px] text-slate-500">
+                                {line.lot?.lotNumber ? (
+                                  <span className="font-mono">{line.lot.lotNumber}</span>
+                                ) : (
+                                  <Blank />
+                                )}
+                                {line.expiryDate && (
+                                  <span className="ml-1.5 tabular-nums">
+                                    exp {line.expiryDate.slice(0, 10)}
                                   </span>
                                 )}
-                              </>
-                            ) : (
-                              <Blank />
-                            )}
-                          </td>
-                          <td className="py-2 pr-4 tabular-nums">
-                            <DateText value={line.manufacturingDate} />
-                          </td>
-                          <td className="py-2 pr-4 tabular-nums">
-                            <DateText value={line.expiryDate} />
-                          </td>
-                          <td className="py-2 pr-4 text-right tabular-nums">
-                            <Qty value={line.quantityOrdered} uom={line.item.uom} />
-                          </td>
-                          <td className="py-2 pr-4 text-right tabular-nums">
-                            {line.quantityReceived}
-                          </td>
-                          <td className="py-2 pr-4 text-right tabular-nums">
-                            {line.quantityRejected === '0' ? (
-                              <Blank />
-                            ) : (
-                              <span className="text-red-800">{line.quantityRejected}</span>
-                            )}
-                          </td>
-                          <td className="py-2 pr-4 text-right font-medium tabular-nums">
-                            {line.quantityAccepted}
-                          </td>
-                          <td className="py-2 pr-4">{line.storageLocation ?? <Blank />}</td>
-                          <td className="py-2">
-                            {line.lot ? (
-                              <StatusPill
-                                status={line.lot.status}
-                                label={STOCK_LOT_STATUS_LABELS[line.lot.status]}
-                              />
-                            ) : (
-                              <Blank />
-                            )}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </TableWrap>
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </Td>
 
-                {receipt.remarks && (
-                  <p className="mt-2 text-xs text-slate-500">{receipt.remarks}</p>
-                )}
-              </li>
-            ))}
-          </ul>
+                      <Td align="right" valign="top">
+                        <ul className="space-y-1">
+                          {receipt.lines.map((line) => (
+                            <li key={line.id} className="leading-snug">
+                              <Qty value={line.quantityReceived} uom={line.item.uom} />
+                              {line.quantityRejected !== '0' && (
+                                <span className="block text-[11px] text-red-700">
+                                  {line.quantityRejected} rejected
+                                </span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </Td>
+
+                      <Td>
+                        <div className="flex flex-wrap gap-1">
+                          {receipt.qcPendingCount > 0 && (
+                            <Pill tone="warn">{receipt.qcPendingCount} pending</Pill>
+                          )}
+                          {receipt.qcAcceptedCount > 0 && (
+                            <Pill tone="ok">{receipt.qcAcceptedCount} accepted</Pill>
+                          )}
+                          {receipt.qcRejectedCount > 0 && (
+                            <Pill tone="danger">{receipt.qcRejectedCount} rejected</Pill>
+                          )}
+                        </div>
+                        {receipt.qcPendingCount > 0 && (
+                          <p className="mt-1 text-[11px]">
+                            <RecordLink href={`${PROCUREMENT_ROUTES.incomingQc}?status=QUARANTINE`}>
+                              Go to QC →
+                            </RecordLink>
+                          </p>
+                        )}
+                      </Td>
+
+                      <Td>
+                        {receipt.receivedBy ? (
+                          <span className="text-xs text-slate-600">{receipt.receivedBy}</span>
+                        ) : (
+                          <Blank />
+                        )}
+                      </Td>
+
+                      <Td>
+                        {receipt.invoices.length === 0 ? (
+                          <Blank />
+                        ) : (
+                          <ul className="space-y-0.5">
+                            {receipt.invoices.map((invoice) => (
+                              <li key={invoice.id}>
+                                <RecordLink
+                                  href={`${PROCUREMENT_ROUTES.invoices}?search=${invoice.number}`}
+                                >
+                                  <span className="font-mono text-xs">{invoice.number}</span>
+                                </RecordLink>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </Td>
+
+                      <Td>
+                        <EditGoodsReceiptButton receipt={receipt} />
+                      </Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableWrap>
+
+            <Pagination
+              total={receipts.data.total}
+              page={receipts.data.page}
+              pageSize={receipts.data.pageSize}
+              noun="receipts"
+            />
+          </>
         )}
       </Panel>
     </div>
   );
 }
-

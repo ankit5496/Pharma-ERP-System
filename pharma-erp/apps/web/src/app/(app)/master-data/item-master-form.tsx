@@ -1,5 +1,6 @@
 'use client';
 
+import { useActionToast } from '@/components/toast';
 import { useActionState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import {
@@ -13,7 +14,6 @@ import {
 import { saveItemAction, type ActionResult } from './actions';
 import {
   CheckboxField,
-  FormError,
   FormGrid,
   FormSection,
   SelectField,
@@ -60,6 +60,11 @@ export function ItemMasterForm({
     saveItemAction.bind(null, item?.id ?? null),
     INITIAL,
   );
+
+  // The result is announced by the application-wide centred toast rather
+  // than by a banner inside this form, which on a form this long sat above
+  // the fold while the submit button being watched was below it.
+  useActionToast(isPending, state.ok ? 'success' : 'error', state.message);
   const router = useRouter();
 
   useEffect(() => {
@@ -83,8 +88,6 @@ export function ItemMasterForm({
 
   return (
     <form action={formAction} className="flex flex-col gap-8" noValidate>
-      {!state.ok && state.message && <FormError message={state.message} />}
-
       <FormSection title="Identity">
         <FormGrid>
           <TextField
