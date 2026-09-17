@@ -11,8 +11,9 @@ import type {
 } from '@pharma-erp/types';
 
 import { PrismaService } from '../../prisma/prisma.service';
-import type { UpdateAllocationDto } from './dto/allocation.dto';
 import { TenantContextService } from '../../tenant/tenant-context.service';
+
+import type { UpdateAllocationDto } from './dto/allocation.dto';
 
 /**
  * Allocation — reserving released batches against an order, first-expiry-first-out.

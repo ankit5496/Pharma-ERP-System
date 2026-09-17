@@ -1,8 +1,8 @@
 import { Module } from '@nestjs/common';
 
 import { JobWorkModule } from '../job-work/job-work.module';
-import { NumberingService } from '../procurement/numbering.service';
 import { PackagingModule } from '../packaging/packaging.module';
+import { NumberingService } from '../procurement/numbering.service';
 
 import { BatchService } from './batch.service';
 import { MaterialIssueService } from './material-issue.service';
