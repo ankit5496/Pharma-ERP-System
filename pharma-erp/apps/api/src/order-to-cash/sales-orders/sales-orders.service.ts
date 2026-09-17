@@ -14,8 +14,9 @@ import type {
 import { NumberingService } from '../../procurement/numbering.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TenantContextService } from '../../tenant/tenant-context.service';
+import { AllocationService } from '../allocation/allocation.service';
 
-import type { CreateSalesOrderDto } from './dto/sales-order.dto';
+import type { CreateSalesOrderDto, UpdateSalesOrderDto } from './dto/sales-order.dto';
 
 /**
  * Sales orders — what a distributor has asked for, priced and gated.
@@ -37,6 +38,9 @@ export class SalesOrdersService {
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
     private readonly numbering: NumberingService,
+    // Reused, never reimplemented: the sellable-stock rule and FEFO both live
+    // in AllocationService, and a second copy here would be a second answer.
+    private readonly allocation: AllocationService,
   ) {}
 
   async list(search?: string): Promise<SalesOrderListItem[]> {
@@ -107,6 +111,46 @@ export class SalesOrdersService {
 
     if (deliveryDate && deliveryDate < orderDate) {
       throw new BadRequestException('Requested delivery cannot be before the order date.');
+    }
+
+    // ------------------------------------------------------------------
+    // Sellable-stock gate, BEFORE anything is written.
+    // ------------------------------------------------------------------
+    // Refusing here rather than after creating means a rejected order leaves no
+    // trace and no number consumed from the sequence. Demand is summed PER ITEM
+    // first: two lines for the same product compete for the same batches, and
+    // checking them separately would pass a pair that together cannot be filled.
+    const demandByItem = new Map<string, Prisma.Decimal>();
+
+    for (const line of dto.items) {
+      demandByItem.set(
+        line.itemId,
+        (demandByItem.get(line.itemId) ?? new Prisma.Decimal(0)).add(
+          new Prisma.Decimal(line.quantityOrdered),
+        ),
+      );
+    }
+
+    // Checked CONCURRENTLY. Each item is an independent question, and the
+    // database is remote — a sequential loop pays the round trip once per line,
+    // which on a ten-line order is most of a second of pure waiting.
+    const availability = await Promise.all(
+      [...demandByItem].map(async ([itemId, requested]) => ({
+        itemId,
+        requested,
+        available: await this.allocation.availableForItem(itemId),
+      })),
+    );
+
+    for (const { itemId, requested, available } of availability) {
+      if (requested.greaterThan(available)) {
+        const item = byId.get(itemId)!;
+
+        throw new BadRequestException(
+          `Cannot create order: ${trimQuantity(requested)} units of ${item.code} requested, ` +
+            `but only ${trimQuantity(available)} units are currently available from released batches.`,
+        );
+      }
     }
 
     const created = await this.prisma.transaction(async (tx) => {
@@ -189,7 +233,172 @@ export class SalesOrdersService {
       });
     });
 
+    // ------------------------------------------------------------------
+    // Gate, then allocate. Both reuse the existing services.
+    // ------------------------------------------------------------------
+    // The licence and credit rules are UNCHANGED and still decide whether the
+    // order may proceed — `runCheck` records its verdict exactly as before. An
+    // order the gate blocks is left BLOCKED and unallocated, which is the
+    // correct outcome rather than a failure to report.
+    const checked = await this.runCheck(created.id);
+
+    if (checked.check.passed) {
+      try {
+        await this.allocation.commit(created.id);
+      } catch {
+        // The stock was there a moment ago, so this is a race: someone took the
+        // last of it between the pre-check and here. The order stands as
+        // APPROVED with nothing reserved, which the Allocation tab can retry
+        // from. Nothing is half-written — `commit` is itself one transaction,
+        // so either every reservation landed or none did.
+      }
+    }
+
     return this.get(created.id);
+  }
+
+  /**
+   * Amends a DRAFT order.
+   *
+   * DRAFT ONLY. An order that has been through the gate carries a recorded
+   * verdict, and one that has been allocated has stock reserved against it;
+   * editing the lines under either would leave the verdict, or the reservation,
+   * describing an order that no longer exists.
+   *
+   * Replacing the lines RESETS THE GATE to NOT_RUN. The credit check compared a
+   * total that has just changed, so keeping its PASS would be asserting
+   * something nobody checked.
+   */
+  async update(id: string, dto: UpdateSalesOrderDto): Promise<SalesOrderDetail> {
+    const tenantId = this.tenantContext.requireTenantId();
+
+    const order = await this.prisma.scoped.salesOrder.findFirst({
+      where: { id, deletedAt: null },
+    });
+
+    if (!order) throw new NotFoundException('Sales order not found.');
+
+    if (order.status !== 'DRAFT') {
+      throw new BadRequestException(
+        `Only a draft order can be edited — this one is ${order.status.toLowerCase().replace(/_/g, ' ')}. Cancel it and raise a new one.`,
+      );
+    }
+
+    const orderDate = dto.orderDate ? new Date(dto.orderDate) : order.orderDate;
+    const deliveryDate = dto.requestedDeliveryDate
+      ? new Date(dto.requestedDeliveryDate)
+      : order.requestedDeliveryDate;
+
+    if (deliveryDate && deliveryDate < orderDate) {
+      throw new BadRequestException('Requested delivery cannot be before the order date.');
+    }
+
+    if (!dto.items) {
+      await this.prisma.scoped.salesOrder.update({
+        where: { id },
+        data: {
+          orderDate,
+          requestedDeliveryDate: deliveryDate,
+          ...(dto.notes === undefined ? {} : { notes: dto.notes.trim() || null }),
+        },
+      });
+
+      return this.get(id);
+    }
+
+    const itemIds = [...new Set(dto.items.map((line) => line.itemId))];
+    const items = await this.prisma.scoped.item.findMany({
+      where: { id: { in: itemIds }, deletedAt: null },
+    });
+
+    if (items.length !== itemIds.length) {
+      throw new BadRequestException('One or more items on this order do not exist.');
+    }
+
+    const byId = new Map(items.map((item) => [item.id, item]));
+
+    await this.prisma.transaction(async (tx) => {
+      const lines = dto.items!.map((line, index) => {
+        const item = byId.get(line.itemId)!;
+        const quantity = new Prisma.Decimal(line.quantityOrdered);
+        const unitPrice = line.unitPrice ? new Prisma.Decimal(line.unitPrice) : (item.mrp ?? null);
+
+        if (unitPrice === null) {
+          throw new BadRequestException(
+            `${item.code} has no MRP on file, so a unit price must be given for it.`,
+          );
+        }
+
+        const discountPercent = new Prisma.Decimal(line.discountPercent ?? 0);
+        const gstRatePercent = item.gstRate ?? new Prisma.Decimal(0);
+
+        const gross = quantity.mul(unitPrice);
+        const discountAmount = gross.mul(discountPercent).div(100).toDecimalPlaces(2);
+        const taxableAmount = gross.sub(discountAmount).toDecimalPlaces(2);
+        const taxAmount = taxableAmount.mul(gstRatePercent).div(100).toDecimalPlaces(2);
+
+        return {
+          tenantId,
+          lineNumber: index + 1,
+          itemId: item.id,
+          quantityOrdered: quantity,
+          unitPrice,
+          discountPercent,
+          discountAmount,
+          gstRatePercent,
+          taxableAmount,
+          taxAmount,
+          lineTotal: taxableAmount.add(taxAmount),
+        };
+      });
+
+      const totals = lines.reduce(
+        (acc, line) => ({
+          quantity: acc.quantity.add(line.quantityOrdered),
+          subtotal: acc.subtotal.add(line.taxableAmount),
+          tax: acc.tax.add(line.taxAmount),
+          grand: acc.grand.add(line.lineTotal),
+        }),
+        {
+          quantity: new Prisma.Decimal(0),
+          subtotal: new Prisma.Decimal(0),
+          tax: new Prisma.Decimal(0),
+          grand: new Prisma.Decimal(0),
+        },
+      );
+
+      // Safe because the order is DRAFT: nothing has been allocated against
+      // these lines, so no reservation is orphaned by replacing them.
+      await tx.salesOrderItem.deleteMany({ where: { salesOrderId: id } });
+
+      await tx.salesOrder.update({
+        where: { id },
+        data: {
+          orderDate,
+          requestedDeliveryDate: deliveryDate,
+          ...(dto.notes === undefined ? {} : { notes: dto.notes.trim() || null }),
+          totalQuantity: totals.quantity,
+          subtotal: totals.subtotal,
+          taxAmount: totals.tax,
+          grandTotal: totals.grand,
+          // The gate compared a total that has just changed.
+          licenceCheck: 'NOT_RUN',
+          creditCheck: 'NOT_RUN',
+          checkFailureReason: null,
+          checkedAt: null,
+          outstandingAmount: null,
+          creditLimit: null,
+          availableCredit: null,
+          orderAmount: null,
+          creditShortfall: null,
+          licenceNumber: null,
+          licenceExpiryDate: null,
+          items: { create: lines },
+        },
+      });
+    });
+
+    return this.get(id);
   }
 
   /**
@@ -447,6 +656,14 @@ function toScheduleCategory(classification: string): ScheduleCategory {
     default:
       return 'NONE';
   }
+}
+
+/**
+ * Quantities for a human: "20" rather than "20.000", "2.5" kept as "2.5".
+ * Formatting for the refusal message only; the stored value is untouched.
+ */
+function trimQuantity(value: Prisma.Decimal): string {
+  return value.toDecimalPlaces(3).toString();
 }
 
 function startOfUtcDay(value: Date): Date {

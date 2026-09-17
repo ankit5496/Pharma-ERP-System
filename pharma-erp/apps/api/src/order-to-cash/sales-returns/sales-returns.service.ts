@@ -14,7 +14,7 @@ import { NumberingService } from '../../procurement/numbering.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TenantContextService } from '../../tenant/tenant-context.service';
 
-import type { CreateSalesReturnDto } from './dto/sales-return.dto';
+import type { CreateSalesReturnDto, UpdateSalesReturnDto } from './dto/sales-return.dto';
 
 /**
  * Sales returns — goods coming back, traced to the batch that shipped.
@@ -203,6 +203,43 @@ export class SalesReturnsService {
     });
 
     return this.get(created.id);
+  }
+
+  /**
+   * Amends a DRAFT return.
+   *
+   * DRAFT ONLY: once received the stock has been put somewhere — quarantined,
+   * destroyed or restocked — and once credited the customer's ledger has moved.
+   * Neither is undone by editing a form.
+   *
+   * Header fields only. Changing a returned quantity would have to unwind the
+   * `quantityReturned` it already added to the invoice line, so a wrong line is
+   * cancelled and re-raised rather than edited underneath the invoice.
+   */
+  async update(id: string, dto: UpdateSalesReturnDto): Promise<SalesReturnDetail> {
+    const salesReturn = await this.prisma.scoped.salesReturn.findFirst({
+      where: { id, deletedAt: null },
+    });
+
+    if (!salesReturn) throw new NotFoundException('Sales return not found.');
+
+    if (salesReturn.status !== 'DRAFT') {
+      throw new BadRequestException(
+        `Only a draft return can be edited — this one is ${salesReturn.status.toLowerCase()}.`,
+      );
+    }
+
+    await this.prisma.scoped.salesReturn.update({
+      where: { id },
+      data: {
+        ...(dto.returnDate ? { returnDate: new Date(dto.returnDate) } : {}),
+        ...(dto.reason ? { reason: dto.reason } : {}),
+        ...(dto.reasonNotes === undefined ? {} : { reasonNotes: dto.reasonNotes.trim() || null }),
+        ...(dto.notes === undefined ? {} : { notes: dto.notes.trim() || null }),
+      },
+    });
+
+    return this.get(id);
   }
 
   /**

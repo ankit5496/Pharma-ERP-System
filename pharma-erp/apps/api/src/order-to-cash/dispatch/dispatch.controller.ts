@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
 } from '@nestjs/common';
@@ -16,7 +17,7 @@ import { Roles } from '../../auth/auth.decorators';
 import { SkipAudit } from '../../common/audit/audit.decorators';
 
 import { DispatchService } from './dispatch.service';
-import { CreateDispatchDto } from './dto/dispatch.dto';
+import { CreateDispatchDto, UpdateDispatchDto } from './dto/dispatch.dto';
 
 /**
  * Despatch.
@@ -47,6 +48,16 @@ export class DispatchController {
   @Roles('ADMIN', 'SALES_MANAGER', 'STORE_OFFICER')
   async create(@Body() dto: CreateDispatchDto): Promise<DispatchDetail> {
     return this.dispatch.create(dto);
+  }
+
+  /** Amends a DRAFT consignment note. Lines are allocation's, not this form's. */
+  @Patch(':id')
+  @Roles('ADMIN', 'SALES_MANAGER', 'STORE_OFFICER')
+  async update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateDispatchDto,
+  ): Promise<DispatchDetail> {
+    return this.dispatch.update(id, dto);
   }
 
   /** Stock leaves the lot here — see the service. */

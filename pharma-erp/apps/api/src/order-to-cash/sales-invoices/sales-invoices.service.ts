@@ -13,7 +13,7 @@ import { NumberingService } from '../../procurement/numbering.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { TenantContextService } from '../../tenant/tenant-context.service';
 
-import type { CreateSalesInvoiceDto } from './dto/sales-invoice.dto';
+import type { CreateSalesInvoiceDto, UpdateSalesInvoiceDto } from './dto/sales-invoice.dto';
 
 /**
  * Tax invoices raised against a despatch.
@@ -290,6 +290,56 @@ export class SalesInvoicesService {
     });
 
     return this.get(created.id);
+  }
+
+  /**
+   * Amends the commercial terms on an issued invoice. NOT the tax record.
+   *
+   * Nothing that appears on the filed document can be changed here — no
+   * amounts, lines, batch numbers, addresses, GSTIN, invoice date or tax split.
+   * Those are snapshotted at issue precisely so a later correction to master
+   * data cannot rewrite a filed document, and correcting one is a cancellation
+   * and a reissue, which leaves both copies and the reversing ledger entry on
+   * the record.
+   *
+   * The due date is a payment arrangement rather than part of the tax record,
+   * so it is editable — until money has been received, after which the terms it
+   * was paid under are part of the settlement.
+   */
+  async update(id: string, dto: UpdateSalesInvoiceDto): Promise<SalesInvoiceDetail> {
+    const invoice = await this.prisma.scoped.salesInvoice.findFirst({
+      where: { id, deletedAt: null },
+    });
+
+    if (!invoice) throw new NotFoundException('Invoice not found.');
+
+    if (invoice.status === 'CANCELLED') {
+      throw new BadRequestException('A cancelled invoice cannot be amended.');
+    }
+
+    if (dto.dueDate !== undefined) {
+      if (invoice.amountPaid.greaterThan(0)) {
+        throw new BadRequestException(
+          'Money has been received against this invoice, so its due date can no longer be changed.',
+        );
+      }
+
+      const dueDate = new Date(dto.dueDate);
+
+      if (dueDate < invoice.invoiceDate) {
+        throw new BadRequestException('The due date cannot be before the invoice date.');
+      }
+    }
+
+    await this.prisma.scoped.salesInvoice.update({
+      where: { id },
+      data: {
+        ...(dto.dueDate === undefined ? {} : { dueDate: new Date(dto.dueDate) }),
+        ...(dto.notes === undefined ? {} : { notes: dto.notes.trim() || null }),
+      },
+    });
+
+    return this.get(id);
   }
 
   /**

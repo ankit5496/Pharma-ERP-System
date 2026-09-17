@@ -888,8 +888,21 @@ export interface ItemListItem {
   mrp: string | null;
   priceControlType: PriceControlType;
   status: 'ACTIVE' | 'INACTIVE' | 'DISCONTINUED';
-  /** Saleable stock across every released, unexpired batch. */
+  /**
+   * Saleable stock: released, unexpired, and NOT already reserved for another
+   * order. This is the figure order entry is checked against.
+   */
   availableQuantity: string;
+
+  /**
+   * The two halves of that sum, reported separately because they are what makes
+   * the difference explicable. Production's batch-release screen shows on-hand
+   * stock, which is larger whenever anything is reserved — without these, the
+   * same product legitimately reads "10 available" there and "0 saleable" here
+   * and nothing on either screen says why.
+   */
+  quantityOnHand: string;
+  quantityReserved: string;
   createdAt: string;
 }
 

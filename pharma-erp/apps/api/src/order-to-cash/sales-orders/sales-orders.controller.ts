@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
 } from '@nestjs/common';
@@ -15,7 +16,7 @@ import type { SalesOrderDetail, SalesOrderListItem } from '@pharma-erp/types';
 import { Roles } from '../../auth/auth.decorators';
 import { SkipAudit } from '../../common/audit/audit.decorators';
 
-import { CreateSalesOrderDto } from './dto/sales-order.dto';
+import { CreateSalesOrderDto, UpdateSalesOrderDto } from './dto/sales-order.dto';
 import { SalesOrdersService } from './sales-orders.service';
 
 /**
@@ -50,6 +51,16 @@ export class SalesOrdersController {
   @Roles('ADMIN', 'SALES_MANAGER')
   async create(@Body() dto: CreateSalesOrderDto): Promise<SalesOrderDetail> {
     return this.orders.create(dto);
+  }
+
+  /** Amends a DRAFT order. Refused once the gate has run — see the service. */
+  @Patch(':id')
+  @Roles('ADMIN', 'SALES_MANAGER')
+  async update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateSalesOrderDto,
+  ): Promise<SalesOrderDetail> {
+    return this.orders.update(id, dto);
   }
 
   @Post(':id/check')

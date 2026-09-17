@@ -7,9 +7,11 @@ import {
   RETURN_REASONS,
   RETURN_REASON_LABELS,
   type SalesInvoiceDetail,
+  type SalesReturnListItem,
 } from '@pharma-erp/types';
 
-import { createSalesReturnAction } from './actions';
+import { createSalesReturnAction, updateSalesReturnAction } from './actions';
+import { EditButton, EditDialog } from './edit-kit';
 import { Note, PRIMARY_BUTTON, SECONDARY_BUTTON, formatDate, formatQuantity } from './ui';
 
 interface DraftReturnLine {
@@ -358,6 +360,51 @@ export function NewReturnForm({
           {pending ? 'Recording…' : 'Record return & credit'}
         </button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Row actions for a sales return.
+ *
+ * DRAFT only. Once received, the stock has been put somewhere — quarantined,
+ * destroyed or restocked — and once credited the customer's ledger has moved;
+ * neither is undone by editing a form, and the API refuses both.
+ */
+export function SalesReturnRowActions({ salesReturn }: { salesReturn: SalesReturnListItem }) {
+  const [editing, setEditing] = useState(false);
+
+  if (salesReturn.status !== 'DRAFT') {
+    return <span className="text-xs text-slate-400">—</span>;
+  }
+
+  return (
+    <div className="min-w-[5rem]">
+      <EditButton onClick={() => setEditing(true)} />
+
+      {editing && (
+        <EditDialog
+          title={`Edit ${salesReturn.returnNumber}`}
+          description={`${salesReturn.customerName} · ${salesReturn.invoiceNumber}`}
+          note="Returned quantities are not editable here — they have already been counted against the invoice lines. A wrong line is cancelled and re-raised rather than changed underneath the invoice."
+          fields={[
+            { name: 'returnDate', label: 'Return date', value: salesReturn.returnDate, type: 'date' },
+            {
+              name: 'reason',
+              label: 'Reason',
+              value: salesReturn.reason,
+              options: RETURN_REASONS.map((reason) => ({
+                value: reason,
+                label: RETURN_REASON_LABELS[reason],
+              })),
+            },
+            { name: 'reasonNotes', label: 'Reason notes', value: '', wide: true },
+            { name: 'notes', label: 'Notes', value: '', wide: true },
+          ]}
+          onClose={() => setEditing(false)}
+          onSave={(patch) => updateSalesReturnAction(salesReturn.id, patch)}
+        />
+      )}
     </div>
   );
 }

@@ -23,8 +23,7 @@ import { SalesReturnsService } from './sales-returns/sales-returns.service';
  * All seven steps: customers, sales orders, allocation, despatch, invoicing,
  * receipts and returns. They form one chain, and each link refuses to skip the
  * one before it — an order cannot be allocated until it has passed the licence
- * and credit gates, stock cannot be despatched until a scheduled line has had
- * its compliance re-check, an invoice cannot be raised until the despatch is
+ * and credit gates, an invoice cannot be raised until the despatch is
  * confirmed, and a return cannot be credited until the goods are recorded back.
  *
  * NumberingService is provided here rather than imported from ProcurementModule
