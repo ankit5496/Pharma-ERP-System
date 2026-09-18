@@ -195,7 +195,6 @@ export function PackagingRequirementMasterForm({
               options={productOptions}
               value={productId}
               onChange={setProductId}
-              placeholder="Choose a finished product…"
               hint="Only finished goods appear here."
             />
           )}
@@ -258,7 +257,6 @@ export function PackagingRequirementMasterForm({
                       [String(id)]: { ...(current[String(id)] ?? {}), itemId: value },
                     }))
                   }
-                  placeholder="Choose a packing material…"
                 />
                 <SelectField
                   name={`component.${id}.level`}

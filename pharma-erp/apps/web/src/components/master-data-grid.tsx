@@ -40,6 +40,7 @@ import {
 } from '@/app/(app)/master-data/actions';
 import { DocumentIcon, DocumentPreview } from '@/components/document-preview';
 import type { ApiResult } from '@/lib/api';
+import { noWheelChange } from '@/lib/number-input';
 
 /**
  * The register as a table — direction H.
@@ -1439,6 +1440,7 @@ function AlertLeadDays({
         disabled={isPending}
         onChange={(event) => setDays(event.target.value)}
         onBlur={commit}
+        {...noWheelChange}
         // Enter commits without submitting anything — this control is not in a
         // form, and leaving Enter to bubble would do nothing at all.
         onKeyDown={(event) => {

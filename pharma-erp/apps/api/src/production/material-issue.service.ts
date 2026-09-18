@@ -486,17 +486,23 @@ export class MaterialIssueService {
    * The number the next dispensing record would take, for the form to show
    * before anything is saved — US-PROD-02's "Issue No. (auto-generated)".
    *
-   * A PREDICTION, not a reservation. The real number is allocated inside the
-   * issuing transaction, so a colleague who dispenses first takes this one and
-   * the next moves on. Nothing is held, which is why this reads the sequence
-   * rather than incrementing it.
+   * A PREDICTION, not a reservation. The real number is allocated by
+   * NumberingService inside the issuing transaction, so a colleague who
+   * dispenses first takes this one and the next moves on. Nothing is held,
+   * which is why this reads the sequence rather than incrementing it.
+   *
+   * It reads the same (docType, year) row NumberingService writes — docType
+   * 'MI', with the year in its own column. This previously read `MI-${year}`,
+   * a key allocation never wrote, so the preview sat at MI-YYYY-0001 no matter
+   * how many notes had been raised. A mismatched key does not fail loudly; it
+   * just shows a number that is always wrong after the first.
    */
   async previewIssueNumber(): Promise<{ issueNumber: string }> {
     const tenantId = this.tenantContext.requireTenantId();
-    const year = new Date().getFullYear();
+    const year = new Date().getUTCFullYear();
 
     const sequence = await this.prisma.scoped.documentSequence.findUnique({
-      where: { tenantId_docType_year: { tenantId, docType: `MI-${year}`, year } },
+      where: { tenantId_docType_year: { tenantId, docType: 'MI', year } },
       select: { nextValue: true },
     });
 

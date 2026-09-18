@@ -77,17 +77,17 @@ export class CreateJobWorkAgreementDto {
    */
   @IsArray()
   @ArrayMinSize(1, {
-    message: 'An agreement must cover at least one product — that is what it is an agreement about.',
+    message:
+      'An agreement must cover at least one product — that is what it is an agreement about.',
   })
   @ValidateNested({ each: true })
   @Type(() => JobWorkMappingDto)
   mappings!: JobWorkMappingDto[];
 
-  @IsOptional()
-  @IsString()
-  @MaxLength(64)
-  @Matches(/^\S(.*\S)?$/, { message: 'agreementReference must not start or end with whitespace' })
-  agreementReference?: string;
+  // NO `agreementReference`. It is allocated by the server as JWA-YYYY-NNNN when
+  // the agreement is created — see JobWorkService.nextReference — so accepting
+  // one here would let a caller choose a number out of the series, or collide
+  // with one the sequence is about to hand out.
 
   @IsOptional()
   @Matches(RATE, { message: RATE_MESSAGE })
@@ -142,11 +142,8 @@ export class UpdateJobWorkAgreementDto {
   @Type(() => JobWorkMappingDto)
   mappings?: JobWorkMappingDto[];
 
-  @IsOptional()
-  @IsString()
-  @MaxLength(64)
-  @Matches(/^\S(.*\S)?$/, { message: 'agreementReference must not start or end with whitespace' })
-  agreementReference?: string | null;
+  // NO `agreementReference` here either: it is fixed once allocated, being what
+  // every work order and invoice under this agreement cites.
 
   @IsOptional()
   @Matches(RATE, { message: RATE_MESSAGE })

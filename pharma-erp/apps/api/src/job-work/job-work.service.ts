@@ -1,4 +1,9 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import type { Prisma } from '@pharma-erp/database';
 import type {
@@ -9,10 +14,15 @@ import type {
   JobWorkMappingView,
 } from '@pharma-erp/types';
 
+import { NumberingService } from '../procurement/numbering.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
-import type { CreateJobWorkAgreementDto, JobWorkMappingDto, UpdateJobWorkAgreementDto } from './dto/job-work.dto';
+import type {
+  CreateJobWorkAgreementDto,
+  JobWorkMappingDto,
+  UpdateJobWorkAgreementDto,
+} from './dto/job-work.dto';
 
 /**
  * The Principal & Job-Work Agreement register — US-MD-05.
@@ -35,11 +45,21 @@ import type { CreateJobWorkAgreementDto, JobWorkMappingDto, UpdateJobWorkAgreeme
  * Everything goes through `prisma.scoped`, so row-level security applies to
  * reads as well as writes.
  */
+/**
+ * The document series agreement references are drawn from.
+ *
+ * 'JWA', not 'JW': 'JW' belongs to job-work ORDERS. Sharing it would print an
+ * agreement and an order with the same number from two different counters.
+ */
+const AGREEMENT_DOC_TYPE = 'JWA' as const;
+
 @Injectable()
 export class JobWorkService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
+    /** Allocates the JWA-YYYY-NNNN agreement reference. */
+    private readonly numbering: NumberingService,
   ) {}
 
   async list(): Promise<JobWorkAgreementSummary[]> {
@@ -61,7 +81,6 @@ export class JobWorkService {
     assertDatesOrdered(dto.validFrom ?? null, dto.validTo ?? null);
     await this.assertPrincipalIsAPrincipal(dto.principalId);
     await this.assertMappingsUsable(dto.mappings);
-    await this.assertReferenceIsFree(dto.agreementReference?.trim() || null, null);
 
     try {
       // One transaction: an agreement with no mappings is not a half-saved
@@ -91,7 +110,13 @@ export class JobWorkService {
             tenantId,
             principalId: dto.principalId,
             billingModel: dto.billingModel,
-            agreementReference: dto.agreementReference?.trim() || null,
+            // ALLOCATED HERE, not accepted from the request. The reference used
+            // to be typed by hand and optional, which left the register holding
+            // things like "13123" beside "12341123" — no shape, no order, and
+            // nothing to quote on a document. Inside this transaction, so the
+            // number and the agreement it belongs to land together or not at
+            // all.
+            agreementReference: await this.numbering.next(tx, tenantId, AGREEMENT_DOC_TYPE),
             conversionChargeRate: dto.conversionChargeRate ?? null,
             conversionRateBasis: dto.conversionRateBasis ?? null,
             validFrom: dto.validFrom ? fromIsoDate(dto.validFrom) : null,
@@ -118,7 +143,9 @@ export class JobWorkService {
 
       return toAgreementSummary(agreement);
     } catch (error) {
-      throw translate(error, dto.agreementReference?.trim() ?? '');
+      // No reference to quote: it is allocated inside the transaction that just
+      // failed, so there is no number this agreement can be called yet.
+      throw translate(error, '');
     }
   }
 
@@ -159,20 +186,23 @@ export class JobWorkService {
 
     if (dto.principalId !== undefined) await this.assertPrincipalIsAPrincipal(dto.principalId);
     if (dto.mappings !== undefined) await this.assertMappingsUsable(dto.mappings);
-    if (dto.agreementReference !== undefined) {
-      await this.assertReferenceIsFree(dto.agreementReference?.trim() || null, id);
-    }
 
     const data: Prisma.JobWorkAgreementUpdateInput = {};
 
     if (dto.principalId !== undefined) data.principal = { connect: { id: dto.principalId } };
     if (dto.billingModel !== undefined) data.billingModel = dto.billingModel;
-    if (dto.agreementReference !== undefined) {
-      data.agreementReference = dto.agreementReference?.trim() || null;
-    }
-    if (dto.conversionChargeRate !== undefined) data.conversionChargeRate = dto.conversionChargeRate;
+    // THE REFERENCE IS NOT EDITABLE. It is allocated on create and is what the
+    // agreement is cited as on every work order and invoice raised under it —
+    // changing it would rewrite the meaning of paperwork already issued, in the
+    // same way a party code or an item code cannot move. A request carrying one
+    // is ignored rather than refused: the edit form does not send it, and a
+    // caller that round-trips every field should not be rejected for sending
+    // back what is already stored.
+    if (dto.conversionChargeRate !== undefined)
+      data.conversionChargeRate = dto.conversionChargeRate;
     if (dto.conversionRateBasis !== undefined) data.conversionRateBasis = dto.conversionRateBasis;
-    if (dto.validFrom !== undefined) data.validFrom = dto.validFrom ? fromIsoDate(dto.validFrom) : null;
+    if (dto.validFrom !== undefined)
+      data.validFrom = dto.validFrom ? fromIsoDate(dto.validFrom) : null;
     if (dto.validTo !== undefined) data.validTo = dto.validTo ? fromIsoDate(dto.validTo) : null;
     if (dto.notes !== undefined) data.notes = dto.notes?.trim() || null;
 
@@ -205,7 +235,8 @@ export class JobWorkService {
 
       return toAgreementSummary(agreement);
     } catch (error) {
-      throw translate(error, dto.agreementReference?.trim() ?? existing.agreementReference ?? '');
+      // The stored reference: an update cannot change it.
+      throw translate(error, existing.agreementReference ?? '');
     }
   }
 
@@ -246,27 +277,40 @@ export class JobWorkService {
    * `exceptId` is the row being updated: an agreement keeping its own
    * reference is not a collision with itself.
    */
-  private async assertReferenceIsFree(
-    reference: string | null,
-    exceptId: string | null,
-  ): Promise<void> {
-    if (!reference) return;
+  /**
+   * The reference the next agreement would take, for the form to show before
+   * anything is saved.
+   *
+   * A PREDICTION, not a reservation: the real number is allocated by
+   * NumberingService inside the create transaction, so an agreement saved in
+   * between takes this one and the next moves on. Nothing is held, which is why
+   * this reads the sequence rather than incrementing it.
+   *
+   * It reads the same (docType, year) row NumberingService writes. That is the
+   * whole reason this is worth a comment: the two were briefly out of step —
+   * the preview read a `JW-${year}` counter that allocation had stopped using —
+   * and a preview keyed differently from the allocator does not drift visibly,
+   * it just quietly shows the same first number forever.
+   */
+  async previewReference(): Promise<{ agreementReference: string }> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const year = new Date().getUTCFullYear();
 
-    const clash = await this.prisma.scoped.jobWorkAgreement.findFirst({
-      where: {
-        agreementReference: reference,
-        deletedAt: null,
-        ...(exceptId ? { id: { not: exceptId } } : {}),
-      },
-      select: { id: true },
+    const sequence = await this.prisma.scoped.documentSequence.findUnique({
+      where: { tenantId_docType_year: { tenantId, docType: AGREEMENT_DOC_TYPE, year } },
+      select: { nextValue: true },
     });
 
-    if (clash) {
-      throw new ConflictException(
-        `An agreement with reference "${reference}" is already on the register.`,
-      );
-    }
+    // No row yet means none has been raised this year, and the first takes 1.
+    return {
+      agreementReference: `${AGREEMENT_DOC_TYPE}-${year}-${String(sequence?.nextValue ?? 1).padStart(4, '0')}`,
+    };
   }
+
+  // `assertReferenceIsFree` stood here, checking a hand-typed reference against
+  // the register before a save. It went with the typing: the reference is now
+  // allocated from a per-tenant sequence, so a collision is not something a
+  // caller can cause — and the unique index remains the backstop either way.
 
   /**
    * The principal must be a party of type JOB_WORK_PRINCIPAL.
@@ -381,7 +425,9 @@ function translate(error: unknown, reference: string): unknown {
   }
 
   if (isConstraint(error, 'job_work_agreements_rate_has_basis')) {
-    return new BadRequestException('A conversion charge rate and its basis must be given together.');
+    return new BadRequestException(
+      'A conversion charge rate and its basis must be given together.',
+    );
   }
 
   if (isConstraint(error, 'job_work_agreements_valid_to_after_from')) {
@@ -422,7 +468,11 @@ function translate(error: unknown, reference: string): unknown {
  * decides how the refusal reads.
  */
 function isConstraint(error: unknown, marker: string): boolean {
-  if (typeof error === 'object' && error !== null && (error as { code?: unknown }).code === marker) {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === marker
+  ) {
     return true;
   }
 
@@ -455,9 +505,7 @@ function agreementStatus(validFrom: Date | null, validTo: Date | null): Agreemen
   return 'IN_FORCE';
 }
 
-function toMappingView(
-  mapping: AgreementWithRelations['mappings'][number],
-): JobWorkMappingView {
+function toMappingView(mapping: AgreementWithRelations['mappings'][number]): JobWorkMappingView {
   return {
     id: mapping.id,
     bomId: mapping.bomId,
@@ -470,9 +518,7 @@ function toMappingView(
   };
 }
 
-export function toAgreementSummary(
-  agreement: AgreementWithRelations,
-): JobWorkAgreementSummary {
+export function toAgreementSummary(agreement: AgreementWithRelations): JobWorkAgreementSummary {
   return {
     id: agreement.id,
     principalId: agreement.principalId,

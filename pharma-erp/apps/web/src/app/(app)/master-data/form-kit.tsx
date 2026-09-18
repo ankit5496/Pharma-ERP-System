@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 /**
  * Shared parts for the six master-data forms.
@@ -99,8 +99,24 @@ export function TextField({
   step,
   defaultValue,
   readOnly,
+  digitsOnly,
   ...shell
 }: FieldShell & {
+  /**
+   * Refuses anything but digits AS IT IS TYPED.
+   *
+   * These forms all carry `noValidate` — the server's answer is the only one
+   * that counts — which also means `pattern` never fires. So a field that can
+   * only hold digits has to say so by not accepting the others: an HSN code
+   * typed as "3004ab" used to travel to the API and come back refused, which
+   * is a round trip to learn something the control could have shown at once.
+   *
+   * It does NOT enforce the length. Refusing a character is unambiguous;
+   * refusing a SHORT value while it is still being typed would block "300" on
+   * the way to "30049099". Length stays with the server, which sees it
+   * finished.
+   */
+  digitsOnly?: boolean;
   /**
    * `readOnly`, not `disabled`: a disabled input is omitted from the form
    * submission entirely, and this is used for fields the server keeps but
@@ -112,6 +128,9 @@ export function TextField({
    * `email` and `tel` are here for the keyboard and the browser's own
    * autofill, not for validation: the form carries `noValidate`, so the
    * server's answer is the only one that counts.
+   *
+   * `number` renders WITHOUT the spinner arrows — see the note on the input
+   * below.
    */
   type?: 'text' | 'number' | 'date' | 'email' | 'tel';
   placeholder?: string;
@@ -143,6 +162,44 @@ export function TextField({
         step={step}
         defaultValue={defaultValue}
         readOnly={readOnly}
+        // `beforeinput` rather than `onChange`: this cancels the keystroke, so
+        // the character never lands and the caret does not jump. Filtering in
+        // `onChange` would need the field to be controlled, which would cost
+        // every one of these the `defaultValue` behaviour above.
+        onBeforeInput={
+          digitsOnly
+            ? (event) => {
+                // `data` is null for a deletion, which is always allowed.
+                const incoming = (event as unknown as { data: string | null }).data;
+
+                if (incoming === null) return;
+
+                // Every character of the insertion, not just the first: a
+                // paste arrives here as one event carrying the whole string.
+                if (!/^\d*$/.test(incoming)) event.preventDefault();
+              }
+            : undefined
+        }
+        // THE SCROLL WHEEL MUST NOT CHANGE THE VALUE.
+        //
+        // A focused `type="number"` increments on wheel, natively. Somebody
+        // types 36 into Shelf-life, scrolls the drawer to reach the save
+        // button, and arrives with 41 — silently, because the pointer happened
+        // to be over the field on the way past. On a long form that scrolls,
+        // this is the most likely way a wrong number gets saved.
+        //
+        // Blurring is what stops it: the behaviour belongs to the FOCUSED
+        // element, so dropping focus ends it and the page scrolls normally.
+        // `preventDefault` in an onWheel handler does not work — React
+        // registers wheel listeners as passive, and a passive listener is not
+        // allowed to cancel.
+        onWheel={
+          type === 'number'
+            ? (event) => {
+                (event.target as HTMLInputElement).blur();
+              }
+            : undefined
+        }
         aria-invalid={shell.error ? true : undefined}
         aria-describedby={shell.error ? `${shell.name}-error` : undefined}
         // Off everywhere: a browser offering someone's home address for
@@ -151,7 +208,16 @@ export function TextField({
         className={`${fieldClass(
           shell.compact ? 'field-sm mt-1 w-full' : 'field mt-1.5',
           shell.error,
-        )} ${readOnly ? 'cursor-not-allowed bg-slate-100 text-slate-500' : ''}`}
+        )} ${readOnly ? 'cursor-not-allowed bg-slate-100 text-slate-500' : ''} ${
+          // NO SPINNER ARROWS on a number field. They are for a value somebody
+          // nudges — a quantity of one or two — and every number in these forms
+          // is typed outright: a shelf life of 36 months, a credit limit, a
+          // reorder quantity of 5000. Nobody clicks an arrow 5000 times, and
+          // the control is narrow enough that the arrows sit where the last
+          // digit should be. `type="number"` is kept for the numeric keypad on
+          // a phone and for the browser's own digit filtering.
+          type === 'number' ? 'no-spinner' : ''
+        }`}
       />
     </Shell>
   );
@@ -172,25 +238,75 @@ export function TextField({
  * both: it looks like the dropdowns were never filled in.
  *
  * Pass `value` + `onChange` from state to hold a dropdown across a refusal.
+ *
+ * THAT ALONE IS NOT ENOUGH, which cost several wrong fixes to find. Holding the
+ * value in state keeps REACT right, and React was never wrong: logging showed
+ * `category = RAW_MATERIAL` through the whole cycle while the control on screen
+ * read `--None--`. The reset happens in the DOM, and because `value` is
+ * identical either side of it, React has nothing to diff and never writes it
+ * back. The effect inside this component is what repairs that.
  */
 export function SelectField({
   options,
-  placeholder = 'Choose…',
+  // `--None--` everywhere, at the product owner's request on 2026-09-17. It
+  // replaced a per-field sentence ("Choose a category…", "Choose a rate…"),
+  // which read better in isolation but meant the unchosen state looked
+  // different in every dropdown on the same screen. One word, one shape:
+  // whatever the field, "nothing selected" now looks identical.
+  placeholder = '--None--',
   defaultValue,
   value,
   onChange,
   ...shell
 }: FieldShell & {
   options: readonly { value: string; label: string }[];
-  placeholder?: string;
+  /**
+   * Set `null` for a field whose own options already include a "none".
+   *
+   * Schedule classification is the case: `NONE — General / OTC` is a real
+   * classification, not the absence of one, and it is what an unscheduled
+   * medicine legitimately is. Rendering `--None--` above it offered two ways
+   * to say nothing, one of which the API rejects.
+   */
+  placeholder?: string | null;
   defaultValue?: string;
   /** Controlled value. When given, `onChange` must be given too. */
   value?: string;
   onChange?: (value: string) => void;
 }) {
+  const ref = useRef<HTMLSelectElement>(null);
+
+  /**
+   * Puts the value back after React 19's form reset.
+   *
+   * WHY THIS IS NEEDED AT ALL, and why `value` alone is not enough. When the
+   * action resolves, React resets the form, which returns the DOM <select> to
+   * its first option — `--None--`. React would normally repair that on the
+   * next render, but `value` is IDENTICAL either side of the reset
+   * (RAW_MATERIAL before, RAW_MATERIAL after), so there is no prop change to
+   * diff and it never writes anything back. The result was a control showing
+   * `--None--` while React's own state said RAW_MATERIAL — logging confirmed
+   * the state was right the whole time.
+   *
+   * Runs after EVERY render with no dependency list, deliberately: the reset
+   * is not something this component can observe, so the only reliable moment
+   * to check is "always, after painting". The write is guarded, so a render
+   * where the DOM already agrees costs one string comparison and touches
+   * nothing.
+   */
+  useEffect(() => {
+    const element = ref.current;
+
+    if (!element || value === undefined) return;
+    if (element.value === value) return;
+
+    element.value = value;
+  });
+
   return (
     <Shell {...shell}>
       <select
+        ref={ref}
         id={shell.name}
         name={shell.name}
         required={shell.required}
@@ -210,7 +326,7 @@ export function SelectField({
             Selectable-and-empty is what makes "nothing chosen" a real state.
             `required` on the select is what refuses it, and the browser then
             says so before the request is ever made. */}
-        <option value="">{placeholder}</option>
+        {placeholder !== null && <option value="">{placeholder}</option>}
         {options.map((option) => (
           <option key={option.value} value={option.value}>
             {option.label}

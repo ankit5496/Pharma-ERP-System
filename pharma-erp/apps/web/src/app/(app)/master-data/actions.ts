@@ -95,21 +95,34 @@ function optional(formData: FormData, field: string): string | undefined {
  */
 function requireFields(
   fields: readonly (readonly [string, unknown, string?])[],
-): { message: string; fieldErrors: Record<string, string> } | null {
+): { message?: string; fieldErrors: Record<string, string> } | null {
   const missing = fields.filter(([, value]) => !value);
 
   if (missing.length === 0) return null;
 
-  // One per control, so each empty field can carry its own red line. The
-  // sentence stays too: it is what a screen reader announces on the summary,
-  // and what shows when a field has no control to mark.
+  // One per control, so each empty field carries its own red line.
   const fieldErrors: Record<string, string> = {};
 
   for (const [label, , name] of missing) {
     if (name) fieldErrors[name] = `${label} is required.`;
   }
 
-  const labels = missing.map(([label]) => label);
+  // NO SUMMARY WHEN EVERY MISSING FIELD IS MARKED.
+  //
+  // The sentence and the red lines used to be raised together, so a form with
+  // three empty dropdowns said so four times: once under each control, and
+  // again in a toast over the top of the form — which on a long form covered
+  // the very fields it was naming. The marks are the better of the two: they
+  // are next to the control that has to change.
+  //
+  // The sentence is kept for the case it was written for — a field with no
+  // control to mark, like the brand/generic pair, where there is nothing to
+  // put a red line under and the toast is the only way to say anything.
+  const unmarked = missing.filter(([, , name]) => !name);
+
+  if (unmarked.length === 0) return { fieldErrors };
+
+  const labels = unmarked.map(([label]) => label);
 
   if (labels.length === 1) return { message: `${labels[0]} is required.`, fieldErrors };
 
@@ -128,11 +141,23 @@ function requireFields(
  * Most match. The ones here do not, because the label on screen and the column
  * in the database were named by different concerns: the Item form asks for a
  * "Category" and the DTO calls it `type`.
+ *
+ * `name` is deliberately NOT mapped globally. It used to be, to `brandName`,
+ * which is right for the Item form — the item's stored `name` is derived from
+ * the brand — and wrong everywhere else: a Party form refusal about `name` was
+ * re-keyed to a `brandName` control that form does not render, so the message
+ * reached no field and, once the summary toast was suppressed, reached nobody
+ * at all. The mapping now belongs to the form that needs it.
  */
 const FORM_FIELD_FOR_DTO: Record<string, string> = {
   type: 'category',
-  name: 'brandName',
   productId: 'productId',
+};
+
+/** The Item form's extra mapping: its stored `name` comes from the brand. */
+const ITEM_FORM_FIELD_FOR_DTO: Record<string, string> = {
+  ...FORM_FIELD_FOR_DTO,
+  name: 'brandName',
 };
 
 /**
@@ -147,7 +172,10 @@ const FORM_FIELD_FOR_DTO: Record<string, string> = {
  *
  * Losing a message is worse than showing one twice.
  */
-function apiFields(result: ApiFailure): Record<string, string> | undefined {
+function apiFields(
+  result: ApiFailure,
+  names: Record<string, string> = FORM_FIELD_FOR_DTO,
+): Record<string, string> | undefined {
   if (!result.fields) return undefined;
 
   const mapped: Record<string, string> = {};
@@ -155,7 +183,7 @@ function apiFields(result: ApiFailure): Record<string, string> | undefined {
   for (const [dtoField, message] of Object.entries(result.fields)) {
     if (dtoField.includes('.')) return undefined;
 
-    mapped[FORM_FIELD_FOR_DTO[dtoField] ?? dtoField] = message;
+    mapped[names[dtoField] ?? dtoField] = message;
   }
 
   return Object.keys(mapped).length > 0 ? mapped : undefined;
@@ -175,13 +203,24 @@ type ApiFailure = Extract<ApiResult<unknown>, { ok: false }>;
  *
  * `values` is carried through either way, so a retry does not mean retyping
  * the form.
+ *
+ * NO TOAST WHEN THE FIELDS ALREADY SAY IT. A refusal the API attributed to
+ * named controls is shown under each of them; raising the same sentence again
+ * in a toast put it over the middle of the drawer, covering the very field it
+ * was describing. Anything NOT attributed to a field — a cold start, a
+ * conflict, a rule about the record as a whole — still needs the toast, because
+ * there is nothing on screen to mark.
  */
-function failure(result: ApiFailure, values?: Record<string, string>): ActionResult {
-  const fieldErrors = isColdStart(result) ? undefined : apiFields(result);
+function failure(
+  result: ApiFailure,
+  values?: Record<string, string>,
+  names?: Record<string, string>,
+): ActionResult {
+  const fieldErrors = isColdStart(result) ? undefined : apiFields(result, names);
 
   return {
     ok: false,
-    message: isColdStart(result) ? COLD_START_MESSAGE : result.error,
+    ...(fieldErrors ? {} : { message: isColdStart(result) ? COLD_START_MESSAGE : result.error }),
     ...(values ? { values } : {}),
     ...(fieldErrors ? { fieldErrors } : {}),
   };
@@ -222,6 +261,12 @@ export async function saveItemAction(
   const itemMissing = requireFields([
     ['Item code', code, 'code'],
     ['Category', type, 'category'],
+    // THE COMPOSITION IS REQUIRED; THE BRAND IS NOT. It used to be "one or the
+    // other", which meant neither field could be starred and the rule surfaced
+    // only as a refusal. Every item has a composition — lactose has no brand, a
+    // printed carton has no brand — and it is the composition that has to
+    // appear on the label, so it is the half worth insisting on.
+    ['Generic name / composition', genericName, 'genericName'],
     ['Unit of measure', uom, 'uom'],
     ['HSN code', hsnCode, 'hsnCode'],
     ['GST rate', gstRate, 'gstRate'],
@@ -229,18 +274,15 @@ export async function saveItemAction(
 
   if (itemMissing) return { ok: false, values, ...itemMissing };
 
-  // `name` is what every other screen shows and what the BOM picker searches,
-  // so it must not be blank. A finished good is known by its brand; a raw
-  // material has none and is known by its composition.
-  const displayName = name || genericName;
+  // Narrowed rather than asserted. `requireFields` above has already refused a
+  // blank composition, but it cannot tell the compiler that — and a `!` here
+  // would silently become a lie the day someone drops that line from the list.
+  if (!genericName) return { ok: false, values, fieldErrors: { genericName: 'Required.' } };
 
-  if (!displayName) {
-    return {
-      ok: false,
-      values,
-      message: 'Brand name is required, or a Generic name for a material that has no brand.',
-    };
-  }
+  // `name` is what every other screen shows and what the BOM picker searches:
+  // the brand when there is one — a box of Calpol is looked up as Calpol — and
+  // the composition otherwise.
+  const displayName = name || genericName;
 
   const payload: CreateItemRequest = {
     code,
@@ -251,8 +293,10 @@ export async function saveItemAction(
     gstRate,
     scheduleClassification: (optional(formData, 'scheduleClassification') ??
       'NONE') as ScheduleClassification,
+    // The brand is spread conditionally because it is optional; the
+    // composition is always sent, because it is now required.
     ...(name ? { brandName: name } : {}),
-    ...(genericName ? { genericName } : {}),
+    genericName,
     ...(optional(formData, 'mrp') ? { mrp: optional(formData, 'mrp')! } : {}),
     // An unchecked checkbox is absent from FormData entirely, which is how
     // "false" is spelled in a form submission.
@@ -304,7 +348,7 @@ export async function saveItemAction(
         timeoutMs: 20_000,
       });
 
-  if (!result.ok) return failure(result, values);
+  if (!result.ok) return failure(result, values, ITEM_FORM_FIELD_FOR_DTO);
 
   // 'layout' rather than 'page': every register route shares one layout, and
   // the grid data is fetched by the route regardless of which register is
@@ -562,7 +606,15 @@ export async function saveLicenceAction(
   }
 
   const licenceType = String(formData.get('licenceType') ?? '') as LicenceType;
-  const licenceNumber = String(formData.get('licenceNumber') ?? '').trim();
+  // A GSTIN is upper-case by statute and the pattern that checks it says so, so
+  // a number typed in lower case is corrected rather than refused — being told
+  // "wrong format" for a GSTIN that is right apart from its case is a pointless
+  // thing to make somebody puzzle over. The other two types accept both cases,
+  // so upper-casing them would be changing what was on the certificate: left
+  // exactly as typed.
+  const rawLicenceNumber = String(formData.get('licenceNumber') ?? '').trim();
+  const licenceNumber =
+    licenceType === 'GST_REGISTRATION' ? rawLicenceNumber.toUpperCase() : rawLicenceNumber;
   const issuingAuthority = String(formData.get('issuingAuthority') ?? '').trim();
   const expiryDate = String(formData.get('expiryDate') ?? '').trim();
   const issuedOn = optional(formData, 'issuedOn');
@@ -687,6 +739,24 @@ export async function setLicenceAlertAction(days: number): Promise<ActionResult>
  * found by walking the field names rather than by guessing how many there are:
  * rows can be added and removed in any order.
  */
+/**
+ * The reference the next job-work agreement would take.
+ *
+ * Asked of the server so the form shows the real series rather than guessing
+ * from whatever rows the page happens to hold. Null on failure: this is a
+ * convenience on a field nobody types into, and a failed prediction must not
+ * stop an agreement being recorded — the server allocates the real number
+ * regardless.
+ */
+export async function nextAgreementReferenceAction(): Promise<string | null> {
+  const result = await apiFetch<{ agreementReference: string }>(
+    '/api/v1/job-work/agreements/next-reference',
+    { authenticated: true, timeoutMs: 20_000 },
+  );
+
+  return result.ok ? result.data.agreementReference : null;
+}
+
 export async function saveAgreementAction(
   agreementId: string | null,
   _previous: ActionResult,
@@ -795,9 +865,8 @@ export async function saveAgreementAction(
     principalId,
     billingModel,
     mappings,
-    ...(optional(formData, 'agreementReference')
-      ? { agreementReference: optional(formData, 'agreementReference')! }
-      : {}),
+    // The reference is NOT sent: the server allocates JWA-YYYY-NNNN on create,
+    // and it is fixed thereafter.
     ...(rate ? { conversionChargeRate: rate } : {}),
     ...(basis ? { conversionRateBasis: basis } : {}),
     ...(validFrom ? { validFrom } : {}),
@@ -812,7 +881,6 @@ export async function saveAgreementAction(
     principalId,
     billingModel,
     mappings,
-    agreementReference: optional(formData, 'agreementReference') ?? null,
     conversionChargeRate: rate ?? null,
     conversionRateBasis: basis ?? null,
     validFrom: validFrom ?? null,
