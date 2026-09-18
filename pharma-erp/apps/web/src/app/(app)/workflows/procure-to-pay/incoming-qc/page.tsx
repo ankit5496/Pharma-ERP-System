@@ -109,9 +109,6 @@ export default async function IncomingQcPage({
                           vendor <Code>{row.lot.vendorBatchNumber}</Code>
                         </p>
                       )}
-                      {row.lot.storageLocation && (
-                        <p className="text-[11px] text-slate-400">{row.lot.storageLocation}</p>
-                      )}
                     </Td>
                     <Td>
                       <p className="font-medium text-slate-900"><Name>{row.item.name}</Name></p>

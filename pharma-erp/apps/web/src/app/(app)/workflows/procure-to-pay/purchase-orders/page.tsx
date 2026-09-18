@@ -76,6 +76,10 @@ export default async function PurchaseOrdersPage({
     fromRequisition || isFiltered ? fetchRequisitions({}) : Promise.resolve(null),
   ]);
 
+  // Resolved once: the edit form offers these while the order is still a draft
+  // or open, which is exactly when the API will accept a change of vendor.
+  const vendorList = vendors.ok ? vendors.data : [];
+
   const sourceRequisition =
     fromRequisition && requisitions?.ok
       ? (requisitions.data.rows.find((r) => r.id === fromRequisition) ?? null)
@@ -199,7 +203,7 @@ export default async function PurchaseOrdersPage({
                     </Td>
 
                     <Td>
-                      <DraftOrderActions order={draft} />
+                      <DraftOrderActions order={draft} vendors={vendorList} />
                     </Td>
                   </tr>
                 ))}
@@ -377,7 +381,7 @@ export default async function PurchaseOrdersPage({
                       </Td>
 
                       <Td>
-                        <PurchaseOrderActions order={order} />
+                        <PurchaseOrderActions order={order} vendors={vendorList} />
                       </Td>
                     </tr>
                   ))}

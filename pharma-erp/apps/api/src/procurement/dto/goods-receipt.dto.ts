@@ -11,7 +11,11 @@ import {
   ValidateNested,
 } from 'class-validator';
 
-import type { CreateGoodsReceiptLineRequest, CreateGoodsReceiptRequest } from '@pharma-erp/types';
+import type {
+  CreateGoodsReceiptLineRequest,
+  CreateGoodsReceiptRequest,
+  UpdateGoodsReceiptLineRequest,
+} from '@pharma-erp/types';
 
 import { IsDecimalString, trim } from './common.dto';
 
@@ -33,10 +37,6 @@ export class CreateGoodsReceiptLineDto implements CreateGoodsReceiptLineRequest 
   quantityReceived!: string;
 
   @IsOptional()
-  @IsDecimalString('Quantity rejected')
-  quantityRejected?: string;
-
-  @IsOptional()
   @IsString()
   @trim()
   @MaxLength(64)
@@ -49,18 +49,6 @@ export class CreateGoodsReceiptLineDto implements CreateGoodsReceiptLineRequest 
   @IsOptional()
   @IsISO8601()
   expiryDate?: string;
-
-  @IsOptional()
-  @IsString()
-  @trim()
-  @MaxLength(128)
-  storageLocation?: string;
-
-  @IsOptional()
-  @IsString()
-  @trim()
-  @MaxLength(1000)
-  remarks?: string;
 }
 
 export class CreateGoodsReceiptDto implements CreateGoodsReceiptRequest {
@@ -92,16 +80,43 @@ export class CreateGoodsReceiptDto implements CreateGoodsReceiptRequest {
 }
 
 /**
+ * One line's batch identity, corrected.
+ *
+ * The three fields a person transcribes from the delivery note, and the three a
+ * typo actually happens on. Each is applied to the STOCK LOT the line created
+ * as well as to the line, because a lot whose expiry disagreed with the receipt
+ * it came from would be picked FEFO on one date and recalled on another.
+ */
+export class UpdateGoodsReceiptLineDto implements UpdateGoodsReceiptLineRequest {
+  @IsUUID()
+  id!: string;
+
+  @IsOptional()
+  @IsString()
+  @trim()
+  @MaxLength(64)
+  vendorBatchNumber?: string;
+
+  @IsOptional()
+  @IsISO8601()
+  manufacturingDate?: string;
+
+  @IsOptional()
+  @IsISO8601()
+  expiryDate?: string;
+}
+
+/**
  * What may still be corrected on a booked receipt.
  *
- * THE QUANTITIES ARE NOT HERE, and that is the whole shape of this DTO. Booking
- * a receipt creates batches and moves stock; re-typing a received quantity
+ * THE QUANTITY IS NOT HERE, and that is the whole shape of this DTO. Booking a
+ * receipt creates batches and moves stock; re-typing a received quantity
  * afterwards would leave the stock ledger — which is append-only — describing a
  * delivery that never happened. A wrong quantity is corrected by receiving the
  * difference, or by rejecting the batch at QC.
  *
- * What is left is the paperwork around the delivery: which document the vendor
- * sent it under, when it arrived, and any note about it.
+ * What is left is what a person transcribed: the batch number and the two
+ * dates, per line, and the paperwork around the delivery.
  */
 export class UpdateGoodsReceiptDto {
   @IsOptional()
@@ -119,4 +134,11 @@ export class UpdateGoodsReceiptDto {
   @trim()
   @MaxLength(1000)
   remarks?: string | null;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => UpdateGoodsReceiptLineDto)
+  lines?: UpdateGoodsReceiptLineDto[];
 }

@@ -116,7 +116,6 @@ export default async function RequisitionsPage({
           <FilterButton />
           <RequisitionForm
             items={items.ok ? items.data : []}
-            vendors={vendors.ok ? vendors.data : []}
             plans={plans.ok ? plans.data : []}
             raisedBy={user.fullName}
           />
@@ -252,10 +251,7 @@ export default async function RequisitionsPage({
                     </Td>
 
                     <Td>
-                      <RequisitionActions
-                        requisition={requisition}
-                        vendors={vendors.ok ? vendors.data : []}
-                      />
+                      <RequisitionActions requisition={requisition} />
                     </Td>
                   </tr>
                 ))}

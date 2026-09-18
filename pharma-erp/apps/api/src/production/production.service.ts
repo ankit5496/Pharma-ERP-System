@@ -8,8 +8,10 @@ import {
 // A value import, not `import type`: Prisma.Decimal is constructed below.
 import { Prisma } from '@pharma-erp/database';
 import type {
+  BillingModel,
   BomView,
   ItemSummary,
+  ProductionOrderJobWorkTag,
   ProductionStockLot,
   ProductionOrderSummary,
   WorkOrderFeasibility,
@@ -268,7 +270,16 @@ export class ProductionService {
   async listStockLots(): Promise<ProductionStockLot[]> {
     const lots = await this.prisma.scoped.stockLot.findMany({
       where: { status: { not: 'CONSUMED' } },
-      include: { item: true },
+      include: {
+        item: true,
+        // Whose material this is, for a principal-owned lot. Two levels up
+        // rather than denormalised onto the lot: the receipt already knows its
+        // order and the order already knows its principal, and a copy here
+        // would be a second answer that could drift from the first.
+        jobWorkMaterialReceipt: {
+          select: { jobWorkOrder: { select: { principal: { select: { name: true } } } } },
+        },
+      },
       orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { lotNumber: 'asc' }],
     });
 
@@ -280,6 +291,9 @@ export class ProductionService {
       quantityAvailable: lot.quantityAvailable.toString(),
       quantityReceived: lot.quantityReceived.toString(),
       item: toItemSummary(lot.item),
+      ownership: lot.ownership,
+      principalName: lot.jobWorkMaterialReceipt?.jobWorkOrder.principal.name ?? null,
+      vendorBatchNumber: lot.vendorBatchNumber,
     }));
   }
 
@@ -595,6 +609,46 @@ export class ProductionService {
     }
   }
 
+  /**
+   * What a production order carries when it is somebody else's work.
+   *
+   * Selected once and shared by both projections below, so the two cannot come
+   * to disagree about what a job-work order looks like.
+   */
+  private static readonly JOB_WORK_TAG_SELECT = {
+    id: true,
+    orderNumber: true,
+    billingModel: true,
+    principal: { select: { id: true, name: true } },
+    agreement: { select: { id: true, agreementReference: true } },
+    mapping: { select: { principalBrandName: true } },
+  } as const;
+
+  /** The tag as the view carries it, or null for our own production. */
+  private static jobWorkTag(
+    row: {
+      id: string;
+      orderNumber: string;
+      billingModel: BillingModel;
+      principal: { id: string; name: string };
+      agreement: { id: string; agreementReference: string | null };
+      mapping: { principalBrandName: string };
+    } | null,
+  ): ProductionOrderJobWorkTag | null {
+    if (!row) return null;
+
+    return {
+      jobWorkOrderId: row.id,
+      orderNumber: row.orderNumber,
+      principalId: row.principal.id,
+      principalName: row.principal.name,
+      agreementId: row.agreement.id,
+      agreementReference: row.agreement.agreementReference,
+      billingModel: row.billingModel,
+      principalBrandName: row.mapping.principalBrandName,
+    };
+  }
+
   async listProductionOrders(): Promise<ProductionOrderSummary[]> {
     const orders = await this.prisma.scoped.productionOrder.findMany({
       where: { deletedAt: null },
@@ -602,6 +656,7 @@ export class ProductionService {
         product: true,
         bom: { select: { version: true } },
         createdBy: { select: { fullName: true } },
+        jobWorkOrder: { select: ProductionService.JOB_WORK_TAG_SELECT },
         batches: {
           where: { deletedAt: null },
           select: { id: true, batchNumber: true, releaseStatus: true },
@@ -627,6 +682,7 @@ export class ProductionService {
         batchNumber: batch?.batchNumber ?? null,
         batchId: batch?.id ?? null,
         releaseStatus: batch?.releaseStatus ?? null,
+        jobWork: ProductionService.jobWorkTag(order.jobWorkOrder),
       };
     });
   }
@@ -979,6 +1035,7 @@ export class ProductionService {
           product: true,
           bom: { select: { version: true } },
           createdBy: { select: { fullName: true } },
+          jobWorkOrder: { select: ProductionService.JOB_WORK_TAG_SELECT },
         },
       });
 
@@ -995,6 +1052,7 @@ export class ProductionService {
         batchNumber: null,
         batchId: null,
         releaseStatus: null,
+        jobWork: ProductionService.jobWorkTag(order.jobWorkOrder),
       };
     });
   }

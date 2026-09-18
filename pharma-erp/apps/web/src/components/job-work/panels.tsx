@@ -362,6 +362,13 @@ export async function InwardMaterialsPanel() {
     ? orders.data.filter((order) => order.billingModel === 'PURE_CONVERSION')
     : [];
 
+  // Counted so the empty states can tell "you have no job-work orders" apart
+  // from "your orders are all on the model this screen does not serve" — two
+  // situations that need opposite advice.
+  const ownProcurementOrders = orders.ok
+    ? orders.data.filter((order) => order.billingModel === 'OWN_PROCUREMENT').length
+    : 0;
+
   const inputItems = items.ok
     ? items.data.filter((item) => item.type !== 'FINISHED_GOOD')
     : [];
@@ -372,7 +379,11 @@ export async function InwardMaterialsPanel() {
       subtitle="Material the principal supplied, on their delivery challan. Free of cost — no purchase order and no purchase invoice is created."
       action={
         orders.ok && items.ok ? (
-          <CreateJobWorkReceiptButton orders={conversionOrders} items={inputItems} />
+          <CreateJobWorkReceiptButton
+            orders={conversionOrders}
+            items={inputItems}
+            ownProcurementOrderCount={ownProcurementOrders}
+          />
         ) : undefined
       }
     >
@@ -380,8 +391,16 @@ export async function InwardMaterialsPanel() {
         <ErrorState message={`Could not load material receipts: ${receipts.error}`} />
       ) : receipts.data.length === 0 ? (
         <EmptyState
-          title="No principal material received yet."
-          hint="Under pure conversion the principal ships the raw material on their own delivery challan. Record it here and it enters principal-owned stock."
+          title={
+            conversionOrders.length === 0 && ownProcurementOrders > 0
+              ? 'Nothing is received here on your current agreements.'
+              : 'No principal material received yet.'
+          }
+          hint={
+            conversionOrders.length === 0 && ownProcurementOrders > 0
+              ? 'Every job-work order you hold is on the own-procurement model, where you buy the material yourself through Procure to Pay. This screen records material a principal ships you free of cost under a pure-conversion agreement.'
+              : 'Under pure conversion the principal ships the raw material on their own delivery challan. Record it here and it enters principal-owned stock.'
+          }
         />
       ) : (
         <TableWrap>

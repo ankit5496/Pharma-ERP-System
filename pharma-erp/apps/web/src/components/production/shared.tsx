@@ -124,9 +124,14 @@ export function ReleaseBadge({ status }: { status: BatchReleaseStatus }) {
   const tone =
     status === 'RELEASED'
       ? 'bg-emerald-50 text-emerald-800 ring-emerald-200'
-      : status === 'BLOCKED'
-        ? 'bg-red-50 text-red-800 ring-red-200'
-        : 'bg-slate-100 text-slate-700 ring-slate-200';
+      : // Amber for a hold, which may still be released; red for a rejection,
+        // which never will. BLOCKED is the legacy value for both and keeps the
+        // stronger colour.
+        status === 'ON_HOLD'
+        ? 'bg-amber-50 text-amber-800 ring-amber-200'
+        : status === 'REJECTED' || status === 'BLOCKED'
+          ? 'bg-red-50 text-red-800 ring-red-200'
+          : 'bg-slate-100 text-slate-700 ring-slate-200';
 
   return (
     <span

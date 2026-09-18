@@ -11,7 +11,6 @@ import {
   EmptyState,
   ErrorState,
   Panel,
-  Pill,
   Qty,
   RecordLink,
   TableWrap,
@@ -129,7 +128,6 @@ export default async function GoodsReceiptsPage({
                     <Th>Vendor</Th>
                     <Th>Item / batch</Th>
                     <Th align="right">Received</Th>
-                    <Th>QC</Th>
                     <Th>Received by</Th>
                     <Th>Invoice</Th>
                     <Th>Actions</Th>
@@ -191,8 +189,10 @@ export default async function GoodsReceiptsPage({
                                 <Name>{line.item.name}</Name>
                               </span>
                               <span className="block text-[11px] text-slate-500">
-                                {line.lot?.lotNumber ? (
-                                  <span className="font-mono"><Code>{line.lot.lotNumber}</Code></span>
+                                {line.vendorBatchNumber ? (
+                                  <span className="font-mono">
+                                    <Code>{line.vendorBatchNumber}</Code>
+                                  </span>
                                 ) : (
                                   <Blank />
                                 )}
@@ -212,35 +212,9 @@ export default async function GoodsReceiptsPage({
                           {receipt.lines.map((line) => (
                             <li key={line.id} className="leading-snug">
                               <Qty value={line.quantityReceived} uom={line.item.uom} />
-                              {line.quantityRejected !== '0' && (
-                                <span className="block text-[11px] text-red-700">
-                                  {line.quantityRejected} rejected
-                                </span>
-                              )}
                             </li>
                           ))}
                         </ul>
-                      </Td>
-
-                      <Td>
-                        <div className="flex flex-wrap gap-1">
-                          {receipt.qcPendingCount > 0 && (
-                            <Pill tone="warn">{receipt.qcPendingCount} pending</Pill>
-                          )}
-                          {receipt.qcAcceptedCount > 0 && (
-                            <Pill tone="ok">{receipt.qcAcceptedCount} accepted</Pill>
-                          )}
-                          {receipt.qcRejectedCount > 0 && (
-                            <Pill tone="danger">{receipt.qcRejectedCount} rejected</Pill>
-                          )}
-                        </div>
-                        {receipt.qcPendingCount > 0 && (
-                          <p className="mt-1 text-[11px]">
-                            <RecordLink href={`${PROCUREMENT_ROUTES.incomingQc}?status=QUARANTINE`}>
-                              Go to QC →
-                            </RecordLink>
-                          </p>
-                        )}
                       </Td>
 
                       <Td>

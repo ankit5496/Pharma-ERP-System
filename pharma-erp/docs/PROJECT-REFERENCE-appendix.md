@@ -428,9 +428,6 @@ application code uses the camelCase form (`stockLot`, not `stock_lots`).
 | `manufacturing_date`     | Date           | nullable           |
 | `expiry_date`            | Date           | nullable           |
 | `quantity_received`      | Decimal(18, 4) |                    |
-| `quantity_rejected`      | Decimal(18, 4) | default 0          |
-| `storage_location`       | VarChar(128)   | nullable           |
-| `remarks`                | VarChar(1000)  | nullable           |
 | `created_at`             | Timestamptz(6) | default now()      |
 | `updated_at`             | Timestamptz(6) |                    |
 | `stockLot`               | StockLot       | nullable           |
@@ -452,7 +449,6 @@ application code uses the camelCase form (`stockLot`, not `stock_lots`).
 | `quantity_received`     | Decimal(18, 4) |                    |
 | `quantity_available`    | Decimal(18, 4) |                    |
 | `status`                | StockLotStatus | default QUARANTINE |
-| `storage_location`      | VarChar(128)   | nullable           |
 | `created_at`            | Timestamptz(6) | default now()      |
 | `updated_at`            | Timestamptz(6) |                    |
 

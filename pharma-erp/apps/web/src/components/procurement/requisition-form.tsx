@@ -4,7 +4,6 @@ import {
   PACKAGING_LEVELS,
   PACKAGING_LEVEL_LABELS,
   type ItemSummary,
-  type PartySummary,
   type ProductionPlanSummary,
 } from '@pharma-erp/types';
 
@@ -31,12 +30,10 @@ import { ActionMessage, Disclosure, Field, SubmitButton, useAction } from './for
  */
 export function RequisitionForm({
   items,
-  vendors,
   plans,
   raisedBy,
 }: {
   items: readonly ItemSummary[];
-  vendors: readonly PartySummary[];
   plans: readonly ProductionPlanSummary[];
   raisedBy: string;
 }) {
@@ -55,7 +52,7 @@ export function RequisitionForm({
     <Disclosure
       label="Create purchase requisition"
       title="New purchase requisition"
-      subtitle="Raised against master data that already exists. Nothing here creates an item, a vendor or a plan."
+      subtitle="Raised against master data that already exists. Nothing here creates an item or a plan."
       closeWhen={state.status === 'success'}
     >
       {() => (
@@ -123,22 +120,6 @@ export function RequisitionForm({
               <p className="field-hint">
                 Auto-reorder requisitions are raised by the system, not here.
               </p>
-            </Field>
-
-            <Field label="Preferred vendor" htmlFor="pr-vendor" hint="Optional.">
-              <select
-                id="pr-vendor"
-                name="preferredVendorId"
-                defaultValue=""
-                className="field-sm w-full"
-              >
-                <option value="">Not specified</option>
-                {vendors.map((vendor) => (
-                  <option key={vendor.id} value={vendor.id}>
-                    {vendor.name}
-                  </option>
-                ))}
-              </select>
             </Field>
 
             <Field label="Required by" htmlFor="pr-by">
