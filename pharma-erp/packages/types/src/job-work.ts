@@ -114,7 +114,7 @@ export interface CreateJobWorkAgreementRequest {
   principalId: string;
   billingModel: BillingModel;
   mappings: JobWorkMappingInput[];
-  /** NOT sent: the server allocates JW-YYYY-NNN on create. */
+  /** NOT sent: the server allocates JWA-YYYY-NNNN on create. */
   conversionChargeRate?: string;
   conversionRateBasis?: ConversionRateBasis;
   validFrom?: string;

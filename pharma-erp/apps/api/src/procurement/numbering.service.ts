@@ -24,10 +24,17 @@ export type DocumentType =
   | 'SINV'
   | 'RCPT'
   | 'SRTN'
-  // Job work. Three series rather than one: an auditor tracing a principal's
-  // material asks three different questions — what was ordered, what came in on
-  // their challan, and what went back — and one shared series would interleave
-  // all three into a sequence with no meaning.
+  // Job work. Four series rather than one: an auditor tracing a principal's
+  // material asks different questions — what was agreed, what was ordered, what
+  // came in on their challan, and what went back — and one shared series would
+  // interleave them all into a sequence with no meaning.
+  //
+  // 'JWA' is the AGREEMENT reference, and is deliberately not 'JW'. The two
+  // were briefly the same string on two branches: agreements allocated their
+  // own `JW-${year}` counter while orders took 'JW' here, so both printed
+  // JW-2026-… from separate counters and the register would have shown an
+  // agreement and an order wearing the same number.
+  | 'JWA'
   | 'JW'
   | 'JWR'
   | 'JWI';

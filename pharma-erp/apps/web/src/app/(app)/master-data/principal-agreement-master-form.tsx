@@ -192,7 +192,7 @@ export function PrincipalAgreementMasterForm({
             onChange={setPrincipalId}
             hint="The brand owner, from the Party register. Only parties recorded as job-work principals appear here."
           />
-          {/* ALLOCATED BY THE SERVER as JW-YYYY-NNN, and read-only here.
+          {/* ALLOCATED BY THE SERVER as JWA-YYYY-NNNN, and read-only here.
 
               It used to be typed by hand and optional, which left the register
               holding "13123" beside "12341123" — no shape, no order, and

@@ -865,7 +865,7 @@ export async function saveAgreementAction(
     principalId,
     billingModel,
     mappings,
-    // The reference is NOT sent: the server allocates JW-YYYY-NNN on create,
+    // The reference is NOT sent: the server allocates JWA-YYYY-NNNN on create,
     // and it is fixed thereafter.
     ...(rate ? { conversionChargeRate: rate } : {}),
     ...(basis ? { conversionRateBasis: basis } : {}),

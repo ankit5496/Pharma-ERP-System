@@ -84,7 +84,7 @@ export class CreateJobWorkAgreementDto {
   @Type(() => JobWorkMappingDto)
   mappings!: JobWorkMappingDto[];
 
-  // NO `agreementReference`. It is allocated by the server as JW-YYYY-NNN when
+  // NO `agreementReference`. It is allocated by the server as JWA-YYYY-NNNN when
   // the agreement is created — see JobWorkService.nextReference — so accepting
   // one here would let a caller choose a number out of the series, or collide
   // with one the sequence is about to hand out.

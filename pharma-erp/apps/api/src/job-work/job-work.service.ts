@@ -14,6 +14,7 @@ import type {
   JobWorkMappingView,
 } from '@pharma-erp/types';
 
+import { NumberingService } from '../procurement/numbering.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
@@ -44,11 +45,21 @@ import type {
  * Everything goes through `prisma.scoped`, so row-level security applies to
  * reads as well as writes.
  */
+/**
+ * The document series agreement references are drawn from.
+ *
+ * 'JWA', not 'JW': 'JW' belongs to job-work ORDERS. Sharing it would print an
+ * agreement and an order with the same number from two different counters.
+ */
+const AGREEMENT_DOC_TYPE = 'JWA' as const;
+
 @Injectable()
 export class JobWorkService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
+    /** Allocates the JWA-YYYY-NNNN agreement reference. */
+    private readonly numbering: NumberingService,
   ) {}
 
   async list(): Promise<JobWorkAgreementSummary[]> {
@@ -105,7 +116,7 @@ export class JobWorkService {
             // nothing to quote on a document. Inside this transaction, so the
             // number and the agreement it belongs to land together or not at
             // all.
-            agreementReference: await this.nextReference(tx),
+            agreementReference: await this.numbering.next(tx, tenantId, AGREEMENT_DOC_TYPE),
             conversionChargeRate: dto.conversionChargeRate ?? null,
             conversionRateBasis: dto.conversionRateBasis ?? null,
             validFrom: dto.validFrom ? fromIsoDate(dto.validFrom) : null,
@@ -267,54 +278,32 @@ export class JobWorkService {
    * reference is not a collision with itself.
    */
   /**
-   * The next agreement reference, as JW-YYYY-NNN.
-   *
-   * One atomic upsert inside the caller's transaction, the same as batch,
-   * material-issue and purchase-document numbering. NOT a read-then-write: two
-   * agreements created in the same second would both read the same highest
-   * number and compute the same next one, and the unique index would then
-   * reject the loser with a failure nobody could act on.
-   *
-   * Counted per YEAR, because the number carries the year and the series
-   * restarts each January.
-   */
-  private async nextReference(tx: Prisma.TransactionClient): Promise<string> {
-    const tenantId = this.tenantContext.requireTenantId();
-    const year = new Date().getFullYear();
-
-    const sequence = await tx.documentSequence.upsert({
-      where: { tenantId_docType_year: { tenantId, docType: `JW-${year}`, year } },
-      create: { tenantId, docType: `JW-${year}`, year, nextValue: 2 },
-      update: { nextValue: { increment: 1 } },
-      select: { nextValue: true },
-    });
-
-    // `create` sets nextValue to 2 and this agreement takes 1; `update` returns
-    // the already-incremented value, so the number just used is one less.
-    return `JW-${year}-${String(sequence.nextValue - 1).padStart(3, '0')}`;
-  }
-
-  /**
    * The reference the next agreement would take, for the form to show before
    * anything is saved.
    *
-   * A PREDICTION, not a reservation: the real number is allocated inside the
-   * create transaction, so an agreement saved in between takes this one and the
-   * next moves on. Nothing is held, which is why this reads the sequence rather
-   * than incrementing it.
+   * A PREDICTION, not a reservation: the real number is allocated by
+   * NumberingService inside the create transaction, so an agreement saved in
+   * between takes this one and the next moves on. Nothing is held, which is why
+   * this reads the sequence rather than incrementing it.
+   *
+   * It reads the same (docType, year) row NumberingService writes. That is the
+   * whole reason this is worth a comment: the two were briefly out of step —
+   * the preview read a `JW-${year}` counter that allocation had stopped using —
+   * and a preview keyed differently from the allocator does not drift visibly,
+   * it just quietly shows the same first number forever.
    */
   async previewReference(): Promise<{ agreementReference: string }> {
     const tenantId = this.tenantContext.requireTenantId();
-    const year = new Date().getFullYear();
+    const year = new Date().getUTCFullYear();
 
     const sequence = await this.prisma.scoped.documentSequence.findUnique({
-      where: { tenantId_docType_year: { tenantId, docType: `JW-${year}`, year } },
+      where: { tenantId_docType_year: { tenantId, docType: AGREEMENT_DOC_TYPE, year } },
       select: { nextValue: true },
     });
 
     // No row yet means none has been raised this year, and the first takes 1.
     return {
-      agreementReference: `JW-${year}-${String(sequence?.nextValue ?? 1).padStart(3, '0')}`,
+      agreementReference: `${AGREEMENT_DOC_TYPE}-${year}-${String(sequence?.nextValue ?? 1).padStart(4, '0')}`,
     };
   }
 
