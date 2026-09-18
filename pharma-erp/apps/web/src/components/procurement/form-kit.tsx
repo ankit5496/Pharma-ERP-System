@@ -170,6 +170,7 @@ export function Field({
   htmlFor,
   hint,
   required,
+  error,
   children,
   className = '',
 }: {
@@ -177,6 +178,18 @@ export function Field({
   htmlFor: string;
   hint?: string;
   required?: boolean;
+  /**
+   * What is wrong with this field, shown IN PLACE OF the hint.
+   *
+   * In place of, not beside: once a field is wrong the correction is the only
+   * thing worth reading there, and stacking a second line under every control
+   * shifts the whole form down as errors appear and clear.
+   *
+   * Tied to the control with `aria-describedby` by the caller where it
+   * matters, and marked `role="alert"` so it is announced when it appears
+   * rather than sitting silently in the page.
+   */
+  error?: string;
   children: ReactNode;
   className?: string;
 }) {
@@ -187,7 +200,13 @@ export function Field({
         {required && <span className="ml-0.5 text-red-600">*</span>}
       </label>
       <div className="mt-1">{children}</div>
-      {hint && <p className="field-hint">{hint}</p>}
+      {error ? (
+        <p id={`${htmlFor}-error`} role="alert" className="mt-1 text-xs font-medium text-red-700">
+          {error}
+        </p>
+      ) : (
+        hint && <p className="field-hint">{hint}</p>
+      )}
     </div>
   );
 }

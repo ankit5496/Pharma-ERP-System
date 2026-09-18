@@ -1006,3 +1006,51 @@ export const PROCUREMENT_ROUTES = {
   payments: '/workflows/procure-to-pay/payments',
   productionPlans: '/workflows/procure-to-pay/requisitions?view=plans',
 } as const;
+
+// ---------------------------------------------------------------------------
+// Units of measure — stored code vs displayed unit
+// ---------------------------------------------------------------------------
+
+/**
+ * How each stored UOM code is written when a person reads it.
+ *
+ * THE STORED VALUE IS A CODE, NOT A UNIT. Items hold "KG"; a kilogram is
+ * written "kg". Printing the code raw put "Enter quantity in KG" on the
+ * purchase-order form, which is not how the unit is spelled — and the same
+ * would be true of "ML" for a millilitre.
+ *
+ * Note that this is NOT a lowercasing rule, which is why it is a table rather
+ * than a call to toLowerCase(): a litre is "L", a millilitre is "mL", and
+ * lowercasing either would be as wrong as leaving "KG" alone.
+ *
+ * Lives here rather than beside the master-data form because that module is
+ * 'use client' — every export of one becomes a client reference, so a server
+ * component importing this map would get a proxy instead of the object.
+ */
+export const UOM_LABELS: Record<string, string> = {
+  KG: 'kg',
+  G: 'g',
+  MG: 'mg',
+  L: 'L',
+  ML: 'mL',
+  NOS: 'nos',
+  TABLET: 'tablets',
+  CAPSULE: 'capsules',
+  VIAL: 'vials',
+  STRIP: 'strips',
+  BOTTLE: 'bottles',
+};
+
+/**
+ * The unit as it should be read, for any stored code.
+ *
+ * Falls back to the stored value untouched. Free-text units exist in the item
+ * master — the column is a VARCHAR, not an enum — and a unit somebody typed as
+ * "sachet" is already how they want to read it. Guessing at it would be worse
+ * than leaving it.
+ */
+export function formatUom(stored: string | null | undefined): string {
+  if (!stored) return '';
+
+  return UOM_LABELS[stored.trim().toUpperCase()] ?? stored;
+}

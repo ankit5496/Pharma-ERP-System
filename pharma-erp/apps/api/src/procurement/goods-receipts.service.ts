@@ -286,32 +286,40 @@ export class GoodsReceiptsService {
         );
       }
 
-      // Batch tracking is read from the item. It defaults true and no form
-      // exposes it, so in practice every material that arrives must be
-      // traceable to a vendor lot for recall and for inspection — which is
-      // what a pharmaceutical plant requires.
-      if (orderLine.item.requiresBatchTracking) {
-        if (!line.vendorBatchNumber?.trim()) {
-          throw new BadRequestException(
-            `${orderLine.item.code} is batch tracked: the vendor batch number is required.`,
-          );
-        }
+      // ALL FOUR OF THE RECEIVING FIELDS ARE MANDATORY, unconditionally: the
+      // quantity (checked by parsePositive above), the vendor batch number,
+      // the manufacturing date and the expiry.
+      //
+      // This used to be conditional on `orderLine.item.requiresBatchTracking`.
+      // That column defaults true and no form exposes it, so in practice the
+      // rule already applied to every line — but "in practice" is not a rule,
+      // and one item with the flag off would have admitted a receipt carrying
+      // no batch identity at all. In a plant that has to answer a recall, a
+      // lot with no vendor batch and no dates is stock that cannot be traced
+      // to what it came from.
+      //
+      // The browser checks the same four before sending, per line being
+      // received. This is the one that cannot be skipped.
+      if (!line.vendorBatchNumber?.trim()) {
+        throw new BadRequestException(
+          `${orderLine.item.code} requires a vendor batch number: Batch Number is required.`,
+        );
+      }
 
-        // US-PUR-03 makes all three mandatory. A batch number without the
-        // dates is only half an identity: recall works from the number, but
-        // shelf-life and FEFO both need the dates, and they cannot be
-        // reconstructed later from a delivery note nobody kept.
-        if (!line.manufacturingDate) {
-          throw new BadRequestException(
-            `${orderLine.item.code} is batch tracked: the manufacturing date is required.`,
-          );
-        }
+      // US-PUR-03 makes all three mandatory. A batch number without the
+      // dates is only half an identity: recall works from the number, but
+      // shelf-life and FEFO both need the dates, and they cannot be
+      // reconstructed later from a delivery note nobody kept.
+      if (!line.manufacturingDate) {
+        throw new BadRequestException(
+          `${orderLine.item.code} requires a manufacturing date: Manufacturing Date is required.`,
+        );
+      }
 
-        if (!line.expiryDate) {
-          throw new BadRequestException(
-            `${orderLine.item.code} is batch tracked: the expiry date is required.`,
-          );
-        }
+      if (!line.expiryDate) {
+        throw new BadRequestException(
+          `${orderLine.item.code} requires an expiry date: Expiry Date is required.`,
+        );
       }
 
       const manufacturingDate = line.manufacturingDate ? new Date(line.manufacturingDate) : null;

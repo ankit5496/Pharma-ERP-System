@@ -159,7 +159,11 @@ export function RowActionMenu({
           ref={menuRef}
           role="menu"
           style={{ top: anchor.top, right: anchor.right }}
-          className="fixed z-50 w-44 rounded-md border border-slate-200 bg-white p-1 text-left shadow-lg"
+          // Centred, matching the column it drops out of. A menu is more
+          // usually left-aligned, but this table convention centres the Actions
+          // column and a left-aligned list under a centred trigger reads as a
+          // misalignment rather than as a different kind of thing.
+          className="fixed z-50 w-44 rounded-md border border-slate-200 bg-white p-1 text-center shadow-lg"
         >
           {actions.map((action) => (
             <MenuItem key={action.label} action={action} onDone={() => setIsOpen(false)} />
@@ -173,8 +177,7 @@ export function RowActionMenu({
 function MenuItem({ action, onDone }: { action: RowAction; onDone: () => void }) {
   const disabled = Boolean(action.disabledReason);
 
-  const base =
-    'block w-full rounded px-2.5 py-2 text-left text-xs font-medium transition';
+  const base = 'block w-full rounded px-2.5 py-2 text-center text-xs font-medium transition';
 
   const enabled =
     action.tone === 'danger'
@@ -222,7 +225,14 @@ function MenuItem({ action, onDone }: { action: RowAction; onDone: () => void })
   );
 }
 
-/** Wraps children that must sit beside a menu without stretching the cell. */
+/**
+ * Wraps children that must sit beside a menu without stretching the cell.
+ *
+ * CENTRED, because the cell around it is. A flex container lays its children
+ * out by its own alignment properties and ignores `text-align` completely, so
+ * the table-wide centring has no effect in here — `justify-center` is what
+ * actually puts the control under the middle of its header.
+ */
 export function RowActionCell({ children }: { children: ReactNode }) {
-  return <div className="flex items-center justify-start gap-2">{children}</div>;
+  return <div className="flex items-center justify-center gap-2">{children}</div>;
 }

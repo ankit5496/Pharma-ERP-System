@@ -21,6 +21,8 @@ import {
   TableWrap,
   Td,
   Th,
+  Name,
+  Code,
 } from '@/components/procurement/ui';
 import { fetchItems, fetchQcQueue, fetchVendors, toListQuery, toOptions } from '@/lib/procurement';
 export const metadata: Metadata = { title: 'Incoming QC' };
@@ -100,11 +102,11 @@ export default async function IncomingQcPage({
                   >
                     <Td>
                       <p className="font-mono text-xs font-semibold text-slate-900">
-                        {row.lot.lotNumber}
+                        <Code>{row.lot.lotNumber}</Code>
                       </p>
                       {row.lot.vendorBatchNumber && (
                         <p className="mt-0.5 text-[11px] text-slate-500">
-                          vendor {row.lot.vendorBatchNumber}
+                          vendor <Code>{row.lot.vendorBatchNumber}</Code>
                         </p>
                       )}
                       {row.lot.storageLocation && (
@@ -112,21 +114,21 @@ export default async function IncomingQcPage({
                       )}
                     </Td>
                     <Td>
-                      <p className="font-medium text-slate-900">{row.item.name}</p>
-                      <p className="font-mono text-xs text-slate-500">{row.item.code}</p>
+                      <p className="font-medium text-slate-900"><Name>{row.item.name}</Name></p>
+                      <p className="font-mono text-xs text-slate-500"><Code>{row.item.code}</Code></p>
                     </Td>
                     <Td>
-                      <p className="text-xs text-slate-700">{row.vendor.name}</p>
+                      <p className="text-xs text-slate-700"><Name>{row.vendor.name}</Name></p>
                       <p className="mt-0.5 flex flex-wrap gap-2 text-[11px]">
                         <RecordLink
                           href={`${PROCUREMENT_ROUTES.goodsReceipts}?search=${row.goodsReceipt.number}`}
                         >
-                          {row.goodsReceipt.number}
+                          <Code>{row.goodsReceipt.number}</Code>
                         </RecordLink>
                         <RecordLink
                           href={`${PROCUREMENT_ROUTES.purchaseOrders}?search=${row.purchaseOrder.number}`}
                         >
-                          {row.purchaseOrder.number}
+                          <Code>{row.purchaseOrder.number}</Code>
                         </RecordLink>
                       </p>
                     </Td>

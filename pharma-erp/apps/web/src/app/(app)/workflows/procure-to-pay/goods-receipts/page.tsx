@@ -17,6 +17,8 @@ import {
   TableWrap,
   Td,
   Th,
+  Name,
+  Code,
 } from '@/components/procurement/ui';
 import {
   fetchGoodsReceipts,
@@ -138,7 +140,7 @@ export default async function GoodsReceiptsPage({
                     <tr key={receipt.id}>
                       <Td>
                         <span className="font-mono text-xs font-semibold text-slate-900">
-                          {receipt.number}
+                          <Code>{receipt.number}</Code>
                         </span>
                         {receipt.vendorDocumentNumber && (
                           <span
@@ -158,7 +160,7 @@ export default async function GoodsReceiptsPage({
                         <RecordLink
                           href={`${PROCUREMENT_ROUTES.purchaseOrders}?search=${receipt.purchaseOrder.number}`}
                         >
-                          <span className="font-mono text-xs">{receipt.purchaseOrder.number}</span>
+                          <span className="font-mono text-xs"><Code>{receipt.purchaseOrder.number}</Code></span>
                         </RecordLink>
                       </Td>
 
@@ -168,7 +170,7 @@ export default async function GoodsReceiptsPage({
                             would otherwise set the width of the whole
                             column. */}
                         <span className="block max-w-[12rem] truncate" title={receipt.vendor.name}>
-                          {receipt.vendor.name}
+                          <Name>{receipt.vendor.name}</Name>
                         </span>
                       </Td>
 
@@ -186,11 +188,11 @@ export default async function GoodsReceiptsPage({
                                 className="block max-w-[16rem] truncate text-xs font-medium text-slate-800"
                                 title={`${line.item.name} (${line.item.code})`}
                               >
-                                {line.item.name}
+                                <Name>{line.item.name}</Name>
                               </span>
                               <span className="block text-[11px] text-slate-500">
                                 {line.lot?.lotNumber ? (
-                                  <span className="font-mono">{line.lot.lotNumber}</span>
+                                  <span className="font-mono"><Code>{line.lot.lotNumber}</Code></span>
                                 ) : (
                                   <Blank />
                                 )}
@@ -243,7 +245,7 @@ export default async function GoodsReceiptsPage({
 
                       <Td>
                         {receipt.receivedBy ? (
-                          <span className="text-xs text-slate-600">{receipt.receivedBy}</span>
+                          <span className="text-xs text-slate-600"><Name>{receipt.receivedBy}</Name></span>
                         ) : (
                           <Blank />
                         )}
@@ -259,7 +261,7 @@ export default async function GoodsReceiptsPage({
                                 <RecordLink
                                   href={`${PROCUREMENT_ROUTES.invoices}?search=${invoice.number}`}
                                 >
-                                  <span className="font-mono text-xs">{invoice.number}</span>
+                                  <span className="font-mono text-xs"><Code>{invoice.number}</Code></span>
                                 </RecordLink>
                               </li>
                             ))}

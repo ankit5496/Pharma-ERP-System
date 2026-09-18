@@ -4,7 +4,7 @@ import { PAYMENT_STATUSES, PAYMENT_STATUS_LABELS, PROCUREMENT_ROUTES } from '@ph
 import { FilterButton, FilterPanel } from '@/components/procurement/filter-bar';
 import { Pagination } from '@/components/procurement/pagination';
 import { PayablesReportPanel } from '@/components/procurement/payables-report';
-import { EditPaymentButton } from '@/components/procurement/edit-dialogs';
+import { PayableActions } from '@/components/procurement/payable-actions';
 import { RecordPaymentForm } from '@/components/procurement/record-payment-form';
 import {
   DateText,
@@ -18,6 +18,8 @@ import {
   TableWrap,
   Td,
   Th,
+  Name,
+  Code,
 } from '@/components/procurement/ui';
 import {
   fetchPayables,
@@ -25,6 +27,7 @@ import {
   fetchVendors,
   toListQuery,
   toOptions,
+  fetchInvoices,
 } from '@/lib/procurement';
 
 export const metadata: Metadata = { title: 'Vendor payments' };
@@ -48,13 +51,24 @@ export default async function PaymentsPage({
 }) {
   const query = toListQuery(await searchParams);
 
-  const [payables, vendors, report] = await Promise.all([
+  const [payables, vendors, report, invoices] = await Promise.all([
     fetchPayables(query),
     fetchVendors(),
     // The report honours the vendor filter so the summary and the list below
     // always describe the same set of invoices.
     fetchPayablesReport(query.vendorId),
+    // The full invoices behind the payable rows, for the Edit action. A
+    // payable row carries what an ageing ledger needs and none of what the edit
+    // form needs — the lines, the tax split, the receipt it bills — so the
+    // record is fetched rather than reconstructed. Same filters, same page
+    // size, so the two lists describe the same invoices.
+    fetchInvoices(query),
   ]);
+
+  // Keyed by id so a row finds its invoice without scanning the list per row.
+  const invoiceById = new Map(
+    (invoices.ok ? invoices.data.rows : []).map((invoice) => [invoice.id, invoice]),
+  );
 
   const isFiltered = Object.values(query).some(Boolean);
 
@@ -103,6 +117,7 @@ export default async function PaymentsPage({
                     <Th>Status</Th>
                     <Th>Payments</Th>
                     <Th>Record payment</Th>
+                    <Th>Actions</Th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -113,7 +128,7 @@ export default async function PaymentsPage({
                     >
                       <Td>
                         <p className="font-mono text-xs font-semibold text-slate-900">
-                          {row.invoiceNumber}
+                          <Code>{row.invoiceNumber}</Code>
                         </p>
                         <p className="mt-0.5 text-[11px] text-slate-600">
                           vendor ref {row.vendorInvoiceNumber}
@@ -122,12 +137,12 @@ export default async function PaymentsPage({
                           <RecordLink
                             href={`${PROCUREMENT_ROUTES.purchaseOrders}?search=${row.purchaseOrder.number}`}
                           >
-                            {row.purchaseOrder.number}
+                            <Code>{row.purchaseOrder.number}</Code>
                           </RecordLink>
                         </p>
                       </Td>
 
-                      <Td>{row.vendor.name}</Td>
+                      <Td><Name>{row.vendor.name}</Name></Td>
 
                       <Td>
                         <p className="text-xs tabular-nums text-slate-700">
@@ -201,9 +216,6 @@ export default async function PaymentsPage({
                                     by {payment.recordedBy}
                                   </span>
                                 )}
-                                <span className="mt-1 block">
-                                  <EditPaymentButton payment={payment} />
-                                </span>
                               </li>
                             ))}
                           </ul>
@@ -216,6 +228,10 @@ export default async function PaymentsPage({
                         branch here would unmount it on the payment that
                         cleared the balance, losing the confirmation. */}
                         <RecordPaymentForm payable={row} />
+                      </Td>
+
+                      <Td>
+                        <PayableActions row={row} invoice={invoiceById.get(row.invoiceId)} />
                       </Td>
                     </tr>
                   ))}

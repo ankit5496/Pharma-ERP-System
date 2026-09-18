@@ -2,7 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef } from 'react';
-import type { PartySummary, RequisitionListItem } from '@pharma-erp/types';
+import { formatUom, type PartySummary, type RequisitionListItem } from '@pharma-erp/types';
 
 import { createPurchaseOrderAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
@@ -149,7 +149,7 @@ export function CreatePoDialog({
             label="Quantity"
             htmlFor="po-quantity"
             required
-            hint={`Requisition asked for ${requisition.requiredQuantity} ${requisition.item.uom}.`}
+            hint={`Requisition asked for ${requisition.requiredQuantity} ${formatUom(requisition.item.uom)}.`}
           >
             <input
               id="po-quantity"
@@ -224,15 +224,10 @@ export function CreatePoDialog({
           <input id="po-notes" name="notes" maxLength={1000} className="field-sm w-full" />
         </Field>
 
+        {/* Submits only. Cancel lives on the title line above — one control per
+            action, and the one that discards work is kept away from the two
+            that save it. */}
         <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 pt-4">
-          <button
-            type="button"
-            onClick={close}
-            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-          >
-            Cancel
-          </button>
-
           {/* Two submits on one form. `formAction` is not used — both post to
               the same action and the pressed button's own name/value tells the
               server which was chosen, which is what a plain form submission

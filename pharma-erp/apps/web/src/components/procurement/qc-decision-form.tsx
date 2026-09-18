@@ -58,6 +58,29 @@ export function QcDecisionForm({ lot }: { lot: QcQueueItem }) {
     );
   }
 
+  // ACCEPTED IS A DECIDED BATCH, so the queue stops offering to decide it. An
+  // accepted decision sets the lot USABLE, which is why this is not covered by
+  // the two branches above.
+  //
+  // The API is unchanged and still refuses a second acceptance on its own
+  // (`assertDecidable`), so this is the screen agreeing with the rule rather
+  // than being the rule.
+  //
+  // WORTH KNOWING: the API does still permit a USABLE lot to be REJECTED or put
+  // ON HOLD — that is the route for stock released this morning and found
+  // contaminated this afternoon. Hiding the control here closes the only way to
+  // reach it from this screen. If that route is wanted back, it belongs as its
+  // own action ("Quarantine released stock") rather than as a second pass at
+  // the incoming-QC decision, which is what this form is.
+  if (lot.lot.status === 'USABLE') {
+    return (
+      <div className="space-y-2">
+        <ActionMessage state={state} />
+        <span className="text-xs text-slate-400">Accepted — no decision outstanding</span>
+      </div>
+    );
+  }
+
   const needsReason = decision === 'REJECTED' || decision === 'ON_HOLD';
 
   return (
