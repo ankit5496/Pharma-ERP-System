@@ -5,7 +5,15 @@ import { formatUom, type PurchaseOrderListItem } from '@pharma-erp/types';
 
 import { createGoodsReceiptAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
-import { ActionMessage, Disclosure, Field, SubmitButton, useAction } from './form-kit';
+import {
+  ActionMessage,
+  Disclosure,
+  Field,
+  FormFooter,
+  SubmitButton,
+  useAction,
+} from './form-kit';
+import { SearchableSelect } from './searchable-select';
 import { noWheelChange } from '@/lib/number-input';
 
 /**
@@ -151,7 +159,7 @@ export function BookReceiptForm({
       defaultOpen={Boolean(preselectedOrderId)}
       width="46rem"
     >
-      {() => (
+      {(close) => (
         <form
           action={formAction}
           noValidate
@@ -195,22 +203,21 @@ export function BookReceiptForm({
 
           <div className="grid gap-3">
             <Field label="Purchase order" htmlFor="grn-order" required>
-              <select
+              <SearchableSelect
                 id="grn-order"
                 name="purchaseOrderId"
                 required
+                options={orders.map((candidate) => ({
+                  value: candidate.id,
+                  label: candidate.number,
+                  hint: `${candidate.vendor.name} — ${
+                    candidate.lines.filter((l) => l.quantityPending !== '0').length
+                  } line(s) pending`,
+                }))}
                 value={orderId}
-                onChange={(event) => setOrderId(event.target.value)}
-                className="field-sm w-full"
-              >
-                {orders.map((candidate) => (
-                  <option key={candidate.id} value={candidate.id}>
-                    {candidate.number} — {candidate.vendor.name} (
-                    {candidate.lines.filter((l) => l.quantityPending !== '0').length} line(s)
-                    pending)
-                  </option>
-                ))}
-              </select>
+                onChange={setOrderId}
+                emptyLabel="Choose an order"
+              />
             </Field>
           </div>
 
@@ -351,9 +358,9 @@ export function BookReceiptForm({
             </div>
           )}
 
-          <div className="flex justify-end">
+          <FormFooter onCancel={close}>
             <SubmitButton pendingLabel="Creating…">Create GRN</SubmitButton>
-          </div>
+          </FormFooter>
         </form>
       )}
     </Disclosure>

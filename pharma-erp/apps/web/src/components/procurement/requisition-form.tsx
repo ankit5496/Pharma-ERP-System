@@ -1,5 +1,7 @@
 'use client';
 
+import { useState } from 'react';
+
 import {
   PACKAGING_LEVELS,
   PACKAGING_LEVEL_LABELS,
@@ -9,7 +11,9 @@ import {
 
 import { createRequisitionAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
-import { ActionMessage, Disclosure, Field, SubmitButton, useAction } from './form-kit';
+import { SearchableSelect } from './searchable-select';
+
+import { ActionMessage, Disclosure, Field, FormFooter, SubmitButton, useAction } from './form-kit';
 
 /**
  * Create Purchase Requisition — the one place a requisition is raised by hand.
@@ -39,6 +43,25 @@ export function RequisitionForm({
 }) {
   const [state, formAction] = useAction(createRequisitionAction);
 
+  /**
+   * What each lookup currently holds.
+   *
+   * A searchable lookup is a controlled control — it posts through a hidden
+   * input — so the chosen id has to live somewhere. Seeded from the last
+   * attempt's values, so a rejected submit does not empty the boxes.
+   */
+  const [itemId, setItemId] = useState(state.values?.itemId ?? '');
+  const [planId, setPlanId] = useState('');
+  const [productId, setProductId] = useState('');
+  const [componentId, setComponentId] = useState('');
+
+  /** An item as a lookup row: the code is what people search by. */
+  const itemOption = (item: ItemSummary) => ({
+    value: item.id,
+    label: item.name,
+    hint: item.code,
+  });
+
   // Split by type rather than offering every item everywhere: a finished
   // product is what the material is FOR, a packaging component is part of the
   // pack, and letting either list offer an API is how wrong data gets entered
@@ -55,7 +78,7 @@ export function RequisitionForm({
       subtitle="Raised against master data that already exists. Nothing here creates an item or a plan."
       closeWhen={state.status === 'success'}
     >
-      {() => (
+      {(close) => (
         <form action={formAction} className="w-full space-y-4">
           <ActionMessage state={state} />
 
@@ -76,20 +99,15 @@ export function RequisitionForm({
 
           <Section title="What to buy">
             <Field label="Item" htmlFor="pr-item" required hint="From the item master.">
-              <select
+              <SearchableSelect
                 id="pr-item"
                 name="itemId"
                 required
-                defaultValue={state.values?.itemId ?? ''}
-                className="field-sm w-full"
-              >
-                <option value="">Choose an item</option>
-                {items.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.code} — {item.name}
-                  </option>
-                ))}
-              </select>
+                options={items.map(itemOption)}
+                value={itemId}
+                onChange={setItemId}
+                emptyLabel="Choose an item"
+              />
             </Field>
 
             <Field
@@ -137,20 +155,19 @@ export function RequisitionForm({
                   : 'Optional — the run this material is for.'
               }
             >
-              <select
+              <SearchableSelect
                 id="pr-plan"
                 name="productionPlanId"
-                defaultValue=""
+                options={plans.map((plan) => ({
+                  value: plan.id,
+                  label: plan.number,
+                  hint: plan.finishedProduct.name,
+                }))}
+                value={planId}
+                onChange={setPlanId}
+                emptyLabel="Not specified"
                 disabled={plans.length === 0}
-                className="field-sm w-full"
-              >
-                <option value="">Not specified</option>
-                {plans.map((plan) => (
-                  <option key={plan.id} value={plan.id}>
-                    {plan.number} — {plan.finishedProduct.name}
-                  </option>
-                ))}
-              </select>
+              />
             </Field>
 
             <Field
@@ -162,20 +179,15 @@ export function RequisitionForm({
                   : 'Optional — from the item master.'
               }
             >
-              <select
+              <SearchableSelect
                 id="pr-product"
                 name="finishedProductId"
-                defaultValue=""
+                options={finishedGoods.map(itemOption)}
+                value={productId}
+                onChange={setProductId}
+                emptyLabel="Not specified"
                 disabled={finishedGoods.length === 0}
-                className="field-sm w-full"
-              >
-                <option value="">Not specified</option>
-                {finishedGoods.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.code} — {item.name}
-                  </option>
-                ))}
-              </select>
+              />
             </Field>
 
             <Field label="Pack variant" htmlFor="pr-variant" hint="e.g. 10x10 blister.">
@@ -199,20 +211,15 @@ export function RequisitionForm({
                   : 'Optional — from the item master.'
               }
             >
-              <select
+              <SearchableSelect
                 id="pr-component"
                 name="packagingComponentId"
-                defaultValue=""
+                options={packagingItems.map(itemOption)}
+                value={componentId}
+                onChange={setComponentId}
+                emptyLabel="Not specified"
                 disabled={packagingItems.length === 0}
-                className="field-sm w-full"
-              >
-                <option value="">Not specified</option>
-                {packagingItems.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.code} — {item.name}
-                  </option>
-                ))}
-              </select>
+              />
             </Field>
 
             <Field label="Packaging level" htmlFor="pr-level">
@@ -270,7 +277,9 @@ export function RequisitionForm({
             />
           </Field>
 
-          <SubmitButton pendingLabel="Creating…">Create purchase requisition</SubmitButton>
+          <FormFooter onCancel={close}>
+            <SubmitButton pendingLabel="Creating…">Create purchase requisition</SubmitButton>
+          </FormFooter>
         </form>
       )}
     </Disclosure>

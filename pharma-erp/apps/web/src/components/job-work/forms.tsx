@@ -14,7 +14,14 @@ import {
 } from '@pharma-erp/types';
 import { useMemo, useState } from 'react';
 
-import { Disclosure, Field, SubmitButton, useAction } from '@/components/procurement/form-kit';
+import {
+  Disclosure,
+  Field,
+  FormFooter,
+  SubmitButton,
+  useAction,
+} from '@/components/procurement/form-kit';
+import { SearchableSelect } from '@/components/procurement/searchable-select';
 
 import {
   createJobWorkDispatchAction,
@@ -98,7 +105,7 @@ export function CreateJobWorkOrderButton({
       closeWhen={state.status === 'success'}
       width="44rem"
     >
-      {() => (
+      {(close) => (
         <form action={formAction} className="grid gap-4 sm:grid-cols-2">
           {principals.length === 0 ? (
             // CONTROL 1, stated where it can be acted on. An empty select with
@@ -110,46 +117,42 @@ export function CreateJobWorkOrderButton({
           ) : (
             <>
               <Field label="Principal" htmlFor="jw-principalId">
-                <select
+                <SearchableSelect
                   id="jw-principalId"
                   name="principalId"
                   required
-                  className="field h-10"
+                  options={principals.map((entry) => ({
+                    value: entry.principalId,
+                    label: entry.principalName,
+                    hint: entry.principalCode,
+                  }))}
                   value={principalId}
-                  onChange={(event) => {
-                    setPrincipalId(event.target.value);
+                  onChange={(next) => {
+                    setPrincipalId(next);
                     // The old product belongs to the old agreement.
                     setMappingId('');
                   }}
-                >
-                  <option value="">Choose a principal…</option>
-                  {principals.map((entry) => (
-                    <option key={entry.principalId} value={entry.principalId}>
-                      {entry.principalName} ({entry.principalCode})
-                    </option>
-                  ))}
-                </select>
+                  emptyLabel="Choose a principal…"
+                  className="field h-10"
+                />
               </Field>
 
               <Field label="Product and brand" htmlFor="jw-mappingId">
-                <select
+                <SearchableSelect
                   id="jw-mappingId"
                   name="mappingId"
                   required
                   disabled={!principal}
-                  className="field h-10"
+                  options={(principal?.products ?? []).map((product) => ({
+                    value: product.mappingId,
+                    label: product.principalBrandName,
+                    hint: `${product.productName} (${product.productCode})`,
+                  }))}
                   value={mappingId}
-                  onChange={(event) => setMappingId(event.target.value)}
-                >
-                  <option value="">
-                    {principal ? 'Choose a product…' : 'Choose a principal first'}
-                  </option>
-                  {principal?.products.map((product) => (
-                    <option key={product.mappingId} value={product.mappingId}>
-                      {product.principalBrandName} — {product.productName} ({product.productCode})
-                    </option>
-                  ))}
-                </select>
+                  onChange={setMappingId}
+                  emptyLabel={principal ? 'Choose a product…' : 'Choose a principal first'}
+                  className="field h-10"
+                />
               </Field>
 
               {principal && (
@@ -214,13 +217,19 @@ export function CreateJobWorkOrderButton({
                     </Field>
                   </div>
 
-                  <div className="sm:col-span-2 flex justify-end">
-                    <SubmitButton pendingLabel="Creating…">Create job-work order</SubmitButton>
-                  </div>
                 </>
               )}
             </>
           )}
+
+          {/* OUTSIDE the branch above: a form with nothing to fill in still
+              needs a way out that is not the X. Only the submit depends on
+              there being something to submit. */}
+          <FormFooter onCancel={close} className="sm:col-span-2">
+            {principals.length > 0 && (
+              <SubmitButton pendingLabel="Creating…">Create job-work order</SubmitButton>
+            )}
+          </FormFooter>
         </form>
       )}
     </Disclosure>
@@ -258,6 +267,11 @@ export function CreateJobWorkReceiptButton({
 }) {
   const [state, formAction] = useAction(createJobWorkReceiptAction);
 
+  // What the two lookups on this form hold. Nothing is preselected: the order
+  // and the material are both deliberate choices.
+  const [receiptOrderId, setReceiptOrderId] = useState('');
+  const [receiptItemId, setReceiptItemId] = useState('');
+
   return (
     <Disclosure
       label="Record material receipt"
@@ -266,7 +280,7 @@ export function CreateJobWorkReceiptButton({
       closeWhen={state.status === 'success'}
       width="46rem"
     >
-      {() => (
+      {(close) => (
         <form action={formAction} className="grid gap-4 sm:grid-cols-2">
           {orders.length === 0 ? (
             <div className="sm:col-span-2 space-y-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
@@ -304,15 +318,20 @@ export function CreateJobWorkReceiptButton({
           ) : (
             <>
               <Field label="Job-work order" htmlFor="jw-jobWorkOrderId">
-                <select id="jw-jobWorkOrderId"
-                  name="jobWorkOrderId" required className="field h-10">
-                  <option value="">Choose an order…</option>
-                  {orders.map((order) => (
-                    <option key={order.id} value={order.id}>
-                      {order.orderNumber} — {order.principalName} ({order.product.principalBrandName})
-                    </option>
-                  ))}
-                </select>
+                <SearchableSelect
+                  id="jw-jobWorkOrderId"
+                  name="jobWorkOrderId"
+                  required
+                  options={orders.map((order) => ({
+                    value: order.id,
+                    label: order.orderNumber,
+                    hint: `${order.principalName} (${order.product.principalBrandName})`,
+                  }))}
+                  value={receiptOrderId}
+                  onChange={setReceiptOrderId}
+                  emptyLabel="Choose an order…"
+                  className="field h-10"
+                />
               </Field>
 
               <Field
@@ -332,15 +351,20 @@ export function CreateJobWorkReceiptButton({
               </Field>
 
               <Field label="Material" htmlFor="jw-itemId">
-                <select id="jw-itemId"
-                  name="itemId" required className="field h-10">
-                  <option value="">Choose the material…</option>
-                  {items.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.code} — {item.name}
-                    </option>
-                  ))}
-                </select>
+                <SearchableSelect
+                  id="jw-itemId"
+                  name="itemId"
+                  required
+                  options={items.map((item) => ({
+                    value: item.id,
+                    label: item.name,
+                    hint: item.code,
+                  }))}
+                  value={receiptItemId}
+                  onChange={setReceiptItemId}
+                  emptyLabel="Choose the material…"
+                  className="field h-10"
+                />
               </Field>
 
               <Field label="Batch / lot number" htmlFor="jw-batchNumber">
@@ -384,11 +408,14 @@ export function CreateJobWorkReceiptButton({
                 </Field>
               </div>
 
-              <div className="sm:col-span-2 flex justify-end">
-                <SubmitButton pendingLabel="Recording…">Record receipt</SubmitButton>
-              </div>
             </>
           )}
+
+          <FormFooter onCancel={close} className="sm:col-span-2">
+            {orders.length > 0 && (
+              <SubmitButton pendingLabel="Recording…">Record receipt</SubmitButton>
+            )}
+          </FormFooter>
         </form>
       )}
     </Disclosure>
@@ -410,7 +437,7 @@ export function RaiseJobWorkProductionButton({ order }: { order: JobWorkOrderSum
       closeWhen={state.status === 'success'}
       width="40rem"
     >
-      {() => (
+      {(close) => (
         <form action={formAction} className="grid gap-4 sm:grid-cols-2">
           <input type="hidden" name="jobWorkOrderId" value={order.id} />
           <input type="hidden" name="productId" value={order.product.productId} />
@@ -450,9 +477,9 @@ export function RaiseJobWorkProductionButton({ order }: { order: JobWorkOrderSum
                   name="plannedStartOn" type="date" className="field h-10" />
           </Field>
 
-          <div className="sm:col-span-2 flex justify-end">
+          <FormFooter onCancel={close} className="sm:col-span-2">
             <SubmitButton pendingLabel="Raising…">Raise work order</SubmitButton>
-          </div>
+          </FormFooter>
         </form>
       )}
     </Disclosure>
@@ -481,6 +508,9 @@ export function CreateJobWorkDispatchButton({
 }) {
   const [state, formAction] = useAction(createJobWorkDispatchAction);
 
+  /** The released batch being dispatched. */
+  const [dispatchBatchId, setDispatchBatchId] = useState('');
+
   return (
     <Disclosure
       label="Dispatch & invoice"
@@ -489,7 +519,7 @@ export function CreateJobWorkDispatchButton({
       closeWhen={state.status === 'success'}
       width="44rem"
     >
-      {() => (
+      {(close) => (
         <form action={formAction} className="grid gap-4 sm:grid-cols-2">
           <input type="hidden" name="jobWorkOrderId" value={order.id} />
 
@@ -505,16 +535,20 @@ export function CreateJobWorkDispatchButton({
             <>
               <div className="sm:col-span-2">
                 <Field label="Batch" htmlFor="jw-batchId">
-                  <select id="jw-batchId"
-                  name="batchId" required className="field h-10">
-                    <option value="">Choose a released batch…</option>
-                    {batches.map((batch) => (
-                      <option key={batch.batchId} value={batch.batchId}>
-                        {batch.batchNumber} — {batch.quantityAvailable} available, expires{' '}
-                        {batch.expiryDate}
-                      </option>
-                    ))}
-                  </select>
+                  <SearchableSelect
+                    id="jw-batchId"
+                    name="batchId"
+                    required
+                    options={batches.map((batch) => ({
+                      value: batch.batchId,
+                      label: batch.batchNumber,
+                      hint: `${batch.quantityAvailable} available, expires ${batch.expiryDate}`,
+                    }))}
+                    value={dispatchBatchId}
+                    onChange={setDispatchBatchId}
+                    emptyLabel="Choose a released batch…"
+                    className="field h-10"
+                  />
                 </Field>
               </div>
 
@@ -577,11 +611,14 @@ export function CreateJobWorkDispatchButton({
                 </Field>
               </div>
 
-              <div className="sm:col-span-2 flex justify-end">
-                <SubmitButton pendingLabel="Dispatching…">Dispatch & raise invoice</SubmitButton>
-              </div>
             </>
           )}
+
+          <FormFooter onCancel={close} className="sm:col-span-2">
+            {batches.length > 0 && (
+              <SubmitButton pendingLabel="Dispatching…">Dispatch & raise invoice</SubmitButton>
+            )}
+          </FormFooter>
         </form>
       )}
     </Disclosure>

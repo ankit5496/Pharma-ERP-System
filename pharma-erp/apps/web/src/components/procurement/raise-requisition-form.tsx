@@ -4,7 +4,7 @@ import { type ItemSummary } from '@pharma-erp/types';
 
 import { createRequisitionAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
-import { ActionMessage, Disclosure, Field, SubmitButton, useAction } from './form-kit';
+import { ActionMessage, Disclosure, Field, FormFooter, SubmitButton, useAction } from './form-kit';
 import { Pill } from './ui';
 
 /**
@@ -54,7 +54,7 @@ export function RaiseRequisitionForm({
       title={`Requisition for ${item.name}`}
       closeWhen={state.status === 'success'}
     >
-      {() => (
+      {(close) => (
         <form action={formAction} className="space-y-3">
           <ActionMessage state={state} />
 
@@ -97,14 +97,14 @@ export function RaiseRequisitionForm({
             </Field>
           </div>
 
-          <div className="flex flex-wrap items-center gap-3">
-            <SubmitButton pendingLabel="Raising…">Submit for approval</SubmitButton>
+          <label className="flex items-center gap-2 text-xs text-slate-600">
+            <input type="checkbox" name="asDraft" className="rounded border-slate-300" />
+            Save as draft instead
+          </label>
 
-            <label className="flex items-center gap-2 text-xs text-slate-600">
-              <input type="checkbox" name="asDraft" className="rounded border-slate-300" />
-              Save as draft instead
-            </label>
-          </div>
+          <FormFooter onCancel={close}>
+            <SubmitButton pendingLabel="Raising…">Submit for approval</SubmitButton>
+          </FormFooter>
         </form>
       )}
     </Disclosure>

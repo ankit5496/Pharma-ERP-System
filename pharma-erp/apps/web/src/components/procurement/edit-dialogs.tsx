@@ -29,6 +29,7 @@ import {
   SubmitButton,
   useAction,
 } from './form-kit';
+import { SearchableSelect } from './searchable-select';
 import { formatAmount, lineAmounts, sumLineAmounts } from '@/lib/line-amounts';
 import { noWheelChange } from '@/lib/number-input';
 
@@ -109,7 +110,7 @@ export function EditRequisitionButton({
       onOpenChange={onOpenChange}
       width="34rem"
     >
-      {() => (
+      {(close) => (
         <form action={formAction} className="space-y-4">
           <ActionMessage state={state} />
 
@@ -163,9 +164,9 @@ export function EditRequisitionButton({
             />
           </Field>
 
-          <div className="flex justify-end">
+          <FormFooter onCancel={close}>
             <SubmitButton pendingLabel="Saving…">Save changes</SubmitButton>
-          </div>
+          </FormFooter>
         </form>
       )}
     </Disclosure>
@@ -283,6 +284,11 @@ export function EditPurchaseOrderButton({
 
   const typed = (field: string, stored: string | null) => state.values?.[field] ?? stored ?? '';
 
+  // The lookup posts through a hidden input, so the chosen vendor is held here.
+  // Seeded from the order, or from the last rejected attempt — EDITING MUST NOT
+  // LOSE THE VALUE THAT IS ALREADY ON THE RECORD.
+  const [vendorId, setVendorId] = useState(typed('vendorId', order.vendor.id));
+
   // Mirrors ALLOWED_TRANSITIONS in purchase-orders.service.ts. The server list
   // is the one that decides; this only decides what to draw.
   const blockedBecause = (status: PurchaseOrderStatus): string | null => {
@@ -315,7 +321,6 @@ export function EditPurchaseOrderButton({
       closeWhen={state.status === 'success'}
       isOpen={isOpen}
       onOpenChange={onOpenChange}
-      headerCancel={false}
       width="42rem"
     >
       {(close) => (
@@ -360,18 +365,19 @@ export function EditPurchaseOrderButton({
 
             {vendorEditable ? (
               <Field label="Vendor" htmlFor={`ov-${order.id}`}>
-                <select
+                <SearchableSelect
                   id={`ov-${order.id}`}
                   name="vendorId"
-                  defaultValue={typed('vendorId', order.vendor.id)}
+                  options={vendors.map((vendor) => ({
+                    value: vendor.id,
+                    label: vendor.name,
+                    hint: vendor.code,
+                  }))}
+                  value={vendorId}
+                  onChange={setVendorId}
+                  emptyLabel="Choose a vendor"
                   className="field"
-                >
-                  {vendors.map((vendor) => (
-                    <option key={vendor.id} value={vendor.id}>
-                      {vendor.name}
-                    </option>
-                  ))}
-                </select>
+                />
               </Field>
             ) : (
               <Field label="Vendor" htmlFor={`ov-${order.id}`}>
@@ -563,7 +569,36 @@ export function EditPurchaseOrderButton({
           ))}
 
           <FormFooter onCancel={close}>
-            <SubmitButton pendingLabel="Saving…">Save changes</SubmitButton>
+            {/* A DRAFT IS PLACED FROM HERE. The primary button creates the
+                actual purchase order out of this draft — it saves whatever
+                has been changed and then places it, against the same record,
+                so the requisition links on its lines are untouched and no
+                second order is made. Keeping it a draft is the other choice,
+                and it is the secondary button because placing is what a draft
+                is usually opened to do. */}
+            {isDraft ? (
+              <>
+                <SubmitButton
+                  variant="secondary"
+                  pendingLabel="Saving…"
+                  name="placeOrder"
+                  value="false"
+                >
+                  Save as draft
+                </SubmitButton>
+
+                <SubmitButton
+                  variant="primary"
+                  pendingLabel="Creating…"
+                  name="placeOrder"
+                  value="true"
+                >
+                  Create purchase order
+                </SubmitButton>
+              </>
+            ) : (
+              <SubmitButton pendingLabel="Saving…">Save changes</SubmitButton>
+            )}
           </FormFooter>
         </form>
       )}
@@ -590,7 +625,7 @@ export function EditGoodsReceiptButton({
       onOpenChange={onOpenChange}
       width="42rem"
     >
-      {() => (
+      {(close) => (
         <form action={formAction} className="space-y-5">
           <ActionMessage state={state} />
 
@@ -708,9 +743,9 @@ export function EditGoodsReceiptButton({
             </fieldset>
           ))}
 
-          <div className="flex justify-end">
+          <FormFooter onCancel={close}>
             <SubmitButton pendingLabel="Saving…">Save changes</SubmitButton>
-          </div>
+          </FormFooter>
         </form>
       )}
     </Disclosure>
@@ -740,7 +775,7 @@ export function EditInvoiceButton({
       onOpenChange={onOpenChange}
       width="34rem"
     >
-      {() => (
+      {(close) => (
         <form action={formAction} className="space-y-4">
           <ActionMessage state={state} />
 
@@ -819,9 +854,9 @@ export function EditInvoiceButton({
             />
           </Field>
 
-          <div className="flex justify-end">
+          <FormFooter onCancel={close}>
             <SubmitButton pendingLabel="Saving…">Save changes</SubmitButton>
-          </div>
+          </FormFooter>
         </form>
       )}
     </Disclosure>
@@ -847,7 +882,7 @@ export function EditPaymentButton({
       onOpenChange={onOpenChange}
       width="32rem"
     >
-      {() => (
+      {(close) => (
         <form action={formAction} className="space-y-4">
           <ActionMessage state={state} />
 
@@ -917,9 +952,9 @@ export function EditPaymentButton({
             />
           </Field>
 
-          <div className="flex justify-end">
+          <FormFooter onCancel={close}>
             <SubmitButton pendingLabel="Saving…">Save changes</SubmitButton>
-          </div>
+          </FormFooter>
         </form>
       )}
     </Disclosure>

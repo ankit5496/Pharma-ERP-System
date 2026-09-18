@@ -134,11 +134,17 @@ export function SearchableSelect({
         disabled={disabled}
         // Closed, it reads as the current selection; open, it is a search box.
         value={open ? query : (selected?.label ?? '')}
+        // Read-only while closed, so a click lands on the control rather than
+        // placing a caret in text that is a label, not an editable value. It
+        // becomes writable the moment the list opens.
+        readOnly={!open}
         // Open with a selection, the placeholder IS the selection: the box
         // is empty because it is waiting for a search term, not because the
         // choice was lost.
         placeholder={open ? (selected?.label ?? placeholder) : emptyLabel}
-        onFocus={openList}
+        // NOT onFocus. A dialog focuses its first control on open, and tabbing
+        // past a lookup focuses it too — neither is a request to see the list.
+        onClick={openList}
         onChange={(event) => {
           if (!open) openList();
           setQuery(event.target.value);

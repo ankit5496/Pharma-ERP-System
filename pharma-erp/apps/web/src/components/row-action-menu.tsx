@@ -50,14 +50,27 @@ export function RowActionMenu({
   actions,
   busy = false,
   busyLabel = 'Working…',
+  disabledReason = null,
 }: {
   /** Names the row for assistive technology: "Actions for PO-2026-0031". */
   label: string;
   actions: readonly RowAction[];
   busy?: boolean;
   busyLabel?: string;
+  /**
+   * Why NOTHING can be done to this record — closes the whole menu.
+   *
+   * Different from a per-entry `disabledReason`, which greys one action and
+   * leaves the rest. This is for a record that has reached the end of its life:
+   * opening a menu to be told four separate times that nothing applies is worse
+   * than a trigger that plainly cannot be opened.
+   */
+  disabledReason?: string | null;
 }) {
   const [isOpen, setIsOpen] = useState(false);
+
+  /** Closed for good, as opposed to merely busy. */
+  const locked = disabledReason !== null;
   const [anchor, setAnchor] = useState<{ top: number; right: number } | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -133,11 +146,15 @@ export function RowActionMenu({
         ref={buttonRef}
         type="button"
         onClick={toggle}
-        disabled={busy}
-        aria-expanded={isOpen}
-        aria-haspopup="menu"
+        disabled={busy || locked}
+        aria-expanded={locked ? undefined : isOpen}
+        aria-haspopup={locked ? undefined : 'menu'}
         aria-label={`Actions for ${label}`}
-        className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+        // The reason is the tooltip, so hovering the dead control answers the
+        // question it raises rather than leaving it hanging.
+        title={disabledReason ?? undefined}
+        aria-disabled={locked || undefined}
+        className="inline-flex items-center gap-1 whitespace-nowrap rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-100 disabled:text-slate-400 disabled:hover:bg-slate-100"
       >
         {busy ? busyLabel : 'Actions'}
         <svg

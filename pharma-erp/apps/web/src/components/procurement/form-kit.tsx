@@ -240,7 +240,7 @@ export function Disclosure({
   closeWhen = false,
   defaultOpen = false,
   width = '48rem',
-  headerCancel = true,
+  minHeight,
   isOpen,
   onOpenChange,
 }: {
@@ -254,13 +254,14 @@ export function Disclosure({
   defaultOpen?: boolean;
   width?: string;
   /**
-   * Whether the title line carries its own Cancel.
+   * A floor under the dialog's height, e.g. '32rem'.
    *
-   * Set false by a form that ends in a <FormFooter>, which puts Cancel next to
-   * the button that saves. Offering both would be two controls for one action,
-   * in two different places, on the same dialog.
+   * For a form that is cramped at its natural height — where the fields are
+   * packed together and a lookup's list has nowhere to drop. It is a MINIMUM,
+   * not a fixed height, so a form with more in it still grows, and it is capped
+   * by the same 85vh as everything else so a short screen is never overflowed.
    */
-  headerCancel?: boolean;
+  minHeight?: string;
   /**
    * CONTROLLED MODE, for a dialog opened from a row's Actions menu.
    *
@@ -348,25 +349,22 @@ export function Disclosure({
              table's own. Pinning overflow-x to hidden leaves exactly one
              vertical scrollbar here, and lets wide content scroll in its own
              box where the header stays above the right columns. */
-          <div className="max-h-[85vh] overflow-y-auto overflow-x-hidden p-5">
+          <div
+            className="flex max-h-[85vh] flex-col overflow-y-auto overflow-x-hidden p-5"
+            style={minHeight ? { minHeight: `min(${minHeight}, 85vh)` } : undefined}
+          >
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
                 <h3 className="text-base font-semibold text-slate-900">{openLabel ?? title}</h3>
                 {subtitle && <p className="mt-0.5 text-sm text-slate-600">{subtitle}</p>}
               </div>
 
-              {headerCancel && (
-                <button
-                  type="button"
-                  onClick={close}
-                  className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
-                >
-                  Cancel
-                </button>
-              )}
+              <DialogCloseButton onClose={close} />
             </div>
 
-            {children(close)}
+            {/* grow, so a form given a minimum height spreads into it rather
+                than leaving a band of nothing under the last field. */}
+            <div className="flex grow flex-col">{children(close)}</div>
           </div>
         )}
       </dialog>
@@ -437,21 +435,74 @@ export function useAction(action: (state: ActionState, form: FormData) => Promis
 }
 
 /**
- * The bottom of a form: Cancel, then the button that saves.
+ * The X on a dialog's title line.
  *
- * LEFT-ALIGNED, AND BOTH AT THE BOTTOM. Cancel used to sit on the title line,
- * diagonally opposite the control it is the alternative to — so deciding
- * between them meant looking in two places, and the button that discards work
- * was the one nearest the top of the dialog.
+ * CHROME, NOT AN ACTION. It is how a window is put away, which is why it is an
+ * icon in the corner rather than a labelled button competing with the Cancel at
+ * the bottom for the same decision. Same behaviour as Cancel and as Escape —
+ * close, write nothing.
  *
- * CANCEL FIRST, and it is a plain button rather than a submit: it must never
- * post the form it closes. It is rendered before the children so that reading
- * order and tab order both reach it before the destructive-to-undo save,
- * matching the visual order rather than fighting it.
+ * Defined once and used by every dialog, including the ones that are hand-rolled
+ * <dialog> elements rather than <Disclosure>s.
  */
-export function FormFooter({ onCancel, children }: { onCancel: () => void; children: ReactNode }) {
+export function DialogCloseButton({ onClose }: { onClose: () => void }) {
   return (
-    <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 pt-4">
+    <button
+      type="button"
+      onClick={onClose}
+      aria-label="Close"
+      title="Close"
+      className="-mr-1 -mt-1 shrink-0 rounded-md p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+    >
+      {/* Inline rather than from an icon package: this is the only icon these
+          screens use, and a dependency for one glyph is not worth its weight. */}
+      <svg
+        viewBox="0 0 20 20"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        aria-hidden="true"
+        className="h-4 w-4"
+      >
+        <path d="M5 5l10 10M15 5L5 15" />
+      </svg>
+    </button>
+  );
+}
+
+/**
+ * The bottom of a form: Cancel on the left, the button that saves on the right.
+ *
+ * PUSHED APART, not sat side by side. These are the two opposite answers to the
+ * same question, and putting them a few pixels from one another makes the
+ * destructive one a slip of the mouse away from the constructive one.
+ *
+ * CANCEL IS A PLAIN BUTTON, never a submit: it must not post the form it
+ * closes. It is rendered first so reading order and tab order match the visual
+ * order rather than fighting it.
+ *
+ * `mt-auto` is what keeps it at the BOTTOM of a form given a minimum height,
+ * rather than floating under the last field with empty space beneath.
+ */
+export function FormFooter({
+  onCancel,
+  children,
+  className = '',
+}: {
+  onCancel: () => void;
+  children: ReactNode;
+  /**
+   * For a form that lays out as a grid, where the footer has to span it.
+   * Without this a two-column form puts the footer in one CELL, and the save
+   * button ends up in the middle of the form rather than at its right edge.
+   */
+  className?: string;
+}) {
+  return (
+    <div
+      className={`mt-auto flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 pt-4 ${className}`}
+    >
       <button
         type="button"
         onClick={onCancel}
@@ -462,7 +513,9 @@ export function FormFooter({ onCancel, children }: { onCancel: () => void; child
         Cancel
       </button>
 
-      {children}
+      {/* Grouped, so a form with two save buttons keeps them together on the
+          right instead of spreading them across the footer. */}
+      <div className="flex flex-wrap items-center gap-2">{children}</div>
     </div>
   );
 }

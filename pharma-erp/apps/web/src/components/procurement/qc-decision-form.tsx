@@ -5,7 +5,7 @@ import type { QcQueueItem } from '@pharma-erp/types';
 
 import { recordQcDecisionAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
-import { ActionMessage, Disclosure, Field, SubmitButton, useAction } from './form-kit';
+import { ActionMessage, Disclosure, Field, FormFooter, SubmitButton, useAction } from './form-kit';
 
 /**
  * Records the incoming-QC decision on one batch.
@@ -91,7 +91,7 @@ export function QcDecisionForm({ lot }: { lot: QcQueueItem }) {
       closeWhen={state.status === 'success'}
       width="32rem"
     >
-      {() => (
+      {(close) => (
         <form action={formAction} className="space-y-4">
           <ActionMessage state={state} />
 
@@ -169,11 +169,11 @@ export function QcDecisionForm({ lot }: { lot: QcQueueItem }) {
             />
           </Field>
 
-          <div className="flex justify-end">
+          <FormFooter onCancel={close}>
             <SubmitButton variant={needsReason ? 'danger' : 'primary'} pendingLabel="Recording…">
               Record decision
             </SubmitButton>
-          </div>
+          </FormFooter>
         </form>
       )}
     </Disclosure>
