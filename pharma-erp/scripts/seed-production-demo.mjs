@@ -404,7 +404,6 @@ try {
         manufacturingDate: monthsFromNow(-2),
         expiryDate: monthsFromNow(lot.months),
         quantityReceived: lot.qty,
-        storageLocation: 'Raw material store, rack A',
       },
       update: {
         expiryDate: monthsFromNow(lot.months),
@@ -426,7 +425,6 @@ try {
         quantityReceived: lot.qty,
         quantityAvailable: lot.qty,
         status: lot.status,
-        storageLocation: 'Raw material store, rack A',
       },
       update: {
         expiryDate: monthsFromNow(lot.months),

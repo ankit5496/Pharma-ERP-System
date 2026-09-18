@@ -237,11 +237,8 @@ function StockByItem({ position }: { position: ItemStockPosition }) {
                 <th scope="col" className="py-2 pr-4 text-right font-medium">
                   Available
                 </th>
-                <th scope="col" className="py-2 pr-4 text-right font-medium">
+                <th scope="col" className="py-2 text-right font-medium">
                   Received
-                </th>
-                <th scope="col" className="py-2 font-medium">
-                  Location
                 </th>
               </tr>
             </thead>
@@ -274,10 +271,9 @@ function StockByItem({ position }: { position: ItemStockPosition }) {
                   <td className="py-2 pr-4 text-right font-semibold tabular-nums text-slate-900">
                     {lot.quantityAvailable} {item.uom}
                   </td>
-                  <td className="py-2 pr-4 text-right tabular-nums text-slate-500">
+                  <td className="py-2 text-right tabular-nums text-slate-500">
                     {lot.quantityReceived} {item.uom}
                   </td>
-                  <td className="py-2 text-slate-600">{lot.storageLocation ?? <Blank />}</td>
                 </tr>
               ))}
             </tbody>

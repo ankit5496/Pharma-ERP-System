@@ -4,7 +4,6 @@ import {
   PROCUREMENT_ROUTES,
   REQUISITION_STATUSES,
   REQUISITION_STATUS_LABELS,
-  type PartySummary,
   type RequisitionListItem,
   type RequisitionStatus,
 } from '@pharma-erp/types';
@@ -199,13 +198,7 @@ const NOT_EDITABLE: Record<RequisitionStatus, string> = {
  * screen's job is requisitions. The status becomes Converted as a consequence
  * of that order being placed, which is why it is never selectable above.
  */
-export function RequisitionActions({
-  requisition,
-  vendors,
-}: {
-  requisition: RequisitionListItem;
-  vendors: readonly PartySummary[];
-}) {
+export function RequisitionActions({ requisition }: { requisition: RequisitionListItem }) {
   const [editing, setEditing] = useState(false);
 
   // The API accepts an edit only while the requisition is Open. Past that it
@@ -245,7 +238,6 @@ export function RequisitionActions({
       {/* No trigger of its own: the menu entry above opens it. */}
       <EditRequisitionButton
         requisition={requisition}
-        vendors={vendors}
         isOpen={editing}
         onOpenChange={setEditing}
       />

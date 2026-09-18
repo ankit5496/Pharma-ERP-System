@@ -36,11 +36,18 @@ export const BILLING_MODEL_DESCRIPTIONS: Record<BillingModel, string> = {
 };
 
 /** What a conversion charge is charged per. */
-export const CONVERSION_RATE_BASES = ['PER_BATCH', 'PER_1000_UNITS', 'PER_PACK', 'PER_KG'] as const;
+export const CONVERSION_RATE_BASES = [
+  'PER_BATCH',
+  'PER_UNIT',
+  'PER_1000_UNITS',
+  'PER_PACK',
+  'PER_KG',
+] as const;
 export type ConversionRateBasis = (typeof CONVERSION_RATE_BASES)[number];
 
 export const CONVERSION_RATE_BASIS_LABELS: Record<ConversionRateBasis, string> = {
   PER_BATCH: 'per batch',
+  PER_UNIT: 'per unit',
   PER_1000_UNITS: 'per 1,000 units',
   PER_PACK: 'per pack',
   PER_KG: 'per kg',

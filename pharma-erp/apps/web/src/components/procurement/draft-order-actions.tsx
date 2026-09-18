@@ -1,7 +1,7 @@
 'use client';
 
-import type { PurchaseOrderListItem } from '@pharma-erp/types';
-import { useState } from 'react';
+import type { PartySummary, PurchaseOrderListItem } from '@pharma-erp/types';
+import { startTransition, useState } from 'react';
 
 import {
   discardDraftPurchaseOrderAction,
@@ -30,16 +30,38 @@ import { ActionMessage, useAction } from './form-kit';
  *  - DISCARD asks first. It is soft in the database, but it is a one-way door
  *    from this screen, so it should be treated as one.
  */
-export function DraftOrderActions({ order }: { order: PurchaseOrderListItem }) {
-  const [submitState, submitAction] = useAction(submitDraftPurchaseOrderAction);
-  const [discardState, discardAction] = useAction(discardDraftPurchaseOrderAction);
+export function DraftOrderActions({
+  order,
+  vendors = [],
+}: {
+  order: PurchaseOrderListItem;
+  /** Offered on the edit form: an unplaced draft may still change vendor. */
+  vendors?: readonly PartySummary[];
+}) {
+  const [submitState, submitAction, submitting] = useAction(submitDraftPurchaseOrderAction);
+  const [discardState, discardAction, discarding] = useAction(discardDraftPurchaseOrderAction);
   const [editing, setEditing] = useState(false);
 
+  /**
+   * Dispatches one of the actions with just the order id.
+   *
+   * INSIDE startTransition, which is not optional. A `useActionState` dispatch
+   * called outside one never flips the pending state, so `isPending` stays
+   * false: the row shows nothing while the request is in flight, and
+   * `useAction` — which raises its toast on the pending edge — announces the
+   * result at the wrong moment or not at all. The request itself still goes,
+   * which is exactly why the bug reads as "it works but feels broken".
+   *
+   * Everywhere else in the app the action is handed to a <form action={...}>,
+   * and React wraps that in a transition itself. These menu entries have no
+   * form, so they have to say it.
+   */
   function run(action: (form: FormData) => void) {
     const form = new FormData();
 
     form.set('id', order.id);
-    action(form);
+
+    startTransition(() => action(form));
   }
 
   const actions: RowAction[] = [
@@ -68,14 +90,19 @@ export function DraftOrderActions({ order }: { order: PurchaseOrderListItem }) {
   ];
 
   return (
-    <div className="flex flex-col items-start gap-1.5">
+    <div className="flex flex-col items-center gap-1.5">
       <ActionMessage state={submitState} />
       <ActionMessage state={discardState} />
 
-      <RowActionMenu label={order.number} actions={actions} />
+      <RowActionMenu label={order.number} actions={actions} busy={submitting || discarding} />
 
       {/* No trigger of its own: the menu entry above opens it. */}
-      <EditPurchaseOrderButton order={order} isOpen={editing} onOpenChange={setEditing} />
+      <EditPurchaseOrderButton
+        order={order}
+        vendors={vendors}
+        isOpen={editing}
+        onOpenChange={setEditing}
+      />
     </div>
   );
 }

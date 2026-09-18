@@ -14,6 +14,9 @@
 // ./procurement, which is where the shared item master lives. Imported here
 // rather than redeclared: two definitions of one table is what produced the
 // merge this comment is being written during.
+import type { BillingModel } from './job-work';
+import type { StockOwnership } from './job-work-execution';
+
 import type { ItemSummary, ItemType, ScheduleClassification, StockLotStatus } from './procurement';
 
 /**
@@ -36,7 +39,20 @@ export const PRODUCTION_ORDER_STATUSES = [
 
 export type ProductionOrderStatus = (typeof PRODUCTION_ORDER_STATUSES)[number];
 
-export const BATCH_RELEASE_STATUSES = ['PENDING', 'RELEASED', 'BLOCKED'] as const;
+export const BATCH_RELEASE_STATUSES = [
+  'PENDING',
+  'RELEASED',
+  'ON_HOLD',
+  'REJECTED',
+  'BLOCKED',
+] as const;
+
+/**
+ * The three a quality officer may choose. BLOCKED is readable but not offered:
+ * it is what the two outcomes below were called before they were separated.
+ */
+export const BATCH_RELEASE_DECISIONS = ['RELEASED', 'ON_HOLD', 'REJECTED'] as const;
+export type BatchReleaseDecision = (typeof BATCH_RELEASE_DECISIONS)[number];
 
 export type BatchReleaseStatus = (typeof BATCH_RELEASE_STATUSES)[number];
 
@@ -76,7 +92,16 @@ export const PRODUCTION_ORDER_STATUS_LABELS: Record<ProductionOrderStatus, strin
 export const BATCH_RELEASE_STATUS_LABELS: Record<BatchReleaseStatus, string> = {
   PENDING: 'Pending',
   RELEASED: 'Released',
+  ON_HOLD: 'On hold',
+  REJECTED: 'Rejected',
   BLOCKED: 'Blocked',
+};
+
+/** What each decision means, for the form where the choice is made. */
+export const BATCH_RELEASE_DECISION_DESCRIPTIONS: Record<BatchReleaseDecision, string> = {
+  RELEASED: 'Conforms. The batch may be dispatched.',
+  ON_HOLD: 'Held pending further testing. It may still be released later.',
+  REJECTED: 'Refused. The batch cannot be dispatched, and this is final.',
 };
 
 // ---------------------------------------------------------------------------
@@ -163,6 +188,25 @@ export interface ProductionStockLot {
   quantityAvailable: string;
   quantityReceived: string;
   item: ItemSummary;
+  /**
+   * Which bucket this lot belongs to — the company's own stock, or a job-work
+   * principal's.
+   *
+   * SHOWN, NOT JUST STORED. Production consumes from one bucket or the other
+   * depending on the job-work agreement's billing model, and the rule is
+   * enforced server-side; but a storeman looking at two lots of the same
+   * lactose still has to be able to see which of them is the principal's.
+   */
+  ownership: StockOwnership;
+  /**
+   * Whose material it is, when it is not ours. Null for company-owned stock.
+   *
+   * The ownership flag answers "which bucket"; with more than one principal on
+   * the floor, this answers the question actually being asked.
+   */
+  principalName: string | null;
+  /** The principal's own batch identity, as it arrived on their challan. */
+  vendorBatchNumber: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -228,12 +272,54 @@ export interface ProductionOrderSummary {
   batchNumber: string | null;
   batchId: string | null;
   releaseStatus: BatchReleaseStatus | null;
+  /**
+   * The job-work order this was raised against, when it is contract
+   * manufacturing rather than our own.
+   *
+   * CARRIED ON THE VIEW BECAUSE IT CHANGES WHAT THE ORDER MEANS. The stock it
+   * may consume, whose the finished goods are, and what the principal is billed
+   * for all follow from it, and the rules are already enforced server-side —
+   * but a work-order list that cannot show which orders are job work makes the
+   * distinction invisible at exactly the point someone is deciding what to
+   * issue against it.
+   *
+   * Null for the company's own production, which is most of it.
+   */
+  jobWork: ProductionOrderJobWorkTag | null;
+}
+
+/** Who a job-work production order belongs to, and on what terms. */
+export interface ProductionOrderJobWorkTag {
+  jobWorkOrderId: string;
+  /** JW-YYYY-NNNN, the principal's instruction this batch answers. */
+  orderNumber: string;
+  principalId: string;
+  principalName: string;
+  agreementId: string;
+  /** JWA-YYYY-NNNN. */
+  agreementReference: string | null;
+  /**
+   * AUTO-INHERITED from the agreement and pinned on the order. It decides which
+   * stock bucket the issue may draw from, and it is never a user's choice.
+   */
+  billingModel: BillingModel;
+  /** The brand the principal sells this under. */
+  principalBrandName: string;
 }
 
 export interface CreateProductionOrderRequest {
   productId: string;
   plannedQuantity: string;
   plannedStartOn?: string;
+  /**
+   * Raises this order against a principal's job-work order.
+   *
+   * What it sets is not negotiable afterwards: the billing model is copied from
+   * the agreement, and the stock bucket the issue may draw from follows from
+   * that. There is no field here for either — naming them would imply they
+   * could be chosen.
+   */
+  jobWorkOrderId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -451,8 +537,11 @@ export interface RecordPackingRequest {
  * reversing a quality decision is a deviation, handled as one, not a button.
  */
 export interface ReleaseDecisionRequest {
-  decision: Extract<BatchReleaseStatus, 'RELEASED' | 'BLOCKED'>;
-  /** Required when blocking. A rejected batch with no recorded reason is what an inspector asks about. */
+  decision: BatchReleaseDecision;
+  /**
+   * Required for anything but a release. A batch that did not pass, with no
+   * recorded reason, is what an inspector asks about first.
+   */
   notes?: string;
 }
 

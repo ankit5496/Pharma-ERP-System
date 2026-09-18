@@ -5,7 +5,8 @@ import { type PurchaseOrderListItem } from '@pharma-erp/types';
 
 import { createInvoiceAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
-import { ActionMessage, Disclosure, Field, SubmitButton, useAction } from './form-kit';
+import { ActionMessage, Disclosure, Field, FormFooter, SubmitButton, useAction } from './form-kit';
+import { SearchableSelect } from './searchable-select';
 
 /**
  * Records a vendor invoice against a received purchase order.
@@ -23,39 +24,63 @@ import { ActionMessage, Disclosure, Field, SubmitButton, useAction } from './for
  */
 export function RecordInvoiceForm({ orders }: { orders: readonly PurchaseOrderListItem[] }) {
   const [state, formAction] = useAction(createInvoiceAction);
-  const [orderId, setOrderId] = useState(orders[0]?.id ?? '');
+  /**
+   * NOTHING IS PRESELECTED. The first invoiceable order is not a guess worth
+   * making: it is whichever happens to sort first, and an invoice booked
+   * against it because nobody noticed the box was already filled is a
+   * three-way match against the wrong order.
+   */
+  const [orderId, setOrderId] = useState('');
+  const [receiptId, setReceiptId] = useState('');
 
-  const order = orders.find((candidate) => candidate.id === orderId) ?? orders[0];
+  /** Choosing a different order drops the receipt chosen under the old one. */
+  const chooseOrder = (next: string) => {
+    setOrderId(next);
+    setReceiptId('');
+  };
+
+  const order = orders.find((candidate) => candidate.id === orderId) ?? null;
   const lines = order?.lines ?? [];
+
+  const orderOptions = orders.map((candidate) => ({
+    value: candidate.id,
+    label: candidate.number,
+    hint: candidate.vendor.name,
+  }));
+
+  const receiptOptions = (order?.goodsReceipts ?? []).map((grn) => ({
+    value: grn.id,
+    label: grn.number,
+    hint: grn.receiptDate.slice(0, 10),
+  }));
 
   return (
     <Disclosure
-      label="Record vendor invoice"
-      title="Record a vendor invoice"
+      label="Create Purchase Invoice"
+      title="Create purchase invoice"
       closeWhen={state.status === 'success'}
+      headerCancel={false}
       width="60rem"
     >
-      {() => (
+      {(close) => (
         <form action={formAction} className="space-y-4">
           <ActionMessage state={state} />
 
           <div className="grid gap-3 sm:grid-cols-4">
             {/* Not posted — the API derives the order from the receipt. This is
             a filter for the receipt list below it. */}
-            <Field label="Purchase order" htmlFor="inv-order" className="sm:col-span-2">
-              <select
+            <Field
+              label="Purchase order"
+              htmlFor="inv-order"
+              className="sm:col-span-2"
+              hint="Type an order number or a vendor name to find it."
+            >
+              <SearchableSelect
                 id="inv-order"
-                required
+                options={orderOptions}
                 value={orderId}
-                onChange={(event) => setOrderId(event.target.value)}
-                className="field-sm w-full"
-              >
-                {orders.map((candidate) => (
-                  <option key={candidate.id} value={candidate.id}>
-                    {candidate.number} — {candidate.vendor.name}
-                  </option>
-                ))}
-              </select>
+                onChange={chooseOrder}
+              />
             </Field>
 
             <Field
@@ -66,25 +91,22 @@ export function RecordInvoiceForm({ orders }: { orders: readonly PurchaseOrderLi
               // select below is empty, which is a fact about this order rather than
               // a description of the rules.
               hint={
-                order?.goodsReceipts.length === 0
-                  ? 'No receipts on this order yet — nothing to invoice.'
-                  : undefined
+                !order
+                  ? 'Choose a purchase order first.'
+                  : order.goodsReceipts.length === 0
+                    ? 'No receipts on this order yet — nothing to invoice.'
+                    : 'Type a GRN number or a date to find it.'
               }
             >
-              <select
+              <SearchableSelect
                 id="inv-grn"
                 name="goodsReceiptId"
+                options={receiptOptions}
+                value={receiptId}
+                onChange={setReceiptId}
                 required
-                className="field-sm w-full"
-                defaultValue=""
-              >
-                <option value="">Choose a receipt</option>
-                {order?.goodsReceipts.map((grn) => (
-                  <option key={grn.id} value={grn.id}>
-                    {grn.number} ({grn.receiptDate.slice(0, 10)})
-                  </option>
-                ))}
-              </select>
+                disabled={!order}
+              />
             </Field>
 
             <Field label="Vendor invoice no." htmlFor="inv-number" required>
@@ -114,7 +136,12 @@ export function RecordInvoiceForm({ orders }: { orders: readonly PurchaseOrderLi
             </Field>
           </div>
 
-          {lines.length === 0 ? (
+          {!order ? (
+            <p className="text-sm text-slate-600">
+              Choose a purchase order to bill against — its lines appear here, pre-filled at the
+              quantity actually received.
+            </p>
+          ) : lines.length === 0 ? (
             <p className="text-sm text-slate-600">This order has no lines.</p>
           ) : (
             <div className="overflow-x-auto rounded-md border border-slate-200">
@@ -206,9 +233,9 @@ export function RecordInvoiceForm({ orders }: { orders: readonly PurchaseOrderLi
             </div>
           )}
 
-          <div className="flex justify-end">
-            <SubmitButton pendingLabel="Recording…">Record invoice</SubmitButton>
-          </div>
+          <FormFooter onCancel={close}>
+            <SubmitButton pendingLabel="Saving…">Save</SubmitButton>
+          </FormFooter>
         </form>
       )}
     </Disclosure>

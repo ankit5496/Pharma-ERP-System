@@ -118,7 +118,8 @@ export default async function InvoicesPage({
         <FilterPanel
           statuses={statusOptions}
           vendors={vendors.ok ? toOptions(vendors.data) : []}
-          searchPlaceholder="Search by invoice number, vendor, PO or GRN…"
+          searchableLookups
+          searchPlaceholder="Search invoice no., vendor invoice no., vendor, PO, GRN or item…"
         />
 
         {!invoices.ok ? (

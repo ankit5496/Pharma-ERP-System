@@ -2,6 +2,7 @@
 
 import { useCallback } from 'react';
 import type { ProductionOrderSummary } from '@pharma-erp/types';
+import { BILLING_MODEL_LABELS } from '@pharma-erp/types';
 import { PRODUCTION_ORDER_STATUS_LABELS, PRODUCTION_ORDER_STATUSES } from '@pharma-erp/types';
 
 import { OrderStatusBadge, Quantity, ReleaseBadge } from './shared';
@@ -19,6 +20,11 @@ export function OrderTable({ orders }: { orders: ProductionOrderSummary[] }) {
         order.product.name,
         order.batchNumber,
         order.createdBy,
+        // A job-work order is looked for by the principal's name and by their
+        // own order number, neither of which is ours.
+        order.jobWork?.principalName,
+        order.jobWork?.orderNumber,
+        order.jobWork?.principalBrandName,
       ]
         .filter(Boolean)
         .join(' '),
@@ -74,6 +80,23 @@ export function OrderTable({ orders }: { orders: ProductionOrderSummary[] }) {
                       {order.orderNumber}
                     </span>
                     <div className="text-xs text-slate-500">BOM v{order.bomVersion}</div>
+
+                    {/* WHOSE WORK THIS IS. The billing model decides which stock
+                        bucket the issue may draw from, so it belongs beside the
+                        order number rather than a click away. */}
+                    {order.jobWork && (
+                      <div className="mt-1 space-y-0.5">
+                        <span className="inline-block whitespace-nowrap rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-semibold text-violet-800 ring-1 ring-inset ring-violet-200">
+                          Job work · {BILLING_MODEL_LABELS[order.jobWork.billingModel]}
+                        </span>
+                        <div className="text-[11px] text-slate-600">
+                          {order.jobWork.principalName}
+                        </div>
+                        <div className="font-mono text-[11px] text-slate-500">
+                          {order.jobWork.orderNumber}
+                        </div>
+                      </div>
+                    )}
                   </td>
                   <td className="px-6 py-3">
                     <span className="font-mono text-xs text-slate-700">{order.product.code}</span>

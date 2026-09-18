@@ -1,6 +1,8 @@
 'use client';
 
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useRouter, usePathname, useSearchParams } from 'next/navigation';
+
+import { SearchableSelect } from './searchable-select';
 import {
   useCallback,
   useEffect,
@@ -209,6 +211,7 @@ export function FilterPanel({
   requisitions,
   searchPlaceholder = 'Search…',
   showDates = true,
+  searchableLookups = false,
 }: {
   statuses?: readonly FilterOption[];
   vendors?: readonly FilterOption[];
@@ -218,6 +221,8 @@ export function FilterPanel({
   requisitions?: readonly FilterOption[];
   searchPlaceholder?: string;
   showDates?: boolean;
+  /** Renders the record lookups — vendor, item, requisition — as typeable. */
+  searchableLookups?: boolean;
 }) {
   const open = useFilterPanelOpen();
   const router = useRouter();
@@ -421,6 +426,7 @@ export function FilterPanel({
           {requisitions && requisitions.length > 0 && (
             <Select
               label="Requisition"
+              searchable={searchableLookups}
               value={draft.requisitionId ?? ''}
               options={requisitions}
               allLabel="Any requisition"
@@ -431,6 +437,7 @@ export function FilterPanel({
           {vendors && vendors.length > 0 && (
             <Select
               label="Vendor"
+              searchable={searchableLookups}
               value={draft.vendorId ?? ''}
               options={vendors}
               allLabel="Any vendor"
@@ -441,6 +448,7 @@ export function FilterPanel({
           {items && items.length > 0 && (
             <Select
               label="Item / product"
+              searchable={searchableLookups}
               value={draft.itemId ?? ''}
               options={items}
               allLabel="Any item"
@@ -451,6 +459,7 @@ export function FilterPanel({
           {raisedBy && raisedBy.length > 0 && (
             <Select
               label="Raised by"
+              searchable={searchableLookups}
               value={draft.raisedById ?? ''}
               options={raisedBy}
               allLabel="Anyone"
@@ -533,23 +542,41 @@ function Select({
   options,
   allLabel,
   onChange,
+  searchable = false,
 }: {
   label: string;
   value: string;
   options: readonly FilterOption[];
   allLabel: string;
   onChange: (value: string) => void;
+  /** Renders a typeable lookup instead of a plain select. */
+  searchable?: boolean;
 }) {
   return (
     <Control label={label}>
-      <select value={value} onChange={(event) => onChange(event.target.value)} className="field h-10">
-        <option value="">{allLabel}</option>
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
+      {searchable ? (
+        <SearchableSelect
+          id={`filter-${label.replace(/W+/g, '-').toLowerCase()}`}
+          options={options}
+          value={value}
+          onChange={onChange}
+          emptyLabel={allLabel}
+          className="field h-10"
+        />
+      ) : (
+        <select
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          className="field h-10"
+        >
+          <option value="">{allLabel}</option>
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      )}
     </Control>
   );
 }

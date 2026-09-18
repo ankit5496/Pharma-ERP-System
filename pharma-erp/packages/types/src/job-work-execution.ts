@@ -16,6 +16,7 @@
  */
 
 import type { BillingModel, ConversionRateBasis } from './job-work';
+import type { BatchReleaseStatus } from './production';
 import type { ItemSummary } from './procurement';
 
 /** Whose material a stock lot is. Mirrors the `StockOwnership` DB enum. */
@@ -243,7 +244,7 @@ export interface JobWorkDispatchableBatch {
   productionOrderNumber: string;
   /** YYYY-MM-DD. */
   expiryDate: string;
-  releaseStatus: 'PENDING' | 'RELEASED' | 'BLOCKED';
+  releaseStatus: BatchReleaseStatus;
   /** Releasable finished goods left on this batch. */
   quantityAvailable: string;
   item: ItemSummary;

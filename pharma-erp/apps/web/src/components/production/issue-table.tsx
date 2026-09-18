@@ -2,7 +2,11 @@
 
 import { useCallback } from 'react';
 import type { MaterialIssueView, ProductionStockLot } from '@pharma-erp/types';
-import { STOCK_LOT_STATUS_LABELS, STOCK_LOT_STATUSES } from '@pharma-erp/types';
+import {
+  STOCK_LOT_STATUS_LABELS,
+  STOCK_LOT_STATUSES,
+  STOCK_OWNERSHIP_LABELS,
+} from '@pharma-erp/types';
 
 import { DateCell, ExpiryHint, Quantity } from './shared';
 import { RegisterPager, RegisterToolbar, useRegisterView } from './register-toolbar';
@@ -116,7 +120,18 @@ export function IssueTable({ issues }: { issues: MaterialIssueView[] }) {
 /** Stock on hand, searchable by material or lot and filtered by QC status. */
 export function StockTable({ lots }: { lots: ProductionStockLot[] }) {
   const searchText = useCallback(
-    (lot: ProductionStockLot) => [lot.item.code, lot.item.name, lot.lotNumber].join(' '),
+    (lot: ProductionStockLot) =>
+      [
+        lot.item.code,
+        lot.item.name,
+        lot.lotNumber,
+        // A principal's material is looked for by their name and by the batch
+        // number on their own challan, neither of which is our lot number.
+        lot.principalName,
+        lot.vendorBatchNumber,
+      ]
+        .filter(Boolean)
+        .join(' '),
     [],
   );
 
@@ -161,6 +176,7 @@ export function StockTable({ lots }: { lots: ProductionStockLot[] }) {
               <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
                 <Th>Material</Th>
                 <Th>Lot</Th>
+                <Th>Owner</Th>
                 <Th>Expiry</Th>
                 <Th>Status</Th>
                 <Th align="right">Available</Th>
@@ -173,7 +189,32 @@ export function StockTable({ lots }: { lots: ProductionStockLot[] }) {
                     <span className="font-mono text-xs text-slate-700">{lot.item.code}</span>
                     <div className="text-slate-800">{lot.item.name}</div>
                   </td>
-                  <td className="px-6 py-3 font-mono text-xs text-slate-700">{lot.lotNumber}</td>
+                  <td className="px-6 py-3 font-mono text-xs text-slate-700">
+                    {lot.lotNumber}
+                    {lot.vendorBatchNumber && (
+                      <div className="text-[11px] text-slate-500">{lot.vendorBatchNumber}</div>
+                    )}
+                  </td>
+
+                  {/* WHOSE MATERIAL THIS IS. Principal-owned stock is tinted
+                      rather than merely labelled: the point of the column is
+                      that a lot belonging to someone else is spotted without
+                      being read. */}
+                  <td className="px-6 py-3">
+                    <span
+                      className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset ${
+                        lot.ownership === 'PRINCIPAL_OWNED'
+                          ? 'bg-violet-50 text-violet-800 ring-violet-200'
+                          : 'bg-slate-50 text-slate-700 ring-slate-200'
+                      }`}
+                    >
+                      {STOCK_OWNERSHIP_LABELS[lot.ownership]}
+                    </span>
+                    {lot.principalName && (
+                      <div className="mt-0.5 text-[11px] text-slate-600">{lot.principalName}</div>
+                    )}
+                  </td>
+
                   <td className="px-6 py-3">
                     <DateCell value={lot.expiryDate} />
                     {/* Packaging usually has no expiry, and a hint needs a date

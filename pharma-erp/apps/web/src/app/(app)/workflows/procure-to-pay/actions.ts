@@ -131,7 +131,6 @@ export async function createRequisitionAction(
     {
       itemId: values.itemId,
       requiredQuantity: values.requiredQuantity,
-      preferredVendorId: opt(form, 'preferredVendorId'),
       requiredByDate: toIsoDate(opt(form, 'requiredByDate')),
       notes: opt(form, 'notes'),
       productionPlanId: opt(form, 'productionPlanId'),
@@ -210,16 +209,17 @@ export async function updateRequisitionAction(
 
   const values = {
     requiredQuantity: str(form, 'requiredQuantity'),
-    preferredVendorId: str(form, 'preferredVendorId'),
     requiredByDate: str(form, 'requiredByDate'),
     notes: str(form, 'notes'),
   };
 
+  // NO preferredVendorId. The form no longer asks for one, and sending null
+  // because the input is absent would clear the vendor on every requisition
+  // that already has one. Omitted, so the API leaves the stored value alone.
   return submit(
     `${BASE}/requisitions/${id}`,
     {
       requiredQuantity: values.requiredQuantity,
-      preferredVendorId: values.preferredVendorId || null,
       requiredByDate: values.requiredByDate || null,
       notes: values.notes || null,
     },
@@ -373,7 +373,25 @@ export async function updatePurchaseOrderAction(
     paymentTermsDays: str(form, 'paymentTermsDays'),
     notes: str(form, 'notes'),
     status: str(form, 'status'),
+    vendorId: str(form, 'vendorId'),
   };
+
+  // The line editors, which only a DRAFT renders. Each line submits its id so
+  // the fields can be matched back up; the requisition and item come with it
+  // because the API rebuilds the line from scratch and requires both.
+  //
+  // ABSENT MEANS "NOT EDITING THE LINES", not "no lines". `lines` is a replace
+  // on the API, so sending [] from a form that never showed them would empty
+  // the draft.
+  const lineIds = form.getAll('lineId').map(String).filter(Boolean);
+
+  const lines = lineIds.map((lineId) => ({
+    itemId: str(form, `itemId_${lineId}`),
+    requisitionId: str(form, `requisitionId_${lineId}`) || undefined,
+    quantity: str(form, `quantity_${lineId}`),
+    rate: str(form, `rate_${lineId}`),
+    taxRatePercent: str(form, `taxRatePercent_${lineId}`),
+  }));
 
   return submit(
     `${BASE}/purchase-orders/${id}`,
@@ -387,6 +405,8 @@ export async function updatePurchaseOrderAction(
       // unconditionally rather than diffed here — the server owns the rules
       // about what a purchase order may become.
       ...(values.status ? { status: values.status } : {}),
+      ...(values.vendorId ? { vendorId: values.vendorId } : {}),
+      ...(lines.length > 0 ? { lines } : {}),
     },
     'Purchase order updated.',
     values,
@@ -416,11 +436,9 @@ export async function createGoodsReceiptAction(
     .map((lineId) => ({
       purchaseOrderLineId: lineId,
       quantityReceived: str(form, `quantityReceived_${lineId}`),
-      quantityRejected: str(form, `quantityRejected_${lineId}`) || '0',
       vendorBatchNumber: opt(form, `vendorBatchNumber_${lineId}`),
       manufacturingDate: toIsoDate(opt(form, `manufacturingDate_${lineId}`)),
       expiryDate: toIsoDate(opt(form, `expiryDate_${lineId}`)),
-      storageLocation: opt(form, `storageLocation_${lineId}`),
     }))
     .filter((line) => line.quantityReceived.length > 0 && Number(line.quantityReceived) > 0);
 
@@ -431,13 +449,13 @@ export async function createGoodsReceiptAction(
     };
   }
 
+  // The receipt date is not sent: it is not a field on the form any more, and
+  // the column defaults to the moment the receipt is booked, which is what a
+  // GRN's date has always meant.
   return submit(
     `${BASE}/goods-receipts`,
     {
       purchaseOrderId,
-      receiptDate: toIsoDate(opt(form, 'receiptDate')),
-      vendorDocumentNumber: opt(form, 'vendorDocumentNumber'),
-      remarks: opt(form, 'remarks'),
       lines,
     },
     'Goods receipt booked. The batches are in quarantine awaiting incoming QC.',
@@ -445,32 +463,49 @@ export async function createGoodsReceiptAction(
 }
 
 /**
- * Corrects the paperwork on a booked goods receipt.
+ * Corrects the batch identity on a booked goods receipt.
  *
- * Quantities and batches are absent, and the API would refuse them anyway: the
- * receipt has already created batches and written to the append-only stock
- * ledger. A wrong quantity is corrected by receiving the difference or by
- * rejecting the batch at QC.
+ * THE RECEIVED QUANTITY IS ABSENT, and the API would refuse it anyway: it
+ * created the batch and wrote to the append-only stock ledger. A wrong quantity
+ * is corrected by receiving the difference or by rejecting the batch at QC.
+ *
+ * What is sent is the batch number and the two dates, per line — transcribed by
+ * hand from a delivery note, and the only place a typo actually lands. The API
+ * applies the same rules it applies at booking and writes the correction to the
+ * stock lot as well.
  */
 export async function updateGoodsReceiptAction(
   _previous: ActionState,
   form: FormData,
 ): Promise<ActionState> {
   const id = str(form, 'id');
+  const lineIds = form.getAll('lineId').map(String);
 
-  const values = {
-    receiptDate: str(form, 'receiptDate'),
-    vendorDocumentNumber: str(form, 'vendorDocumentNumber'),
-    remarks: str(form, 'remarks'),
-  };
+  // Kept flat and suffixed by line id so a re-render after an error can put
+  // every value back where it was typed, the same convention the create form
+  // uses.
+  const values: Record<string, string> = {};
+
+  const lines = lineIds.map((lineId) => {
+    const read = (field: string) => {
+      const value = str(form, `${field}_${lineId}`);
+
+      values[`${field}_${lineId}`] = value;
+
+      return value;
+    };
+
+    return {
+      id: lineId,
+      vendorBatchNumber: read('vendorBatchNumber'),
+      manufacturingDate: toIsoDate(read('manufacturingDate')),
+      expiryDate: toIsoDate(read('expiryDate')),
+    };
+  });
 
   return submit(
     `${BASE}/goods-receipts/${id}`,
-    {
-      ...(values.receiptDate ? { receiptDate: values.receiptDate } : {}),
-      vendorDocumentNumber: values.vendorDocumentNumber || null,
-      remarks: values.remarks || null,
-    },
+    { lines },
     'Goods receipt updated.',
     values,
     'PATCH',

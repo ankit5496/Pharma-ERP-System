@@ -7,6 +7,7 @@ import {
 
 import { Prisma } from '@pharma-erp/database';
 import type {
+  BatchReleaseStatus,
   BatchMaterialVariance,
   BatchView,
   FinishedGoodsLotView,
@@ -285,10 +286,15 @@ export class BatchService {
       );
     }
 
-    if (request.decision === 'BLOCKED' && !request.notes?.trim()) {
+    // A reason is mandatory for anything but a release. A batch held or
+    // refused with no recorded reason is the first thing an inspector asks
+    // about, and the answer has to already be in the record.
+    if (request.decision !== 'RELEASED' && !request.notes?.trim()) {
+      const verb = request.decision === 'ON_HOLD' ? 'holding' : 'rejecting';
+
       throw new BadRequestException(
-        'A reason is required when blocking a batch. A rejected batch with no recorded ' +
-          'reason is the first thing an inspector asks about.',
+        `A reason is required when ${verb} a batch. A batch that did not pass, with no ` +
+          'recorded reason, is the first thing an inspector asks about.',
       );
     }
 
@@ -528,7 +534,7 @@ interface BatchWithIncludes {
   expiryDate: Date;
   plannedQuantity: Prisma.Decimal;
   actualQuantity: Prisma.Decimal | null;
-  releaseStatus: 'PENDING' | 'RELEASED' | 'BLOCKED';
+  releaseStatus: BatchReleaseStatus;
   releaseDecidedAt: Date | null;
   releaseNotes: string | null;
   productionOrderId: string;

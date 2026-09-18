@@ -178,27 +178,23 @@ export function BookReceiptForm({
           boxes someone might think they forgot. None of it is submitted: the
           API allocates the number, stamps the time and attributes the receipt
           to the signed-in user. */}
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs sm:grid-cols-4">
+          <dl className="grid grid-cols-3 gap-x-4 gap-y-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs">
             <div>
               <dt className="font-medium uppercase tracking-wide text-slate-500">GRN no.</dt>
               <dd className="mt-0.5 text-slate-800">Generated on save</dd>
-            </div>
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Received by</dt>
-              <dd className="mt-0.5 text-slate-800">{receivedBy}</dd>
             </div>
             <div>
               <dt className="font-medium uppercase tracking-wide text-slate-500">Linked PO</dt>
               <dd className="mt-0.5 font-mono text-slate-800">{order?.number ?? '—'}</dd>
             </div>
             <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Vendor</dt>
-              <dd className="mt-0.5 text-slate-800">{order?.vendor.name ?? '—'}</dd>
+              <dt className="font-medium uppercase tracking-wide text-slate-500">Received by</dt>
+              <dd className="mt-0.5 text-slate-800">{receivedBy}</dd>
             </div>
           </dl>
 
-          <div className="grid gap-3 sm:grid-cols-3">
-            <Field label="Purchase order" htmlFor="grn-order" required className="sm:col-span-2">
+          <div className="grid gap-3">
+            <Field label="Purchase order" htmlFor="grn-order" required>
               <select
                 id="grn-order"
                 name="purchaseOrderId"
@@ -215,24 +211,6 @@ export function BookReceiptForm({
                   </option>
                 ))}
               </select>
-            </Field>
-
-            <Field label="Receipt date" htmlFor="grn-date">
-              <input id="grn-date" name="receiptDate" type="date" className="field-sm w-full" />
-            </Field>
-
-            <Field label="Vendor document no." htmlFor="grn-doc">
-              <input
-                id="grn-doc"
-                name="vendorDocumentNumber"
-                maxLength={64}
-                placeholder="Delivery note / invoice ref"
-                className="field-sm w-full"
-              />
-            </Field>
-
-            <Field label="Remarks" htmlFor="grn-remarks" className="sm:col-span-2">
-              <input id="grn-remarks" name="remarks" maxLength={1000} className="field-sm w-full" />
             </Field>
           </div>
 
@@ -322,16 +300,6 @@ export function BookReceiptForm({
                         />
                       </Field>
 
-                      <Field label="Rejected at gate" htmlFor={`rej-${line.id}`}>
-                        <input
-                          id={`rej-${line.id}`}
-                          name={`quantityRejected_${line.id}`}
-                          inputMode="decimal"
-                          placeholder="0"
-                          className="field"
-                        />
-                      </Field>
-
                       <Field
                         label="Vendor batch / lot no."
                         htmlFor={`batch-${line.id}`}
@@ -343,16 +311,6 @@ export function BookReceiptForm({
                           name={`vendorBatchNumber_${line.id}`}
                           maxLength={64}
                           aria-invalid={Boolean(errors[`vendorBatchNumber_${line.id}`])}
-                          className="field"
-                        />
-                      </Field>
-
-                      <Field label="Storage location" htmlFor={`loc-${line.id}`}>
-                        <input
-                          id={`loc-${line.id}`}
-                          name={`storageLocation_${line.id}`}
-                          maxLength={128}
-                          placeholder="Store A"
                           className="field"
                         />
                       </Field>

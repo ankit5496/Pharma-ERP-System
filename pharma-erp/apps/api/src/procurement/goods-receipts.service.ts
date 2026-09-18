@@ -17,14 +17,7 @@ import { AuditService } from '../common/audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
-import {
-  fulfilmentStatus,
-  parseNonNegative,
-  parsePositive,
-  pendingOn,
-  positiveDifference,
-  qty,
-} from './decimal.util';
+import { fulfilmentStatus, parsePositive, pendingOn, qty } from './decimal.util';
 import type { CreateGoodsReceiptDto, UpdateGoodsReceiptDto } from './dto/goods-receipt.dto';
 import { dateRange, paginate } from './filters.util';
 import {
@@ -34,7 +27,6 @@ import {
   collectIds,
   toItemSummary,
   toPartySummary,
-  toStockLotSummary,
 } from './mappers';
 import { NumberingService } from './numbering.service';
 import { PeopleService } from './people.service';
@@ -135,13 +127,23 @@ export class GoodsReceiptsService {
   }
 
   /**
-   * Corrects the paperwork on a booked receipt.
+   * Corrects a booked receipt.
    *
-   * Deliberately narrow. Everything that moved stock — the lines, the batches,
-   * the quantities — is settled by the time this can be called, and the stock
-   * ledger it wrote to is append-only. What is left is what a person transcribed
-   * from the delivery: the vendor's document number, the date it arrived, and
-   * any remark about the delivery.
+   * WHAT MOVED STOCK CANNOT BE RE-TYPED. The received quantity created the lot
+   * and the ledger entry beside it, and the ledger is append-only — changing the
+   * number here would leave the stock record describing a delivery that never
+   * happened. A wrong quantity is corrected by receiving the difference against
+   * the order, or by rejecting the batch at incoming QC.
+   *
+   * WHAT CAN BE CORRECTED IS THE BATCH IDENTITY: the vendor's batch number and
+   * the two dates. Those are transcribed by hand from a delivery note, and are
+   * where a typo actually lands. Every correction is written to the STOCK LOT as
+   * well as to the receipt line, in one transaction — a lot whose expiry
+   * disagreed with the receipt it came from would be picked FEFO on one date and
+   * recalled on another.
+   *
+   * The same rules that refuse a bad booking are applied again here, so a
+   * correction cannot do what the original receipt was not allowed to do.
    */
   async update(id: string, dto: UpdateGoodsReceiptDto): Promise<GoodsReceiptListItem> {
     const before = await this.requireReceipt(id);
@@ -154,13 +156,44 @@ export class GoodsReceiptsService {
     }
     if (dto.remarks !== undefined) data.remarks = dto.remarks || null;
 
-    if (Object.keys(data).length === 0) throw new BadRequestException('Nothing to update.');
+    const corrections = this.prepareCorrections(before, dto.lines ?? []);
 
-    const after = await this.prisma.scoped.goodsReceipt.update({
-      where: { id },
-      data,
-      include: GRN_INCLUDE,
+    if (Object.keys(data).length === 0 && corrections.length === 0) {
+      throw new BadRequestException('Nothing to update.');
+    }
+
+    const after = await this.prisma.transaction(async (tx) => {
+      if (Object.keys(data).length > 0) {
+        await tx.goodsReceipt.update({ where: { id }, data });
+      }
+
+      for (const correction of corrections) {
+        const batch = {
+          vendorBatchNumber: correction.vendorBatchNumber,
+          manufacturingDate: correction.manufacturingDate,
+          expiryDate: correction.expiryDate,
+        };
+
+        await tx.goodsReceiptLine.update({ where: { id: correction.lineId }, data: batch });
+
+        // The lot carries the same identity. Guarded rather than asserted: a
+        // line without a lot would be a broken receipt, but a correction is not
+        // the place to discover it by throwing.
+        if (correction.lotId) {
+          await tx.stockLot.update({ where: { id: correction.lotId }, data: batch });
+        }
+      }
+
+      return tx.goodsReceipt.findFirstOrThrow({ where: { id }, include: GRN_INCLUDE });
     });
+
+    const batchesOf = (row: GrnRow) =>
+      row.lines.map((line) => ({
+        id: line.id,
+        vendorBatchNumber: line.vendorBatchNumber,
+        manufacturingDate: line.manufacturingDate,
+        expiryDate: line.expiryDate,
+      }));
 
     await this.audit.record({
       entityType: 'GoodsReceipt',
@@ -170,17 +203,119 @@ export class GoodsReceiptsService {
         receiptDate: before.receiptDate,
         vendorDocumentNumber: before.vendorDocumentNumber,
         remarks: before.remarks,
+        lines: batchesOf(before),
       },
       after: {
         receiptDate: after.receiptDate,
         vendorDocumentNumber: after.vendorDocumentNumber,
         remarks: after.remarks,
+        lines: batchesOf(after),
       },
     });
 
     const people = await this.people.load(collectIds(after.receivedById));
 
     return this.toListItem(after, people);
+  }
+
+  /**
+   * Validates batch corrections against the receipt they belong to.
+   *
+   * A field left out of the request keeps what the line already holds, so
+   * correcting one date cannot blank the other two by omission. What comes back
+   * is resolved and checked — ready to write, or already thrown.
+   */
+  private prepareCorrections(
+    receipt: GrnRow,
+    edits: NonNullable<UpdateGoodsReceiptDto['lines']>,
+  ): {
+    lineId: string;
+    lotId: string | null;
+    vendorBatchNumber: string;
+    manufacturingDate: Date;
+    expiryDate: Date;
+  }[] {
+    const linesById = new Map(receipt.lines.map((line) => [line.id, line]));
+
+    return edits.map((edit) => {
+      const line = linesById.get(edit.id);
+
+      if (!line) {
+        throw new BadRequestException(
+          'A correction refers to a line that is not on this goods receipt.',
+        );
+      }
+
+      const code = line.item.code;
+
+      const vendorBatchNumber =
+        edit.vendorBatchNumber !== undefined
+          ? edit.vendorBatchNumber.trim()
+          : (line.vendorBatchNumber ?? '');
+
+      const manufacturingDate =
+        edit.manufacturingDate !== undefined
+          ? new Date(edit.manufacturingDate)
+          : line.manufacturingDate;
+
+      const expiryDate = edit.expiryDate !== undefined ? new Date(edit.expiryDate) : line.expiryDate;
+
+      // The same three that are mandatory at booking. A correction that emptied
+      // one of them would leave a lot that cannot be recalled or picked FEFO —
+      // exactly what the booking rule exists to prevent.
+      if (!vendorBatchNumber) {
+        throw new BadRequestException(
+          `${code} requires a vendor batch number: Batch Number is required.`,
+        );
+      }
+
+      if (!manufacturingDate) {
+        throw new BadRequestException(
+          `${code} requires a manufacturing date: Manufacturing Date is required.`,
+        );
+      }
+
+      if (!expiryDate) {
+        throw new BadRequestException(`${code} requires an expiry date: Expiry Date is required.`);
+      }
+
+      if (expiryDate <= manufacturingDate) {
+        throw new BadRequestException(
+          `${code}: the expiry date must be after the manufacturing date.`,
+        );
+      }
+
+      // And the shelf-life ceiling, read exactly as booking reads it: a batch
+      // may not outlive its own manufacturing date plus the product's total
+      // shelf life. That catches the mistyped year, which is the realistic
+      // error. An item with no shelf life has no rule — an absent rule must not
+      // silently become a rule of zero.
+      if (line.item.shelfLifeMonths !== null) {
+        const latestPlausibleExpiry = new Date(manufacturingDate);
+
+        latestPlausibleExpiry.setUTCMonth(
+          latestPlausibleExpiry.getUTCMonth() + line.item.shelfLifeMonths,
+        );
+
+        if (expiryDate > latestPlausibleExpiry) {
+          throw new BadRequestException(
+            `${code}: an expiry of ${expiryDate.toISOString().slice(0, 10)} is later than this ` +
+              `material's ${line.item.shelfLifeMonths}-month shelf life allows from a ` +
+              `manufacturing date of ${manufacturingDate.toISOString().slice(0, 10)} ` +
+              `(no later than ${latestPlausibleExpiry.toISOString().slice(0, 10)}). ` +
+              'Check the dates on the delivery note.',
+          );
+        }
+      }
+
+      return {
+        lineId: line.id,
+        lotId: line.stockLot?.id ?? null,
+        vendorBatchNumber,
+        manufacturingDate,
+        expiryDate,
+      };
+    });
   }
 
   async findOne(id: string): Promise<GoodsReceiptListItem> {
@@ -250,16 +385,6 @@ export class GoodsReceiptsService {
         line.quantityReceived,
         `Quantity received for ${orderLine.item.code}`,
       );
-      const quantityRejected = parseNonNegative(
-        line.quantityRejected ?? '0',
-        `Quantity rejected for ${orderLine.item.code}`,
-      );
-
-      if (quantityRejected.greaterThan(quantityReceived)) {
-        throw new BadRequestException(
-          `Rejected quantity cannot exceed received quantity for ${orderLine.item.code}.`,
-        );
-      }
 
       // Over-receipt is refused rather than silently accepted: it usually means
       // the wrong line was picked, and a quantity that exceeds the order also
@@ -288,7 +413,8 @@ export class GoodsReceiptsService {
 
       // ALL FOUR OF THE RECEIVING FIELDS ARE MANDATORY, unconditionally: the
       // quantity (checked by parsePositive above), the vendor batch number,
-      // the manufacturing date and the expiry.
+      // the manufacturing date and the expiry. They are the whole of what a
+      // receipt now captures per line.
       //
       // This used to be conditional on `orderLine.item.requiresBatchTracking`.
       // That column defaults true and no form exposes it, so in practice the
@@ -377,15 +503,14 @@ export class GoodsReceiptsService {
 
       return {
         orderLine,
+        // EVERYTHING RECEIVED ENTERS QUARANTINE. There is no gate rejection any
+        // more, so the quantity that arrived is the quantity that becomes a
+        // lot; incoming QC's decision on that lot is the only rejection the
+        // flow has.
         quantityReceived,
-        quantityRejected,
-        // What actually enters quarantine: everything not refused at the gate.
-        quantityToQuarantine: quantityReceived.minus(quantityRejected),
         vendorBatchNumber: line.vendorBatchNumber?.trim() || null,
         manufacturingDate,
         expiryDate,
-        storageLocation: line.storageLocation?.trim() || null,
-        remarks: line.remarks?.trim() || null,
       };
     });
 
@@ -418,9 +543,6 @@ export class GoodsReceiptsService {
             manufacturingDate: line.manufacturingDate,
             expiryDate: line.expiryDate,
             quantityReceived: line.quantityReceived,
-            quantityRejected: line.quantityRejected,
-            storageLocation: line.storageLocation,
-            remarks: line.remarks,
           },
         });
 
@@ -435,11 +557,10 @@ export class GoodsReceiptsService {
             vendorBatchNumber: line.vendorBatchNumber,
             manufacturingDate: line.manufacturingDate,
             expiryDate: line.expiryDate,
-            quantityReceived: line.quantityToQuarantine,
-            quantityAvailable: line.quantityToQuarantine,
+            quantityReceived: line.quantityReceived,
+            quantityAvailable: line.quantityReceived,
             // Rule 6, in one word.
             status: 'QUARANTINE',
-            storageLocation: line.storageLocation,
           },
         });
 
@@ -449,7 +570,7 @@ export class GoodsReceiptsService {
             itemId: line.orderLine.itemId,
             stockLotId: lot.id,
             entryType: 'GRN_QUARANTINE',
-            quantityDelta: line.quantityToQuarantine,
+            quantityDelta: line.quantityReceived,
             // The flag that keeps this out of every usable-stock figure.
             affectsUsableStock: false,
             reference: receipt.number,
@@ -528,11 +649,8 @@ export class GoodsReceiptsService {
   }
 
   private toListItem(row: GrnRow, people: Map<string, string>): GoodsReceiptListItem {
-    const lines = row.lines.map((line): GoodsReceiptLineItem => {
-      const received = new Prisma.Decimal(line.quantityReceived);
-      const rejected = new Prisma.Decimal(line.quantityRejected);
-
-      return {
+    const lines = row.lines.map(
+      (line): GoodsReceiptLineItem => ({
         id: line.id,
         item: toItemSummary(line.item),
         purchaseOrderLineId: line.purchaseOrderLineId,
@@ -540,17 +658,9 @@ export class GoodsReceiptsService {
         manufacturingDate: line.manufacturingDate?.toISOString().slice(0, 10) ?? null,
         expiryDate: line.expiryDate?.toISOString().slice(0, 10) ?? null,
         quantityOrdered: qty(line.purchaseOrderLine.quantity),
-        quantityReceived: qty(received),
-        quantityRejected: qty(rejected),
-        quantityAccepted: qty(positiveDifference(received, rejected)),
-        storageLocation: line.storageLocation,
-        remarks: line.remarks,
-        lot: line.stockLot ? toStockLotSummary(line.stockLot) : null,
-      };
-    });
-
-    const countLots = (predicate: (status: string) => boolean) =>
-      row.lines.filter((line) => line.stockLot && predicate(line.stockLot.status)).length;
+        quantityReceived: qty(line.quantityReceived),
+      }),
+    );
 
     return {
       id: row.id,
@@ -562,9 +672,6 @@ export class GoodsReceiptsService {
       receivedBy: people.get(row.receivedById) ?? null,
       remarks: row.remarks,
       lines,
-      qcPendingCount: countLots((status) => status === 'QUARANTINE'),
-      qcAcceptedCount: countLots((status) => status === 'USABLE'),
-      qcRejectedCount: countLots((status) => status === 'REJECTED' || status === 'ON_HOLD'),
       invoices: row.purchaseInvoices,
       createdAt: row.createdAt.toISOString(),
     };

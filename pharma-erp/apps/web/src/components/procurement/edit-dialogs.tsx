@@ -19,7 +19,17 @@ import {
   updateRequisitionAction,
 } from '@/app/(app)/workflows/procure-to-pay/actions';
 
-import { ActionMessage, Disclosure, Field, SubmitButton, useAction } from './form-kit';
+import { useState } from 'react';
+
+import {
+  ActionMessage,
+  Disclosure,
+  Field,
+  FormFooter,
+  SubmitButton,
+  useAction,
+} from './form-kit';
+import { formatAmount, lineAmounts, sumLineAmounts } from '@/lib/line-amounts';
 import { noWheelChange } from '@/lib/number-input';
 
 /**
@@ -71,12 +81,10 @@ const REQUISITION_EDITABLE = ['OPEN'] as const;
 
 export function EditRequisitionButton({
   requisition,
-  vendors,
   isOpen,
   onOpenChange,
 }: {
   requisition: RequisitionListItem;
-  vendors: readonly PartySummary[];
 } & DialogControl) {
   const [state, formAction] = useAction(updateRequisitionAction);
 
@@ -132,22 +140,6 @@ export function EditRequisitionButton({
             />
           </Field>
 
-          <Field label="Preferred vendor" htmlFor={`rv-${requisition.id}`}>
-            <select
-              id={`rv-${requisition.id}`}
-              name="preferredVendorId"
-              defaultValue={typed('preferredVendorId', requisition.preferredVendor?.id ?? null)}
-              className="field"
-            >
-              <option value="">No preference</option>
-              {vendors.map((vendor) => (
-                <option key={vendor.id} value={vendor.id}>
-                  {vendor.name}
-                </option>
-              ))}
-            </select>
-          </Field>
-
           <Field label="Required by" htmlFor={`rd-${requisition.id}`}>
             <input
               id={`rd-${requisition.id}`}
@@ -192,9 +184,18 @@ const PURCHASE_ORDER_STATUSES_IN_ORDER: readonly PurchaseOrderStatus[] = [
 
 export function EditPurchaseOrderButton({
   order,
+  vendors = [],
   isOpen,
   onOpenChange,
-}: { order: PurchaseOrderListItem } & DialogControl) {
+}: {
+  order: PurchaseOrderListItem;
+  /**
+   * The vendors a draft may be switched to. Empty when the caller has none to
+   * hand, in which case the vendor stays read-only rather than becoming an
+   * empty select that looks broken.
+   */
+  vendors?: readonly PartySummary[];
+} & DialogControl) {
   const [state, formAction] = useAction(updatePurchaseOrderAction);
 
   // IT OPENS FOR EVERY ORDER, including ones whose terms are settled. The
@@ -203,6 +204,82 @@ export function EditPurchaseOrderButton({
   // OPEN would leave those orders with no way to change at all. The fields
   // below go read-only instead, which says the same thing in the right place.
   const termsEditable = order.status === 'DRAFT' || order.status === 'OPEN';
+
+  /**
+   * A DRAFT IS FULLY EDITABLE, because nothing has happened to it yet: no
+   * vendor has been sent it, no goods have arrived, nothing has been invoiced.
+   * The lines are rewritable here and nowhere else — once the order is placed,
+   * a goods receipt can cite a line, and rewriting it would leave that receipt
+   * describing quantities the order no longer has. The API draws the line in
+   * exactly the same place.
+   */
+  const isDraft = order.status === 'DRAFT';
+
+  const vendorEditable = termsEditable && vendors.length > 0;
+
+  /**
+   * The line figures as they stand in the form.
+   *
+   * HELD IN STATE SO THE TOTALS CAN FOLLOW THEM. Uncontrolled inputs would be
+   * simpler, but then the only way to know a quantity had changed would be to
+   * read the DOM, and the totals beside it would sit at whatever the record
+   * said when the dialog opened — which is exactly the behaviour being fixed.
+   */
+  const [figures, setFigures] = useState(() =>
+    Object.fromEntries(
+      order.lines.map((line) => [
+        line.id,
+        { quantity: line.quantity, rate: line.rate, taxRatePercent: line.taxRatePercent },
+      ]),
+    ),
+  );
+
+  const setFigure = (lineId: string, field: 'quantity' | 'rate' | 'taxRatePercent', value: string) =>
+    setFigures((current) => {
+      // Spreading `current[lineId]` straight in would widen every property to
+      // optional, because the lookup itself may be undefined. Naming the
+      // fallback keeps the shape whole.
+      const existing = current[lineId] ?? { quantity: '', rate: '', taxRatePercent: '' };
+
+      return { ...current, [lineId]: { ...existing, [field]: value } };
+    });
+
+  /**
+   * What each line comes to, and what the order comes to.
+   *
+   * Computed for a DRAFT only. Past that the figures are fixed and the stored
+   * values are the record — recomputing them would risk showing a number that
+   * disagrees with what the order was actually placed at, which is worse than
+   * showing nothing new.
+   */
+  /** The figures for a line, falling back to what is stored on it. */
+  const figureFor = (line: PurchaseOrderListItem['lines'][number]) =>
+    figures[line.id] ?? {
+      quantity: line.quantity,
+      rate: line.rate,
+      taxRatePercent: line.taxRatePercent,
+    };
+
+  const previewByLine = new Map(
+    order.lines.map((line) => {
+      const figure = figureFor(line);
+
+      return [
+        line.id,
+        isDraft
+          ? lineAmounts(figure.quantity, figure.rate, figure.taxRatePercent)
+          : {
+              taxableAmount: Number(line.taxableAmount),
+              taxAmount: Number(line.taxAmount),
+              totalAmount: Number(line.totalAmount),
+            },
+      ] as const;
+    }),
+  );
+
+  const orderTotal = isDraft
+    ? formatAmount(sumLineAmounts([...previewByLine.values()]).totalAmount)
+    : order.totalAmount;
 
   const typed = (field: string, stored: string | null) => state.values?.[field] ?? stored ?? '';
 
@@ -238,156 +315,259 @@ export function EditPurchaseOrderButton({
       closeWhen={state.status === 'success'}
       isOpen={isOpen}
       onOpenChange={onOpenChange}
-      width="34rem"
+      headerCancel={false}
+      width="42rem"
     >
-      {() => (
-        <form action={formAction} className="space-y-4">
+      {(close) => (
+        <form action={formAction} className="space-y-5">
           <ActionMessage state={state} />
 
           <input type="hidden" name="id" value={order.id} />
 
-          {/* Read-only, and shown rather than omitted: the order number and the
-              requisition behind it are what identify this record, and a form
-              that hides them is a form you cannot be sure you are editing the
-              right thing in. */}
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs">
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">PO number</dt>
-              <dd className="mt-0.5 font-mono text-slate-800">{order.number}</dd>
-            </div>
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Vendor</dt>
-              <dd className="mt-0.5 text-slate-800">{order.vendor.name}</dd>
-            </div>
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Requisitions</dt>
-              <dd className="mt-0.5 font-mono text-slate-800">
-                {order.lines
-                  .map((line) => line.requisition?.number)
-                  .filter(Boolean)
-                  .join(', ') || '—'}
-              </dd>
-            </div>
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Order total</dt>
-              <dd className="mt-0.5 tabular-nums text-slate-800">{order.totalAmount}</dd>
-            </div>
-          </dl>
+          {/* ONE TWO-COLUMN GRID for the whole form, so every label sits above
+              its control and the two columns share a baseline down the dialog.
+              A field that needs the full width says so with `sm:col-span-2`
+              rather than breaking out of the grid. */}
+          <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+            {/* THE SETTLED FACTS ARE FIELDS TOO, disabled rather than omitted
+                or rendered as a definition list. They read as part of the same
+                form — same label, same box, same column — and being greyed is
+                what says they are not yours to change here. */}
+            <Field label="PO number" htmlFor={`po-num-${order.id}`}>
+              <input
+                id={`po-num-${order.id}`}
+                disabled
+                readOnly
+                value={order.number}
+                className="field font-mono"
+              />
+            </Field>
 
-          {/* THE STATUS LIVES HERE NOW, not in a second control on the row. All
-              six are listed with the unreachable ones disabled and the reason
-              attached: that makes it read as a status field rather than a menu
-              of actions, and answers "why not?" in place. */}
-          <Field label="Status" htmlFor={`edit-po-status-${order.id}`}>
-            <select
-              id={`edit-po-status-${order.id}`}
-              name="status"
-              defaultValue={typed('status', order.status)}
-              className="field"
-            >
-              {PURCHASE_ORDER_STATUSES_IN_ORDER.map((status) => {
-                const blocked = blockedBecause(status);
+            <Field label="Requisitions" htmlFor={`po-req-${order.id}`}>
+              <input
+                id={`po-req-${order.id}`}
+                disabled
+                readOnly
+                value={
+                  order.lines
+                    .map((line) => line.requisition?.number)
+                    .filter(Boolean)
+                    .join(', ') || '—'
+                }
+                className="field font-mono"
+              />
+            </Field>
 
-                return (
-                  <option
-                    key={status}
-                    value={status}
-                    disabled={blocked !== null}
-                    title={blocked ?? PURCHASE_ORDER_STATUS_LABELS[status]}
-                  >
-                    {PURCHASE_ORDER_STATUS_LABELS[status]}
-                  </option>
-                );
-              })}
-            </select>
-          </Field>
-
-          {/* The lines are not here. What is on order is what a vendor agreed
-              to supply; the terms below are what gets renegotiated. */}
-          <p className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-            {order.lines.length} line{order.lines.length === 1 ? '' : 's'} on this order. To change
-            what is being bought, raise a new order — a line already received against cannot be
-            rewritten without making the receipt untrue.
-            {!termsEditable && (
-              <>
-                {' '}
-                The terms below are read-only because this order has been received against; the
-                status above can still be changed.
-              </>
+            {vendorEditable ? (
+              <Field label="Vendor" htmlFor={`ov-${order.id}`}>
+                <select
+                  id={`ov-${order.id}`}
+                  name="vendorId"
+                  defaultValue={typed('vendorId', order.vendor.id)}
+                  className="field"
+                >
+                  {vendors.map((vendor) => (
+                    <option key={vendor.id} value={vendor.id}>
+                      {vendor.name}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+            ) : (
+              <Field label="Vendor" htmlFor={`ov-${order.id}`}>
+                <input
+                  id={`ov-${order.id}`}
+                  disabled
+                  readOnly
+                  value={order.vendor.name}
+                  className="field"
+                />
+              </Field>
             )}
-          </p>
 
-          <Field label="Expected delivery" htmlFor={`od-${order.id}`}>
-            <input
-              id={`od-${order.id}`}
-              name="expectedDeliveryDate"
-              disabled={!termsEditable}
-              type="date"
-              defaultValue={typed(
-                'expectedDeliveryDate',
-                order.expectedDeliveryDate?.slice(0, 10) ?? null,
-              )}
-              className="field"
-            />
-          </Field>
+            {/* THE STATUS LIVES HERE, not in a second control on the row. All
+                six are listed with the unreachable ones disabled and the reason
+                on the option: that makes it read as a status field rather than
+                a menu of actions, and answers "why not?" in place. */}
+            <Field label="Status" htmlFor={`edit-po-status-${order.id}`}>
+              <select
+                id={`edit-po-status-${order.id}`}
+                name="status"
+                defaultValue={typed('status', order.status)}
+                className="field"
+              >
+                {PURCHASE_ORDER_STATUSES_IN_ORDER.map((status) => {
+                  const blocked = blockedBecause(status);
 
-          <Field
-            label="Payment terms (days)"
-            htmlFor={`op-${order.id}`}
-            hint="Days from the invoice date. Leave as it is to keep the current terms."
-          >
-            <input
-              id={`op-${order.id}`}
-              name="paymentTermsDays"
-              disabled={!termsEditable}
-              type="number"
-              min={0}
-              max={365}
-              {...noWheelChange}
-              defaultValue={typed('paymentTermsDays', String(order.paymentTermsDays))}
-              className="field"
-            />
-          </Field>
+                  return (
+                    <option
+                      key={status}
+                      value={status}
+                      disabled={blocked !== null}
+                      title={blocked ?? PURCHASE_ORDER_STATUS_LABELS[status]}
+                    >
+                      {PURCHASE_ORDER_STATUS_LABELS[status]}
+                    </option>
+                  );
+                })}
+              </select>
+            </Field>
 
-          <Field label="Notes" htmlFor={`on-${order.id}`}>
-            <textarea
-              id={`on-${order.id}`}
-              name="notes"
-              disabled={!termsEditable}
-              rows={3}
-              defaultValue={typed('notes', order.notes)}
-              className="field"
-            />
-          </Field>
+            <Field label="Expected delivery" htmlFor={`od-${order.id}`}>
+              <input
+                id={`od-${order.id}`}
+                name="expectedDeliveryDate"
+                disabled={!termsEditable}
+                type="date"
+                defaultValue={typed(
+                  'expectedDeliveryDate',
+                  order.expectedDeliveryDate?.slice(0, 10) ?? null,
+                )}
+                className="field"
+              />
+            </Field>
 
-          <div className="flex justify-end">
-            <SubmitButton pendingLabel="Saving…">Save changes</SubmitButton>
+            <Field label="Payment terms (days)" htmlFor={`op-${order.id}`}>
+              <input
+                id={`op-${order.id}`}
+                name="paymentTermsDays"
+                disabled={!termsEditable}
+                type="number"
+                min={0}
+                max={365}
+                {...noWheelChange}
+                defaultValue={typed('paymentTermsDays', String(order.paymentTermsDays))}
+                className="field"
+              />
+            </Field>
+
+            {/* Follows the line figures as they are typed. Disabled, because
+                it is arithmetic rather than an input — the server recomputes it
+                from the quantities and rates on save, and its answer is the one
+                that is stored. */}
+            <Field label="Order total" htmlFor={`po-total-${order.id}`}>
+              <input
+                id={`po-total-${order.id}`}
+                disabled
+                readOnly
+                value={orderTotal}
+                className="field tabular-nums"
+              />
+            </Field>
+
+            <Field label="Notes" htmlFor={`on-${order.id}`} className="sm:col-span-2">
+              <textarea
+                id={`on-${order.id}`}
+                name="notes"
+                disabled={!termsEditable}
+                rows={3}
+                defaultValue={typed('notes', order.notes)}
+                className="field"
+              />
+            </Field>
           </div>
+
+          {/* THE LINES ARE ALWAYS SHOWN, and editable only on a draft. A placed
+              line can be cited by a goods receipt, and rewriting it would leave
+              that receipt describing quantities the order no longer has — the
+              API draws the line in exactly the same place. */}
+          {order.lines.map((line) => (
+            <fieldset key={line.id} className="rounded-md border border-slate-200 px-4 pb-4">
+              <legend className="flex flex-wrap items-center gap-2 px-1.5 text-xs">
+                <span className="font-medium text-slate-900">{line.item.name}</span>
+                <span className="font-mono text-[11px] text-slate-500">{line.item.code}</span>
+                {line.requisition && (
+                  <span className="font-mono text-[11px] text-slate-400">
+                    {line.requisition.number}
+                  </span>
+                )}
+              </legend>
+
+              {/* THE IDENTITY FIELDS ARE EMITTED ONLY ON A DRAFT, and that is
+                  not cosmetic: a hidden input is submitted even when the
+                  visible fields beside it are disabled, so leaving these in
+                  place would send a `lines` array for a placed order and earn a
+                  409 from an API that is right to refuse it. */}
+              {isDraft && (
+                <>
+                  <input type="hidden" name="lineId" value={line.id} />
+                  <input type="hidden" name={`itemId_${line.id}`} value={line.item.id} />
+                  <input
+                    type="hidden"
+                    name={`requisitionId_${line.id}`}
+                    value={line.requisition?.id ?? ''}
+                  />
+                </>
+              )}
+
+              <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+                <Field label={`Quantity (${formatUom(line.item.uom)})`} htmlFor={`lq-${line.id}`}>
+                  <input
+                    id={`lq-${line.id}`}
+                    name={`quantity_${line.id}`}
+                    disabled={!isDraft}
+                    type="number"
+                    step="any"
+                    min="0"
+                    {...noWheelChange}
+                    value={figureFor(line).quantity}
+                    onChange={(event) => setFigure(line.id, 'quantity', event.target.value)}
+                    className="field"
+                  />
+                </Field>
+
+                <Field label="Rate" htmlFor={`lr-${line.id}`}>
+                  <input
+                    id={`lr-${line.id}`}
+                    name={`rate_${line.id}`}
+                    disabled={!isDraft}
+                    type="number"
+                    step="any"
+                    min="0"
+                    {...noWheelChange}
+                    value={figureFor(line).rate}
+                    onChange={(event) => setFigure(line.id, 'rate', event.target.value)}
+                    className="field"
+                  />
+                </Field>
+
+                <Field label="Tax %" htmlFor={`lt-${line.id}`}>
+                  <input
+                    id={`lt-${line.id}`}
+                    name={`taxRatePercent_${line.id}`}
+                    disabled={!isDraft}
+                    type="number"
+                    step="any"
+                    min="0"
+                    max="100"
+                    {...noWheelChange}
+                    value={figureFor(line).taxRatePercent}
+                    onChange={(event) => setFigure(line.id, 'taxRatePercent', event.target.value)}
+                    className="field"
+                  />
+                </Field>
+
+                <Field label="Line total" htmlFor={`ltot-${line.id}`}>
+                  <input
+                    id={`ltot-${line.id}`}
+                    disabled
+                    readOnly
+                    value={formatAmount(
+                      previewByLine.get(line.id)?.totalAmount ?? Number(line.totalAmount),
+                    )}
+                    className="field tabular-nums"
+                  />
+                </Field>
+              </div>
+            </fieldset>
+          ))}
+
+          <FormFooter onCancel={close}>
+            <SubmitButton pendingLabel="Saving…">Save changes</SubmitButton>
+          </FormFooter>
         </form>
       )}
     </Disclosure>
-  );
-}
-
-/**
- * Stored facts, shown as facts rather than as disabled inputs.
- *
- * A greyed-out text box invites a click and then refuses it; a definition list
- * reads as a record, which is what these are. The requirement is that the
- * values are VISIBLE and NOT EDITABLE, and this is the honest way to be both —
- * the same treatment the create form already gives the fields the system fills
- * in for itself.
- */
-function ReadOnlyGrid({ facts }: { facts: [string, string, boolean?][] }) {
-  return (
-    <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs sm:grid-cols-3">
-      {facts.map(([label, value, mono]) => (
-        <div key={label}>
-          <dt className="font-medium uppercase tracking-wide text-slate-500">{label}</dt>
-          <dd className={`mt-0.5 text-slate-800${mono ? ' font-mono' : ''}`}>{value}</dd>
-        </div>
-      ))}
-    </dl>
   );
 }
 
@@ -408,127 +588,125 @@ export function EditGoodsReceiptButton({
       closeWhen={state.status === 'success'}
       isOpen={isOpen}
       onOpenChange={onOpenChange}
-      width="52rem"
+      width="42rem"
     >
       {() => (
-        <form action={formAction} className="space-y-4">
+        <form action={formAction} className="space-y-5">
           <ActionMessage state={state} />
 
           <input type="hidden" name="id" value={receipt.id} />
 
-          {/* WHAT CAN AND CANNOT BE CHANGED, said once at the top rather than
-              left for the reader to infer from which boxes happen to be grey. */}
-          <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-            The whole receipt is shown below. Only the receipt date, the vendor
-            document number and the remarks can be corrected — everything else
-            moved stock when this receipt was booked, and the stock ledger is
-            append-only. To correct a quantity, receive the difference against
-            the order or reject the batch at incoming QC.
-          </p>
+          {/* WHAT THE SYSTEM SETTLED, shown as disabled fields rather than
+              omitted: the number it generated, the order the receipt is against
+              and the user it was booked by. */}
+          <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+            <Field label="GRN no." htmlFor={`grn-no-${receipt.id}`}>
+              <input
+                id={`grn-no-${receipt.id}`}
+                disabled
+                readOnly
+                value={receipt.number}
+                className="field font-mono"
+              />
+            </Field>
 
-          <ReadOnlyGrid
-            facts={[
-              ['GRN number', receipt.number, true],
-              ['Purchase order', receipt.purchaseOrder.number, true],
-              ['Vendor', receipt.vendor.name],
-              ['Vendor code', receipt.vendor.code, true],
-              ['Received by', receipt.receivedBy ?? '—'],
-              ['Booked', receipt.createdAt.slice(0, 10), true],
-            ]}
-          />
+            <Field label="Linked PO" htmlFor={`grn-po-${receipt.id}`}>
+              <input
+                id={`grn-po-${receipt.id}`}
+                disabled
+                readOnly
+                value={receipt.purchaseOrder.number}
+                className="field font-mono"
+              />
+            </Field>
 
-          {/* THE LINES, IN FULL. These are the traceability record — what
-              arrived, on which batch, made when, expiring when, and where QC
-              has got to with it. All read-only: each one created a stock lot
-              and a ledger entry when the receipt was booked. */}
-          <div>
-            <h3 className="field-label text-xs">
-              Received lines
-              <span className="ml-2 font-normal normal-case tracking-normal text-slate-400">
-                read-only
-              </span>
-            </h3>
-
-            <div className="mt-1.5 overflow-x-auto rounded-md border border-slate-200">
-              <table className="w-full min-w-[46rem] text-left text-xs">
-                <thead className="bg-slate-50">
-                  <tr className="text-[10px] uppercase tracking-wide text-slate-500">
-                    <th className="px-3 py-2 font-medium">Item</th>
-                    <th className="px-3 py-2 font-medium">Batch / lot</th>
-                    <th className="px-3 py-2 font-medium">Mfg</th>
-                    <th className="px-3 py-2 font-medium">Expiry</th>
-                    <th className="px-3 py-2 text-right font-medium">Received</th>
-                    <th className="px-3 py-2 text-right font-medium">Rejected</th>
-                    <th className="px-3 py-2 font-medium">Location</th>
-                    <th className="px-3 py-2 font-medium">QC</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {receipt.lines.map((line) => (
-                    <tr key={line.id} className="text-slate-700">
-                      <td className="px-3 py-2">
-                        <span className="block text-slate-900">{line.item.name}</span>
-                        <span className="font-mono text-[10px] text-slate-500">
-                          {line.item.code}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2 font-mono">{line.vendorBatchNumber ?? '—'}</td>
-                      <td className="px-3 py-2 tabular-nums">{line.manufacturingDate ?? '—'}</td>
-                      <td className="px-3 py-2 tabular-nums">{line.expiryDate ?? '—'}</td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {line.quantityReceived} {formatUom(line.item.uom)}
-                      </td>
-                      <td className="px-3 py-2 text-right tabular-nums">
-                        {line.quantityRejected} {formatUom(line.item.uom)}
-                      </td>
-                      <td className="px-3 py-2">{line.storageLocation ?? '—'}</td>
-                      <td className="px-3 py-2">
-                        {line.lot ? (
-                          <span className="font-mono text-[10px]">{line.lot.status}</span>
-                        ) : (
-                          '—'
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <Field label="Received by" htmlFor={`grn-by-${receipt.id}`} className="sm:col-span-2">
+              <input
+                id={`grn-by-${receipt.id}`}
+                disabled
+                readOnly
+                value={receipt.receivedBy ?? '—'}
+                className="field"
+              />
+            </Field>
           </div>
 
-          <h3 className="field-label pt-1 text-xs">Correctable paperwork</h3>
+          {/* ONE FIELDSET PER LINE. The item came from the order and the
+              quantity created the batch, so both are disabled; the batch number
+              and the two dates are transcribed by hand from the delivery note,
+              and are the only things here a typo can land on. The API applies
+              the same rules it applies at booking and writes each correction to
+              the stock lot as well. */}
+          {receipt.lines.map((line) => (
+            <fieldset key={line.id} className="rounded-md border border-slate-200 px-4 pb-4">
+              <input type="hidden" name="lineId" value={line.id} />
 
-          <Field label="Receipt date" htmlFor={`grn-date-${receipt.id}`}>
-            <input
-              id={`grn-date-${receipt.id}`}
-              name="receiptDate"
-              type="date"
-              defaultValue={typed('receiptDate', receipt.receiptDate.slice(0, 10))}
-              className="field"
-            />
-          </Field>
+              <legend className="flex flex-wrap items-center gap-2 px-1.5 text-xs">
+                <span className="font-medium text-slate-900">{line.item.name}</span>
+                <span className="font-mono text-[11px] text-slate-500">{line.item.code}</span>
+              </legend>
 
-          <Field label="Vendor document no." htmlFor={`grn-doc-${receipt.id}`}>
-            <input
-              id={`grn-doc-${receipt.id}`}
-              name="vendorDocumentNumber"
-              maxLength={64}
-              placeholder="Delivery note / invoice ref"
-              defaultValue={typed('vendorDocumentNumber', receipt.vendorDocumentNumber)}
-              className="field"
-            />
-          </Field>
+              <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+                <Field label="Item" htmlFor={`gl-item-${line.id}`}>
+                  <input
+                    id={`gl-item-${line.id}`}
+                    disabled
+                    readOnly
+                    value={line.item.name}
+                    className="field"
+                  />
+                </Field>
 
-          <Field label="Remarks" htmlFor={`grn-rem-${receipt.id}`}>
-            <textarea
-              id={`grn-rem-${receipt.id}`}
-              name="remarks"
-              rows={3}
-              maxLength={1000}
-              defaultValue={typed('remarks', receipt.remarks)}
-              className="field"
-            />
-          </Field>
+                <Field
+                  label={`Received quantity (${formatUom(line.item.uom)})`}
+                  htmlFor={`gl-rec-${line.id}`}
+                >
+                  <input
+                    id={`gl-rec-${line.id}`}
+                    disabled
+                    readOnly
+                    value={line.quantityReceived}
+                    className="field tabular-nums"
+                  />
+                </Field>
+
+                <Field
+                  label="Batch / lot no."
+                  htmlFor={`gl-batch-${line.id}`}
+                  required
+                  className="sm:col-span-2"
+                >
+                  <input
+                    id={`gl-batch-${line.id}`}
+                    name={`vendorBatchNumber_${line.id}`}
+                    maxLength={64}
+                    defaultValue={typed(`vendorBatchNumber_${line.id}`, line.vendorBatchNumber)}
+                    className="field font-mono"
+                  />
+                </Field>
+
+                <Field label="Manufacturing date" htmlFor={`gl-mfg-${line.id}`} required>
+                  <input
+                    id={`gl-mfg-${line.id}`}
+                    name={`manufacturingDate_${line.id}`}
+                    type="date"
+                    defaultValue={typed(`manufacturingDate_${line.id}`, line.manufacturingDate)}
+                    className="field"
+                  />
+                </Field>
+
+                <Field label="Expiry date" htmlFor={`gl-exp-${line.id}`} required>
+                  <input
+                    id={`gl-exp-${line.id}`}
+                    name={`expiryDate_${line.id}`}
+                    type="date"
+                    defaultValue={typed(`expiryDate_${line.id}`, line.expiryDate)}
+                    className="field"
+                  />
+                </Field>
+              </div>
+            </fieldset>
+          ))}
 
           <div className="flex justify-end">
             <SubmitButton pendingLabel="Saving…">Save changes</SubmitButton>
