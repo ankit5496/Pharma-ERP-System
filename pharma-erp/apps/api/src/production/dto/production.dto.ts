@@ -320,6 +320,20 @@ export class CreateProductionOrderDto {
   @IsOptional()
   @IsISO8601()
   plannedStartOn?: string;
+
+  /**
+   * The job-work order this batch is being made against — US-JW-03.
+   *
+   * OPTIONAL, and absent on every own-brand work order. When given, the service
+   * copies the principal, the agreement and the BILLING MODEL off it, and the
+   * stock bucket production may consume follows from that model. There is
+   * deliberately no `billingModel` or `stockBucket` field here: US-JW-03 rule 2
+   * is "user cannot select an incorrect stock bucket", and the surest way to
+   * honour it is to accept no bucket at all.
+   */
+  @IsOptional()
+  @IsUUID()
+  jobWorkOrderId?: string;
 }
 
 // ---------------------------------------------------------------------------

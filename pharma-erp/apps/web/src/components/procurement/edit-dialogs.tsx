@@ -55,16 +55,29 @@ import { noWheelChange } from '@/lib/number-input';
  * rejected save keeps the dialog open with what was typed still in it.
  */
 
+/**
+ * Lets a row's Actions menu own the open/closed state of a dialog.
+ *
+ * Optional throughout: a dialog with neither prop keeps its own trigger button,
+ * which is still how the create forms and the payment row work.
+ */
+interface DialogControl {
+  isOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}
+
 /** Requisition statuses the API will still accept an edit on. */
 const REQUISITION_EDITABLE = ['OPEN'] as const;
 
 export function EditRequisitionButton({
   requisition,
   vendors,
+  isOpen,
+  onOpenChange,
 }: {
   requisition: RequisitionListItem;
   vendors: readonly PartySummary[];
-}) {
+} & DialogControl) {
   const [state, formAction] = useAction(updateRequisitionAction);
 
   // Nothing is drawn at all once the requisition has moved on. A disabled
@@ -84,6 +97,8 @@ export function EditRequisitionButton({
       title="Edit requisition"
       subtitle={`${requisition.number} — ${requisition.item.name}`}
       closeWhen={state.status === 'success'}
+      isOpen={isOpen}
+      onOpenChange={onOpenChange}
       width="34rem"
     >
       {() => (
@@ -175,7 +190,11 @@ const PURCHASE_ORDER_STATUSES_IN_ORDER: readonly PurchaseOrderStatus[] = [
   'CANCELLED',
 ];
 
-export function EditPurchaseOrderButton({ order }: { order: PurchaseOrderListItem }) {
+export function EditPurchaseOrderButton({
+  order,
+  isOpen,
+  onOpenChange,
+}: { order: PurchaseOrderListItem } & DialogControl) {
   const [state, formAction] = useAction(updatePurchaseOrderAction);
 
   // IT OPENS FOR EVERY ORDER, including ones whose terms are settled. The
@@ -217,6 +236,8 @@ export function EditPurchaseOrderButton({ order }: { order: PurchaseOrderListIte
       title="Edit purchase order"
       subtitle={`${order.number} — ${order.vendor.name}`}
       closeWhen={state.status === 'success'}
+      isOpen={isOpen}
+      onOpenChange={onOpenChange}
       width="34rem"
     >
       {() => (
@@ -348,7 +369,11 @@ export function EditPurchaseOrderButton({ order }: { order: PurchaseOrderListIte
   );
 }
 
-export function EditGoodsReceiptButton({ receipt }: { receipt: GoodsReceiptListItem }) {
+export function EditGoodsReceiptButton({
+  receipt,
+  isOpen,
+  onOpenChange,
+}: { receipt: GoodsReceiptListItem } & DialogControl) {
   const [state, formAction] = useAction(updateGoodsReceiptAction);
 
   const typed = (field: string, stored: string | null) => state.values?.[field] ?? stored ?? '';
@@ -359,6 +384,8 @@ export function EditGoodsReceiptButton({ receipt }: { receipt: GoodsReceiptListI
       title="Edit goods receipt"
       subtitle={`${receipt.number} — ${receipt.vendor.name}`}
       closeWhen={state.status === 'success'}
+      isOpen={isOpen}
+      onOpenChange={onOpenChange}
       width="34rem"
     >
       {() => (
@@ -435,7 +462,11 @@ export function EditGoodsReceiptButton({ receipt }: { receipt: GoodsReceiptListI
   );
 }
 
-export function EditInvoiceButton({ invoice }: { invoice: PurchaseInvoiceListItem }) {
+export function EditInvoiceButton({
+  invoice,
+  isOpen,
+  onOpenChange,
+}: { invoice: PurchaseInvoiceListItem } & DialogControl) {
   const [state, formAction] = useAction(updateInvoiceAction);
 
   // The API refuses a cancelled invoice, so the button is not offered on one.
@@ -450,6 +481,8 @@ export function EditInvoiceButton({ invoice }: { invoice: PurchaseInvoiceListIte
       title="Edit invoice"
       subtitle={`${invoice.number} — ${invoice.vendor.name}`}
       closeWhen={state.status === 'success'}
+      isOpen={isOpen}
+      onOpenChange={onOpenChange}
       width="34rem"
     >
       {() => (
@@ -540,7 +573,11 @@ export function EditInvoiceButton({ invoice }: { invoice: PurchaseInvoiceListIte
   );
 }
 
-export function EditPaymentButton({ payment }: { payment: VendorPaymentItem }) {
+export function EditPaymentButton({
+  payment,
+  isOpen,
+  onOpenChange,
+}: { payment: VendorPaymentItem } & DialogControl) {
   const [state, formAction] = useAction(updatePaymentAction);
 
   const typed = (field: string, stored: string | null) => state.values?.[field] ?? stored ?? '';
@@ -551,6 +588,8 @@ export function EditPaymentButton({ payment }: { payment: VendorPaymentItem }) {
       title="Edit payment"
       subtitle={`${payment.number} — ${payment.amount}`}
       closeWhen={state.status === 'success'}
+      isOpen={isOpen}
+      onOpenChange={onOpenChange}
       width="32rem"
     >
       {() => (

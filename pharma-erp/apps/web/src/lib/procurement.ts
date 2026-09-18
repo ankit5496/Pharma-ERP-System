@@ -145,6 +145,13 @@ export async function fetchPurchaseOrders(
   });
 }
 
+/** Unplaced drafts, for the draft table above the register. */
+export async function fetchDraftOrders(): Promise<ApiResult<PurchaseOrderListItem[]>> {
+  return apiFetch<PurchaseOrderListItem[]>(`${BASE}/purchase-orders/drafts`, {
+    authenticated: true,
+  });
+}
+
 export async function fetchReceivableOrders(): Promise<ApiResult<PurchaseOrderListItem[]>> {
   return apiFetch<PurchaseOrderListItem[]>(`${BASE}/purchase-orders/receivable`, {
     authenticated: true,

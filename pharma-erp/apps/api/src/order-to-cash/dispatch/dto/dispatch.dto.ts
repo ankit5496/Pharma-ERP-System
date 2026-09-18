@@ -40,3 +40,26 @@ export class CreateDispatchDto {
   @Type(() => CreateDispatchLineDto)
   lines!: CreateDispatchLineDto[];
 }
+
+/**
+ * Amends a DRAFT dispatch.
+ *
+ * DRAFT ONLY. Once confirmed, the stock has left and the lot has been drawn
+ * down; the consignment note then describes a movement that actually happened
+ * and is not a working document any more.
+ *
+ * Lines are NOT editable. What ships is what allocation reserved, which is what
+ * makes "cannot dispatch more than allocated" structural. To ship different
+ * quantities, release the allocation and allocate again.
+ */
+export class UpdateDispatchDto {
+  @IsOptional()
+  @IsISO8601()
+  dispatchDate?: string;
+
+  @IsOptional() @IsString() @MaxLength(255) transporterName?: string;
+  @IsOptional() @IsString() @MaxLength(32) vehicleNumber?: string;
+  @IsOptional() @IsString() @MaxLength(64) lrNumber?: string;
+  @IsOptional() @IsString() @MaxLength(32) ewayBillNumber?: string;
+  @IsOptional() @IsString() @MaxLength(1000) notes?: string;
+}

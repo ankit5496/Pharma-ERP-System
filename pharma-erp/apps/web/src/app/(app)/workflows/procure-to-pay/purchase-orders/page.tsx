@@ -8,6 +8,7 @@ import {
 import { FilterButton, FilterPanel } from '@/components/procurement/filter-bar';
 import { Pagination } from '@/components/procurement/pagination';
 import { CreatePoDialog } from '@/components/procurement/create-po-dialog';
+import { DraftOrderActions } from '@/components/procurement/draft-order-actions';
 import { PurchaseOrderActions } from '@/components/procurement/purchase-order-actions';
 import {
   Blank,
@@ -25,6 +26,7 @@ import {
 } from '@/components/procurement/ui';
 import {
   fetchItems,
+  fetchDraftOrders,
   fetchPurchaseOrders,
   fetchRequisitions,
   fetchVendors,
@@ -59,8 +61,9 @@ export default async function PurchaseOrdersPage({
 
   const isFiltered = Object.values(query).some(Boolean);
 
-  const [orders, vendors, items, requisitions] = await Promise.all([
+  const [orders, drafts, vendors, items, requisitions] = await Promise.all([
     fetchPurchaseOrders(query),
+    fetchDraftOrders(),
     fetchVendors(),
     fetchItems(),
     // Only when it is actually needed. Unfiltered, the orders on the page
@@ -104,6 +107,104 @@ export default async function PurchaseOrdersPage({
     <>
       {sourceRequisition && (
         <CreatePoDialog requisition={sourceRequisition} vendors={vendors.ok ? vendors.data : []} />
+      )}
+
+      {drafts.ok && drafts.data.length > 0 && (
+        <Panel
+          title="Draft purchase orders"
+          subtitle={`${drafts.data.length} unplaced draft${drafts.data.length === 1 ? '' : 's'} — nothing has been sent to a vendor`}
+        >
+          <TableWrap>
+            <table className="w-full min-w-[68rem] text-left text-sm">
+              <thead>
+                <tr className="text-xs uppercase tracking-wide text-slate-500">
+                  <Th>PO no.</Th>
+                  <Th>Vendor</Th>
+                  <Th>PO date</Th>
+                  <Th>Items</Th>
+                  <Th align="right">Total</Th>
+                  <Th>Status</Th>
+                  <Th>Created by</Th>
+                  <Th>Created</Th>
+                  <Th>Actions</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {drafts.data.map((draft) => (
+                  <tr key={draft.id}>
+                    <Td>
+                      <span className="font-mono text-xs font-semibold text-slate-900">
+                        {draft.number}
+                      </span>
+                    </Td>
+
+                    <Td>
+                      <span className="block max-w-[12rem] truncate" title={draft.vendor.name}>
+                        {draft.vendor.name}
+                      </span>
+                    </Td>
+
+                    <Td>
+                      <DateText value={draft.poDate} />
+                    </Td>
+
+                    {/* A draft may legitimately have none yet — that is what a
+                      draft is for — so the cell says so rather than sitting
+                      blank as though something failed to load. */}
+                    <Td valign="top">
+                      {draft.lines.length === 0 ? (
+                        <span className="text-xs text-slate-400">Nothing added yet</span>
+                      ) : (
+                        <ul className="space-y-1">
+                          {draft.lines.map((line) => (
+                            <li key={line.id}>
+                              <span
+                                className="block max-w-[14rem] truncate text-xs text-slate-800"
+                                title={`${line.item.name} (${line.item.code})`}
+                              >
+                                {line.item.name}
+                              </span>
+                              <span className="block text-[11px] text-slate-500">
+                                <Qty value={line.quantity} uom={line.item.uom} />
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </Td>
+
+                    <Td align="right">
+                      <Money amount={draft.totalAmount} bold />
+                    </Td>
+
+                    <Td>
+                      <StatusPill
+                        status={draft.status}
+                        label={PURCHASE_ORDER_STATUS_LABELS[draft.status]}
+                      />
+                    </Td>
+
+                    <Td>
+                      {draft.createdBy ? (
+                        <span className="text-xs text-slate-600">{draft.createdBy}</span>
+                      ) : (
+                        <Blank />
+                      )}
+                    </Td>
+
+                    <Td>
+                      <DateText value={draft.createdAt} />
+                    </Td>
+
+                    <Td>
+                      <DraftOrderActions order={draft} />
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableWrap>
+        </Panel>
       )}
 
       <Panel

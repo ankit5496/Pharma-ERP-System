@@ -31,6 +31,7 @@ export function SubmitButton({
   variant = 'primary',
   name,
   value,
+  formNoValidate,
 }: {
   children: ReactNode;
   pendingLabel?: string;
@@ -42,6 +43,15 @@ export function SubmitButton({
    */
   name?: string;
   value?: string;
+  /**
+   * Skips the browser's required/pattern checks for THIS submit only.
+   *
+   * What makes "Save as draft" possible on a form whose fields a placed order
+   * needs: the constraints stay on the inputs, describing the finished
+   * document, and one button opts out of them. The API makes the same
+   * distinction from `saveAsDraft`, so nothing rests on the attribute alone.
+   */
+  formNoValidate?: boolean;
 }) {
   const { pending } = useFormStatus();
 
@@ -57,6 +67,7 @@ export function SubmitButton({
       type="submit"
       name={name}
       value={value}
+      formNoValidate={formNoValidate}
       disabled={pending}
       // aria-busy so a screen reader announces the wait, not just the sighted
       // change of label.
@@ -210,6 +221,8 @@ export function Disclosure({
   closeWhen = false,
   defaultOpen = false,
   width = '48rem',
+  isOpen,
+  onOpenChange,
 }: {
   label: string;
   title: string;
@@ -220,12 +233,33 @@ export function Disclosure({
   /** Opens on mount — for arriving from another screen ready to fill it in. */
   defaultOpen?: boolean;
   width?: string;
+  /**
+   * CONTROLLED MODE, for a dialog opened from a row's Actions menu.
+   *
+   * Passing `isOpen` hands the open/closed decision to the caller and drops
+   * this component's own trigger button — the menu item is the trigger. Without
+   * it a row would show an Edit button AND an Edit menu entry, which is the
+   * duplication the menu exists to remove.
+   */
+  isOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
   children: (close: () => void) => ReactNode;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const controlled = isOpen !== undefined;
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(defaultOpen);
+
+  const open = controlled ? isOpen : uncontrolledOpen;
+
+  const setOpen = useCallback(
+    (next: boolean) => {
+      if (controlled) onOpenChange?.(next);
+      else setUncontrolledOpen(next);
+    },
+    [controlled, onOpenChange],
+  );
   const dialog = useRef<HTMLDialogElement>(null);
 
-  const close = useCallback(() => setOpen(false), []);
+  const close = useCallback(() => setOpen(false), [setOpen]);
 
   // showModal() rather than the `open` attribute: only the former puts the
   // dialog in the top layer and makes the rest of the page inert.
@@ -250,13 +284,15 @@ export function Disclosure({
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="h-9 whitespace-nowrap rounded-md bg-slate-900 px-3 text-sm font-medium text-white transition hover:bg-slate-800"
-      >
-        {label}
-      </button>
+      {!controlled && (
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="h-9 whitespace-nowrap rounded-md bg-slate-900 px-3 text-sm font-medium text-white transition hover:bg-slate-800"
+        >
+          {label}
+        </button>
+      )}
 
       <dialog
         ref={dialog}

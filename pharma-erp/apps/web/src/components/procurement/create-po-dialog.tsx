@@ -239,7 +239,17 @@ export function CreatePoDialog({
               the same action and the pressed button's own name/value tells the
               server which was chosen, which is what a plain form submission
               already does correctly. */}
-          <SubmitButton variant="secondary" pendingLabel="Saving…" name="saveAsDraft" value="true">
+          {/* A DRAFT DEMANDS NOTHING. The fields below are marked required
+              because a PLACED order needs them, and that is still true — this
+              button steps around the browser's checks, and the API applies the
+              same distinction from `saveAsDraft` rather than trusting it. */}
+          <SubmitButton
+            variant="secondary"
+            pendingLabel="Saving…"
+            name="saveAsDraft"
+            value="true"
+            formNoValidate
+          >
             Save as draft
           </SubmitButton>
 

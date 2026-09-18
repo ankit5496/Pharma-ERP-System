@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
 } from '@nestjs/common';
@@ -15,7 +16,7 @@ import type { ReceiptListItem } from '@pharma-erp/types';
 import { Roles } from '../../auth/auth.decorators';
 import { SkipAudit } from '../../common/audit/audit.decorators';
 
-import { CreateReceiptDto } from './dto/receipt.dto';
+import { CreateReceiptDto, UpdateReceiptDto } from './dto/receipt.dto';
 import { ReceiptsService } from './receipts.service';
 
 /**
@@ -45,6 +46,16 @@ export class ReceiptsController {
   @Roles('ADMIN', 'ACCOUNTANT')
   async create(@Body() dto: CreateReceiptDto): Promise<ReceiptListItem> {
     return this.receipts.create(dto);
+  }
+
+  /** Corrects how a RECORDED receipt is described. Never its amount. */
+  @Patch(':id')
+  @Roles('ADMIN', 'ACCOUNTANT')
+  async update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateReceiptDto,
+  ): Promise<ReceiptListItem> {
+    return this.receipts.update(id, dto);
   }
 
   /** A bounced payment writes a reversing entry; it never deletes the receipt. */

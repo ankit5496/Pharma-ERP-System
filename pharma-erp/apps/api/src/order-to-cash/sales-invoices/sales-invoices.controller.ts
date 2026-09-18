@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
 } from '@nestjs/common';
@@ -15,7 +16,7 @@ import type { SalesInvoiceDetail, SalesInvoiceListItem } from '@pharma-erp/types
 import { Roles } from '../../auth/auth.decorators';
 import { SkipAudit } from '../../common/audit/audit.decorators';
 
-import { CreateSalesInvoiceDto } from './dto/sales-invoice.dto';
+import { CreateSalesInvoiceDto, UpdateSalesInvoiceDto } from './dto/sales-invoice.dto';
 import { SalesInvoicesService } from './sales-invoices.service';
 
 /**
@@ -49,6 +50,20 @@ export class SalesInvoicesController {
   @Roles('ADMIN', 'ACCOUNTANT', 'SALES_MANAGER')
   async create(@Body() dto: CreateSalesInvoiceDto): Promise<SalesInvoiceDetail> {
     return this.invoices.createFromDispatch(dto);
+  }
+
+  /**
+   * Amends the commercial terms only — due date and note.
+   *
+   * Nothing on the filed tax document is editable; see the service for why.
+   */
+  @Patch(':id')
+  @Roles('ADMIN', 'ACCOUNTANT')
+  async update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateSalesInvoiceDto,
+  ): Promise<SalesInvoiceDetail> {
+    return this.invoices.update(id, dto);
   }
 
   @Post(':id/cancel')

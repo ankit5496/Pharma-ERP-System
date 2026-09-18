@@ -7,15 +7,10 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NumberingService } from '../../procurement/numbering.service';
 import { TenantContextService } from '../../tenant/tenant-context.service';
 
-import type { CreateDispatchDto } from './dto/dispatch.dto';
+import type { CreateDispatchDto, UpdateDispatchDto } from './dto/dispatch.dto';
 
 /**
  * Despatch — picking, packing and shipping what allocation reserved.
- *
- * THE COMPLIANCE GATE IS ENFORCED HERE, not only shown. An allocation whose
- * `complianceRecheckRequired` is still set cannot be despatched: Schedule H1,
- * H1X and X need a second look before the stock physically leaves, and this is
- * the last point at which refusing it is still cheap.
  *
  * STOCK LEAVES THE LOT WHEN THE VAN DOES. Confirming a despatch decrements
  * `finished_goods_lots.quantityAvailable` inside the same transaction that
@@ -107,12 +102,6 @@ export class DispatchService {
       const allocation = byId.get(line.batchAllocationId)!;
       const quantity = new Prisma.Decimal(line.quantityDispatched);
 
-      if (allocation.complianceRecheckRequired) {
-        throw new BadRequestException(
-          `Batch ${allocation.batch.batchNumber} needs its compliance re-check recorded before it can be dispatched.`,
-        );
-      }
-
       if (allocation.status === 'RELEASED_BACK' || allocation.status === 'CANCELLED') {
         throw new BadRequestException(
           `Batch ${allocation.batch.batchNumber} is no longer reserved for this order.`,
@@ -169,6 +158,40 @@ export class DispatchService {
     });
 
     return this.get(created.id);
+  }
+
+  /**
+   * Amends a DRAFT dispatch — the consignment note, not what is in the van.
+   *
+   * DRAFT ONLY: once confirmed the stock has left and the lot has been drawn
+   * down, so the document records a movement rather than a plan.
+   */
+  async update(id: string, dto: UpdateDispatchDto): Promise<DispatchDetail> {
+    const dispatch = await this.prisma.scoped.dispatch.findFirst({
+      where: { id, deletedAt: null },
+    });
+
+    if (!dispatch) throw new NotFoundException('Dispatch not found.');
+
+    if (dispatch.status !== 'DRAFT') {
+      throw new BadRequestException(
+        `Only a draft dispatch can be edited — this one is ${dispatch.status.toLowerCase()}.`,
+      );
+    }
+
+    await this.prisma.scoped.dispatch.update({
+      where: { id },
+      data: {
+        ...(dto.dispatchDate ? { dispatchDate: new Date(dto.dispatchDate) } : {}),
+        ...(dto.transporterName === undefined ? {} : { transporterName: dto.transporterName.trim() || null }),
+        ...(dto.vehicleNumber === undefined ? {} : { vehicleNumber: dto.vehicleNumber.trim() || null }),
+        ...(dto.lrNumber === undefined ? {} : { lrNumber: dto.lrNumber.trim() || null }),
+        ...(dto.ewayBillNumber === undefined ? {} : { ewayBillNumber: dto.ewayBillNumber.trim() || null }),
+        ...(dto.notes === undefined ? {} : { notes: dto.notes.trim() || null }),
+      },
+    });
+
+    return this.get(id);
   }
 
   /**

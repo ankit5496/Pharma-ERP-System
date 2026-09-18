@@ -59,3 +59,36 @@ export class CreateSalesOrderDto {
   @Type(() => CreateSalesOrderItemDto)
   items!: CreateSalesOrderItemDto[];
 }
+
+/**
+ * Amends a DRAFT sales order.
+ *
+ * DRAFT ONLY, enforced in the service. Once the gate has run, the order carries
+ * a recorded verdict and may already have stock reserved against it; changing
+ * the lines underneath either would make the verdict describe an order that no
+ * longer exists. Re-pricing an approved order is a cancel and a new one.
+ *
+ * Every field is optional and `items` replaces the whole set when given —
+ * a partial line edit has no meaning when totals and tax are derived from them.
+ */
+export class UpdateSalesOrderDto {
+  @IsOptional()
+  @IsISO8601()
+  orderDate?: string;
+
+  @IsOptional()
+  @IsISO8601()
+  requestedDeliveryDate?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  notes?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => CreateSalesOrderItemDto)
+  items?: CreateSalesOrderItemDto[];
+}

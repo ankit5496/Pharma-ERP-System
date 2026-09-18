@@ -172,6 +172,8 @@ export class MastersService {
         priceControlType: (item.dpcoCeiling ? 'DPCO' : 'NONE') satisfies PriceControlType,
         status: item.deletedAt ? 'INACTIVE' : 'ACTIVE',
         availableQuantity: available.toFixed(3),
+        quantityOnHand: onHand.toFixed(3),
+        quantityReserved: held.toFixed(3),
         createdAt: item.createdAt.toISOString(),
       };
     });

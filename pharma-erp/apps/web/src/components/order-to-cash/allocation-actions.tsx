@@ -1,14 +1,15 @@
 'use client';
 
 import { useState, useTransition } from 'react';
-import { SCHEDULE_CATEGORY_LABELS, type AllocationRow } from '@pharma-erp/types';
+import type { AllocationRow } from '@pharma-erp/types';
 
 import {
   allocateOrderAction,
-  recordComplianceCheckAction,
   releaseAllocationAction,
+  updateAllocationAction,
 } from './actions';
-import { DANGER_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
+import { EditButton, EditDialog } from './edit-kit';
+import { DANGER_BUTTON, PRIMARY_BUTTON } from './ui';
 
 /**
  * Commits the FEFO allocation for one order.
@@ -77,41 +78,17 @@ export function AllocateOrderButton({
  */
 export function AllocationRowActions({ allocation }: { allocation: AllocationRow }) {
   const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
   const [pending, startTransition] = useTransition();
 
-  const needsCheck = allocation.complianceRecheckRequired && !allocation.complianceCheckedAt;
   const canRelease = ['ALLOCATED', 'PARTIALLY_DISPATCHED'].includes(allocation.status);
+  // ALLOCATED only: once any part has shipped the row records a movement.
+  const canEdit = allocation.status === 'ALLOCATED';
 
   return (
     <div className="min-w-[9rem]">
       <div className="flex flex-wrap gap-1.5">
-        {needsCheck && (
-          <button
-            type="button"
-            disabled={pending}
-            onClick={() => {
-              const notes = window.prompt(
-                `Record the ${SCHEDULE_CATEGORY_LABELS[allocation.scheduleCategory]} compliance ` +
-                  `re-check for ${allocation.itemCode} batch ${allocation.batchNumber}.\n\n` +
-                  `Your name and the time are recorded against it. Notes (optional):`,
-              );
-
-              if (notes === null) return;
-
-              setError(null);
-              startTransition(async () => {
-                const result = await recordComplianceCheckAction(
-                  allocation.id,
-                  notes || undefined,
-                );
-                if (!result.ok) setError(result.error ?? 'That did not work.');
-              });
-            }}
-            className={SECONDARY_BUTTON}
-          >
-            Record check
-          </button>
-        )}
+        {canEdit && <EditButton onClick={() => setEditing(true)} />}
 
         {canRelease && (
           <button
@@ -140,8 +117,27 @@ export function AllocationRowActions({ allocation }: { allocation: AllocationRow
           </button>
         )}
 
-        {!needsCheck && !canRelease && <span className="text-xs text-slate-400">—</span>}
+        {!canEdit && !canRelease && <span className="text-xs text-slate-400">—</span>}
       </div>
+
+      {editing && (
+        <EditDialog
+          title={`Adjust ${allocation.itemCode} on ${allocation.orderNumber}`}
+          description={`Batch ${allocation.batchNumber} · expires ${allocation.expiryDate}`}
+          note="The batch cannot be changed — FEFO picked it. To reserve a different batch, release this allocation and allocate again."
+          fields={[
+            {
+              name: 'quantityAllocated',
+              label: 'Quantity allocated',
+              value: allocation.quantityAllocated,
+              hint: `Ordered ${allocation.quantityOrdered}; ${allocation.quantityDispatched} already dispatched.`,
+            },
+            { name: 'notes', label: 'Note', value: '', wide: true },
+          ]}
+          onClose={() => setEditing(false)}
+          onSave={(patch) => updateAllocationAction(allocation.id, patch)}
+        />
+      )}
 
       {error && (
         <p role="alert" className="mt-2 max-w-xs text-xs text-red-700">

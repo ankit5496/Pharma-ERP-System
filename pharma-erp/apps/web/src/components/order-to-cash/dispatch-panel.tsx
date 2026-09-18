@@ -1,8 +1,8 @@
-import type { DispatchListItem, SalesInvoiceListItem } from '@pharma-erp/types';
+import type { AllocationRow, DispatchListItem } from '@pharma-erp/types';
 
 import { apiFetch } from '@/lib/api';
 
-import { DispatchRowActions, NewDispatchForm } from './dispatch-actions';
+import { DispatchRowActions, NewDispatchForm, type ReadyOrder } from './dispatch-actions';
 import {
   Cell,
   EmptyState,
@@ -35,38 +35,57 @@ const COLUMNS = [
  * transaction, so there is no state in which the paperwork and the inventory
  * disagree.
  *
- * Quantities are never typed here for the common case: dispatching an invoice
- * ships exactly what was reserved for it. That is both less work and one fewer
- * place for a number to be wrong.
+ * WHAT IS SHIPPED IS AN ALLOCATION, NOT AN INVOICE. Step 4 is Dispatch and
+ * step 5 is "Tax invoices raised against a dispatch" - the invoice bills what
+ * actually left, so it cannot be a precondition for leaving. This screen
+ * therefore lists orders with stock reserved against them, and the invoice
+ * becomes available on the next tab once a dispatch is confirmed.
+ *
+ * Quantities are never typed here: a line ships what remains allocated on that
+ * batch. That is both less work and one fewer place for a number to be wrong.
  */
 export async function DispatchPanel({ search }: { search?: string }) {
   const query = search ? `?search=${encodeURIComponent(search)}` : '';
 
-  const [dispatches, invoices] = await Promise.all([
+  const [dispatches, allocations] = await Promise.all([
     apiFetch<DispatchListItem[]>(`/api/v1/order-to-cash/dispatch${query}`, {
       authenticated: true,
     }),
-    apiFetch<SalesInvoiceListItem[]>('/api/v1/order-to-cash/sales-invoices', {
-      authenticated: true,
-    }),
+    apiFetch<AllocationRow[]>('/api/v1/order-to-cash/allocation', { authenticated: true }),
   ]);
 
-  // Issued invoices that have not yet been fully shipped. Cancelled ones are
-  // excluded — there is nothing to send.
-  const dispatchedInvoiceIds = new Set(
-    dispatches.ok
-      ? dispatches.data
-          .filter((dispatch) => dispatch.status !== 'CANCELLED')
-          .map((dispatch) => dispatch.salesInvoiceId)
-          .filter((id): id is string => id !== null)
-      : [],
-  );
+  // Allocations with stock still to ship, grouped into the order they belong
+  // to - a dispatch covers one order, which the API enforces.
+  const readyByOrder = new Map<string, ReadyOrder>();
 
-  const awaiting = invoices.ok
-    ? invoices.data.filter(
-        (invoice) => invoice.status === 'ISSUED' && !dispatchedInvoiceIds.has(invoice.id),
-      )
-    : [];
+  if (allocations.ok) {
+    for (const row of allocations.data) {
+      if (row.status === 'RELEASED_BACK' || row.status === 'CANCELLED') continue;
+
+      const remaining = Number(row.quantityAllocated) - Number(row.quantityDispatched);
+      if (!(remaining > 0)) continue;
+
+      const existing = readyByOrder.get(row.salesOrderId) ?? {
+        salesOrderId: row.salesOrderId,
+        orderNumber: row.orderNumber,
+        customerName: row.customerName,
+        lines: [],
+      };
+
+      existing.lines.push({
+        batchAllocationId: row.id,
+        itemCode: row.itemCode,
+        itemName: row.itemName,
+        batchNumber: row.batchNumber,
+        expiryDate: row.expiryDate,
+        quantityToShip: remaining.toFixed(3),
+      });
+
+      readyByOrder.set(row.salesOrderId, existing);
+    }
+  }
+
+  const readyToDispatch = [...readyByOrder.values()];
 
   return (
     <>
@@ -77,8 +96,8 @@ export async function DispatchPanel({ search }: { search?: string }) {
 
       <div className="mb-6">
         <NewDispatchForm
-          invoices={awaiting}
-          invoicesError={invoices.ok ? null : invoices.error}
+          orders={readyToDispatch}
+          ordersError={allocations.ok ? null : allocations.error}
         />
       </div>
 
@@ -86,7 +105,7 @@ export async function DispatchPanel({ search }: { search?: string }) {
         heading="Dispatches"
         count={dispatches.ok ? dispatches.data.length : undefined}
         noun="dispatch"
-        footer="A dispatch can never exceed what was allocated, and is refused outright while a Schedule H1, H1X or X compliance re-check is outstanding on any line being shipped."
+        footer="A dispatch can never exceed what was allocated."
       >
         {!dispatches.ok ? (
           <ErrorState what="dispatches" message={dispatches.error} />
@@ -96,7 +115,7 @@ export async function DispatchPanel({ search }: { search?: string }) {
             hint={
               search
                 ? 'Try a different dispatch, order or invoice number.'
-                : 'Dispatch an invoiced order above. Stock is reduced as the dispatch is recorded.'
+                : 'Dispatch an allocated order above. Stock is reduced as it is recorded, and the invoice becomes available afterwards.'
             }
           />
         ) : (

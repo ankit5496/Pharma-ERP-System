@@ -34,14 +34,23 @@ export class CreatePurchaseOrderLineDto implements CreatePurchaseOrderLineReques
   @IsUUID()
   requisitionId?: string;
 
+  /**
+   * Optional so a DRAFT can be parked half-filled. A placed order still needs
+   * all three, enforced in `PurchaseOrdersService.create` where the draft flag
+   * is visible — and a draft line with no quantity is dropped rather than
+   * stored as a zero nobody typed.
+   */
+  @IsOptional()
   @IsDecimalString('Quantity')
-  quantity!: string;
+  quantity?: string;
 
+  @IsOptional()
   @IsDecimalString('Rate')
-  rate!: string;
+  rate?: string;
 
+  @IsOptional()
   @IsDecimalString('Tax rate')
-  taxRatePercent!: string;
+  taxRatePercent?: string;
 }
 
 export class CreatePurchaseOrderDto implements CreatePurchaseOrderRequest {
@@ -79,12 +88,18 @@ export class CreatePurchaseOrderDto implements CreatePurchaseOrderRequest {
   @IsBoolean()
   saveAsDraft?: boolean;
 
+  /**
+   * Optional, and may be empty — on a DRAFT. "At least one line" is enforced by
+   * the service for a placed order, and again by `submitDraft` when a draft is
+   * finally placed, which is the check that actually matters: a draft can sit
+   * for a week and be edited in between.
+   */
+  @IsOptional()
   @IsArray()
-  @ArrayMinSize(1, { message: 'A purchase order needs at least one line' })
   @ArrayMaxSize(100)
   @ValidateNested({ each: true })
   @Type(() => CreatePurchaseOrderLineDto)
-  lines!: CreatePurchaseOrderLineDto[];
+  lines?: CreatePurchaseOrderLineDto[];
 }
 
 /** Header-only edit. Lines are not patchable — replace the draft instead. */
