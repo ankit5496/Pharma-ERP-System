@@ -1,3 +1,4 @@
+import { formatCode, formatStatus, titleCaseName } from '@pharma-erp/types';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 
@@ -67,7 +68,11 @@ export function StatusPill({ status, label }: { status: string; label?: string }
     <span
       className={`inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset ${TONE_CLASS[tone]}`}
     >
-      {label ?? status.replace(/_/g, ' ').toLowerCase()}
+      {/* formatStatus, not toLowerCase(). The fallback used to render
+          "partially received" — all lower case is one of the two casings the
+          table convention rules out, and this component draws every status
+          badge in the application, so it was doing it everywhere at once. */}
+      {formatStatus(label ?? status)}
     </span>
   );
 }
@@ -77,9 +82,44 @@ export function Pill({ children, tone = 'neutral' }: { children: ReactNode; tone
     <span
       className={`inline-block whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${TONE_CLASS[tone]}`}
     >
-      {children}
+      {/* A plain string gets the status casing; anything richer is passed
+          through untouched, because a caller that built its own markup has
+          already decided how it reads. */}
+      {typeof children === 'string' ? formatStatus(children) : children}
     </span>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Names and codes
+// ---------------------------------------------------------------------------
+
+/**
+ * A human-readable name — a vendor, a customer, a product, a person.
+ *
+ * TITLE CASE, BUT ONLY WHERE THE CASING CARRIES NOTHING. `titleCaseName`
+ * reshapes a value only when it is entirely upper or entirely lower case, which
+ * are the two the convention rules out; anything mixed was chosen deliberately
+ * and is passed through. That distinction is not fussiness — "Lactose IP" is a
+ * pharmacopoeial name, and a title-caser that rewrote it to "Lactose Ip" would
+ * have corrupted a drug name on a pharmaceutical document.
+ *
+ * Display only. The stored value is never touched, which is what keeps the edit
+ * forms honest: they still show, and save, exactly what was typed.
+ */
+export function Name({ children }: { children: string | null | undefined }) {
+  return <>{titleCaseName(children)}</>;
+}
+
+/**
+ * A document number or item code — PR-1204, PO-4482, GRN-8841, RM-PARA-001.
+ *
+ * Upper case, and monospaced by the caller where it is the row's identity.
+ * These are read letter by letter and quoted back in emails; a lower-case
+ * prefix makes two references to one document look like two documents.
+ */
+export function Code({ children }: { children: string | null | undefined }) {
+  return <>{formatCode(children)}</>;
 }
 
 // ---------------------------------------------------------------------------

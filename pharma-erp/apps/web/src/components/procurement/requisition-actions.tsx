@@ -239,7 +239,7 @@ export function RequisitionActions({
   ];
 
   return (
-    <div className="flex flex-col items-start gap-1.5">
+    <div className="flex flex-col items-center gap-1.5">
       <RowActionMenu label={requisition.number} actions={actions} />
 
       {/* No trigger of its own: the menu entry above opens it. */}

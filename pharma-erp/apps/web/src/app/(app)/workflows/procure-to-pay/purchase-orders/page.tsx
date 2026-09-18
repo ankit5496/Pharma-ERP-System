@@ -23,6 +23,8 @@ import {
   TableWrap,
   Td,
   Th,
+  Name,
+  Code,
 } from '@/components/procurement/ui';
 import {
   fetchItems,
@@ -134,13 +136,13 @@ export default async function PurchaseOrdersPage({
                   <tr key={draft.id}>
                     <Td>
                       <span className="font-mono text-xs font-semibold text-slate-900">
-                        {draft.number}
+                        <Code>{draft.number}</Code>
                       </span>
                     </Td>
 
                     <Td>
                       <span className="block max-w-[12rem] truncate" title={draft.vendor.name}>
-                        {draft.vendor.name}
+                        <Name>{draft.vendor.name}</Name>
                       </span>
                     </Td>
 
@@ -162,7 +164,7 @@ export default async function PurchaseOrdersPage({
                                 className="block max-w-[14rem] truncate text-xs text-slate-800"
                                 title={`${line.item.name} (${line.item.code})`}
                               >
-                                {line.item.name}
+                                <Name>{line.item.name}</Name>
                               </span>
                               <span className="block text-[11px] text-slate-500">
                                 <Qty value={line.quantity} uom={line.item.uom} />
@@ -186,7 +188,7 @@ export default async function PurchaseOrdersPage({
 
                     <Td>
                       {draft.createdBy ? (
-                        <span className="text-xs text-slate-600">{draft.createdBy}</span>
+                        <span className="text-xs text-slate-600"><Name>{draft.createdBy}</Name></span>
                       ) : (
                         <Blank />
                       )}
@@ -256,7 +258,7 @@ export default async function PurchaseOrdersPage({
                     <tr key={order.id}>
                       <Td>
                         <span className="font-mono text-xs font-semibold text-slate-900">
-                          {order.number}
+                          <Code>{order.number}</Code>
                         </span>
                         <span className="mt-0.5 block text-[11px] text-slate-500">
                           net {order.paymentTermsDays} days
@@ -276,7 +278,7 @@ export default async function PurchaseOrdersPage({
                         {/* Truncated with the full name on hover, so one long
                             vendor name cannot set the width of the column. */}
                         <span className="block max-w-[11rem] truncate" title={order.vendor.name}>
-                          {order.vendor.name}
+                          <Name>{order.vendor.name}</Name>
                         </span>
                       </Td>
 
@@ -292,11 +294,11 @@ export default async function PurchaseOrdersPage({
                                 className="block max-w-[14rem] truncate text-xs font-medium text-slate-800"
                                 title={`${line.item.name} (${line.item.code})`}
                               >
-                                {line.item.name}
+                                <Name>{line.item.name}</Name>
                               </span>
                               {line.requisition && (
                                 <span className="block font-mono text-[11px] text-slate-500">
-                                  {line.requisition.number}
+                                  <Code>{line.requisition.number}</Code>
                                 </span>
                               )}
                             </li>
@@ -357,7 +359,7 @@ export default async function PurchaseOrdersPage({
                                 <RecordLink
                                   href={`${PROCUREMENT_ROUTES.goodsReceipts}?search=${grn.number}`}
                                 >
-                                  <span className="font-mono text-[11px]">{grn.number}</span>
+                                  <span className="font-mono text-[11px]"><Code>{grn.number}</Code></span>
                                 </RecordLink>
                               </li>
                             ))}
@@ -366,7 +368,7 @@ export default async function PurchaseOrdersPage({
                                 <RecordLink
                                   href={`${PROCUREMENT_ROUTES.invoices}?search=${invoice.number}`}
                                 >
-                                  <span className="font-mono text-[11px]">{invoice.number}</span>
+                                  <span className="font-mono text-[11px]"><Code>{invoice.number}</Code></span>
                                 </RecordLink>
                               </li>
                             ))}

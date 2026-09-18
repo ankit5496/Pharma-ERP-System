@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { type PurchaseOrderListItem } from '@pharma-erp/types';
+import { formatUom, type PurchaseOrderListItem } from '@pharma-erp/types';
 
 import { createGoodsReceiptAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
@@ -23,12 +23,22 @@ import { noWheelChange } from '@/lib/number-input';
  * the last of those leaves the receiver doing arithmetic to answer "how much
  * am I allowed to take".
  *
- * THE BATCH FIELDS ARE NOT MARKED `required` IN THE BROWSER, on purpose. A
- * receipt usually covers some lines and not others, and an HTML `required`
- * applies to a row whether or not anything is being received on it — so
- * marking them would make a partial receipt impossible to submit. The API
- * demands a batch number, manufacturing date and expiry for every line that
- * actually carries a quantity, which is the rule that matters.
+ * THE FOUR BATCH FIELDS ARE MANDATORY PER LINE BEING RECEIVED — quantity,
+ * batch number, manufacturing date and expiry — and they carry the required
+ * marker to say so.
+ *
+ * They are NOT plain HTML `required`, and that is the whole difficulty: a
+ * receipt usually covers some lines and not others, and `required` applies to
+ * a row whether or not anything is being received on it, which would make a
+ * partial receipt impossible to submit. So the rule is conditional: a line
+ * nobody has touched is not part of this receipt, and the moment ANY of its
+ * four fields is filled in, all four are required. `validate` below is that
+ * rule, and it reports against the specific control rather than as one
+ * sentence at the top of a long form.
+ *
+ * The API enforces the same four again for every line carrying a quantity,
+ * which is what actually refuses a bad receipt — this is the courtesy that
+ * answers without a round trip.
  *
  * The browser checks that do exist — the remaining-quantity ceiling — are a
  * courtesy that answers without a round trip. The API checks the same things
@@ -52,6 +62,10 @@ export function BookReceiptForm({
   receivedBy: string;
 }) {
   const [state, formAction] = useAction(createGoodsReceiptAction);
+
+  /** Field name -> what is wrong with it. Cleared on every submit attempt. */
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
   const [orderId, setOrderId] = useState(
     // Falls back rather than showing an empty form if the order has since been
     // closed or fully received and is no longer in the receivable list.
@@ -61,6 +75,68 @@ export function BookReceiptForm({
   );
 
   const order = orders.find((candidate) => candidate.id === orderId) ?? orders[0];
+
+  /**
+   * Refuses a receipt that is missing something, before it is sent.
+   *
+   * Returns the errors by field name; an empty object means go ahead. A line is
+   * "in scope" when any of its four fields has been filled — that is what keeps
+   * partial receiving possible while still making all four mandatory on the
+   * lines that are actually being received.
+   */
+  function validate(form: HTMLFormElement): Record<string, string> {
+    const data = new FormData(form);
+    const found: Record<string, string> = {};
+    let linesInScope = 0;
+
+    for (const line of openLines) {
+      const names = {
+        quantity: `quantityReceived_${line.id}`,
+        batch: `vendorBatchNumber_${line.id}`,
+        mfg: `manufacturingDate_${line.id}`,
+        expiry: `expiryDate_${line.id}`,
+      };
+
+      const value = (name: string) => String(data.get(name) ?? '').trim();
+
+      const quantity = value(names.quantity);
+      const batch = value(names.batch);
+      const mfg = value(names.mfg);
+      const expiry = value(names.expiry);
+
+      // Untouched line: not part of this receipt.
+      if (!quantity && !batch && !mfg && !expiry) continue;
+
+      linesInScope += 1;
+
+      if (!quantity) {
+        found[names.quantity] = 'Quantity is required.';
+      } else if (!(Number(quantity) > 0)) {
+        // Zero is the interesting case: it passes "is filled in" and means
+        // nothing arrived, which is a line that should have been left blank.
+        found[names.quantity] = 'Quantity must be greater than zero.';
+      } else if (Number(quantity) > Number(line.quantityPending)) {
+        found[names.quantity] =
+          `Only ${line.quantityPending} ${formatUom(line.item.uom)} remain outstanding.`;
+      }
+
+      if (!batch) found[names.batch] = 'Batch Number is required.';
+      if (!mfg) found[names.mfg] = 'Manufacturing Date is required.';
+      if (!expiry) found[names.expiry] = 'Expiry Date is required.';
+
+      // Both present: the expiry has to be after the date it was made. The API
+      // applies the same comparison, plus the product's shelf life.
+      if (mfg && expiry && expiry <= mfg) {
+        found[names.expiry] = 'Expiry Date must be after the Manufacturing Date.';
+      }
+    }
+
+    if (linesInScope === 0) {
+      found.form = 'Enter a quantity on at least one line — a receipt with no lines records nothing.';
+    }
+
+    return found;
+  }
 
   // Fully received lines are dropped: there is nothing left to receive on them
   // and the API would refuse an over-receipt anyway.
@@ -76,8 +152,27 @@ export function BookReceiptForm({
       width="46rem"
     >
       {() => (
-        <form action={formAction} className="space-y-4">
+        <form
+          action={formAction}
+          noValidate
+          onSubmit={(event) => {
+            const found = validate(event.currentTarget);
+
+            setErrors(found);
+
+            // preventDefault on the submit event stops the action from running,
+            // so nothing is sent and nothing typed is lost.
+            if (Object.keys(found).length > 0) event.preventDefault();
+          }}
+          className="space-y-4"
+        >
           <ActionMessage state={state} />
+
+          {errors.form && (
+            <p role="alert" className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800">
+              {errors.form}
+            </p>
+          )}
 
           {/* What the system fills in, stated rather than presented as empty
           boxes someone might think they forgot. None of it is submitted: the
@@ -178,30 +273,41 @@ export function BookReceiptForm({
                       <div className="flex gap-1.5">
                         <dt>On order</dt>
                         <dd className="font-medium tabular-nums text-slate-800">
-                          {line.quantity} {line.item.uom}
+                          {line.quantity} {formatUom(line.item.uom)}
                         </dd>
                       </div>
                       <div className="flex gap-1.5">
                         <dt>Already received</dt>
                         <dd className="font-medium tabular-nums text-slate-800">
-                          {line.quantityReceived} {line.item.uom}
+                          {line.quantityReceived} {formatUom(line.item.uom)}
                         </dd>
                       </div>
                       <div className="flex gap-1.5">
                         <dt>Remaining</dt>
                         <dd className="font-semibold tabular-nums text-slate-900">
-                          {line.quantityPending} {line.item.uom}
+                          {line.quantityPending} {formatUom(line.item.uom)}
                         </dd>
                       </div>
                     </dl>
 
                     <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
-                      <Field label="Received quantity" htmlFor={`recv-${line.id}`}>
-                        {/* `max` is the remaining quantity, so the browser
-                            refuses an over-receipt without a round trip. The
-                            API checks the same thing against the live figure,
-                            which is what counts when two people receive at
-                            once. */}
+                      <Field
+                        label="Received quantity"
+                        htmlFor={`recv-${line.id}`}
+                        required
+                        error={errors[`quantityReceived_${line.id}`]}
+                        hint={`At most ${line.quantityPending} ${formatUom(line.item.uom)} remain.`}
+                      >
+                        {/* `noWheelChange`: a scroll over a focused number
+                            input changes its value in every browser, so on a
+                            form this long, passing the wheel over a received
+                            quantity silently edits it.
+
+                            `min` is above zero rather than at it: receiving
+                            "0" of something is not a receipt, it is a line
+                            that should have been left blank. The API checks
+                            the ceiling again against the live figure, which is
+                            what counts when two people receive at once. */}
                         <input
                           id={`recv-${line.id}`}
                           name={`quantityReceived_${line.id}`}
@@ -211,7 +317,7 @@ export function BookReceiptForm({
                           max={line.quantityPending}
                           placeholder="0"
                           {...noWheelChange}
-                          title={`At most ${line.quantityPending} ${line.item.uom} remain on this line.`}
+                          aria-invalid={Boolean(errors[`quantityReceived_${line.id}`])}
                           className="field"
                         />
                       </Field>
@@ -229,12 +335,14 @@ export function BookReceiptForm({
                       <Field
                         label="Vendor batch / lot no."
                         htmlFor={`batch-${line.id}`}
-                        hint={tracked ? 'Required for this item.' : undefined}
+                        required
+                        error={errors[`vendorBatchNumber_${line.id}`]}
                       >
                         <input
                           id={`batch-${line.id}`}
                           name={`vendorBatchNumber_${line.id}`}
                           maxLength={64}
+                          aria-invalid={Boolean(errors[`vendorBatchNumber_${line.id}`])}
                           className="field"
                         />
                       </Field>
@@ -249,11 +357,17 @@ export function BookReceiptForm({
                         />
                       </Field>
 
-                      <Field label="Manufacturing date" htmlFor={`mfg-${line.id}`}>
+                      <Field
+                        label="Manufacturing date"
+                        htmlFor={`mfg-${line.id}`}
+                        required
+                        error={errors[`manufacturingDate_${line.id}`]}
+                      >
                         <input
                           id={`mfg-${line.id}`}
                           name={`manufacturingDate_${line.id}`}
                           type="date"
+                          aria-invalid={Boolean(errors[`manufacturingDate_${line.id}`])}
                           className="field"
                         />
                       </Field>
@@ -261,12 +375,14 @@ export function BookReceiptForm({
                       <Field
                         label="Expiry date"
                         htmlFor={`exp-${line.id}`}
-                        hint={tracked ? 'Required for this item.' : undefined}
+                        required
+                        error={errors[`expiryDate_${line.id}`]}
                       >
                         <input
                           id={`exp-${line.id}`}
                           name={`expiryDate_${line.id}`}
                           type="date"
+                          aria-invalid={Boolean(errors[`expiryDate_${line.id}`])}
                           className="field"
                         />
                       </Field>

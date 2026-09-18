@@ -12,6 +12,8 @@ import {
   TableWrap,
   Td,
   Th,
+  Name,
+  Code,
 } from '@/components/procurement/ui';
 import { Pagination } from '@/components/procurement/pagination';
 import { fetchLowStock, fetchProcurementSettings, toListQuery } from '@/lib/procurement';
@@ -129,8 +131,8 @@ export default async function LowStockPage({
                 {visible.map((row) => (
                   <tr key={row.item.id} className="bg-amber-50/30">
                     <Td>
-                      <p className="font-medium text-slate-900">{row.item.name}</p>
-                      <p className="font-mono text-xs text-slate-500">{row.item.code}</p>
+                      <p className="font-medium text-slate-900"><Name>{row.item.name}</Name></p>
+                      <p className="font-mono text-xs text-slate-500"><Code>{row.item.code}</Code></p>
                     </Td>
 
                     <Td>

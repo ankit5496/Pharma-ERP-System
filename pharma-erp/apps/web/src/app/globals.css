@@ -140,6 +140,95 @@
  * stray pixel on the others, so a column's left edge belongs to no spacing
  * system at all and two tables that look identical are a pixel out.
  */
+/**
+ * Every table in the application is centred — headers and cells alike.
+ *
+ * IN CSS RATHER THAN IN THE COMPONENTS because 26 files build their own
+ * <table> markup instead of going through the shared Th/Td. A convention that
+ * has to be remembered at 26 call sites is one that will be forgotten at the
+ * 27th; a table added tomorrow inherits this without anyone doing anything,
+ * which is what "apply it globally" has to mean in practice.
+ *
+ * THE SELECTOR IS DELIBERATELY SPECIFIC. Tailwind v3 emits its utilities as
+ * ordinary classes, so `text-right` on a cell is (0,1,0) and beats a plain
+ * `th, td` rule (0,0,1) wherever that rule sits in the file. `th[class]` is
+ * (0,1,1) and wins; the bare `th, td` beside it covers cells carrying no class
+ * attribute at all.
+ *
+ * SO THIS OVERRIDES text-left AND text-right ON TABLE CELLS — and an override
+ * nobody can escape is a trap. The two classes below are the way out.
+ */
+th,
+td,
+th[class],
+td[class] {
+  text-align: center;
+}
+
+/**
+ * Opts a single header or cell out of the centring above.
+ *
+ * DELIBERATELY NEW CLASS NAMES rather than honouring the text-left and
+ * text-right utilities already scattered through the table markup. Honouring
+ * those would undo the rule for every column that carries one — which is most
+ * of the numeric columns, and the opposite of the change. These exist so a
+ * future column can opt out ON PURPOSE: `th.cell-align-right` is (0,2,0) and
+ * beats the rule above without an !important anywhere.
+ *
+ * The likely reason to reach for one is a column of money. Centring gives up
+ * the shared decimal axis that makes an amount column quick to compare down its
+ * length; that trade was made knowingly, and this is how to take it back one
+ * column at a time.
+ */
+/**
+ * A form is not a table.
+ *
+ * Every row-action dialog is rendered INSIDE the cell that opens it — the
+ * Actions menu and the <dialog> are siblings in the same <Td>, because the
+ * dialog is driven by that row's own state. text-align is an inherited
+ * property, so centring the cell centred every label, input, dropdown and
+ * helper line of the form inside it: Edit Purchase Order, Edit Goods Receipt,
+ * Record Payment, and every other modal opened from a row.
+ *
+ * Moving the dialogs out of the cells would be the other fix, and a worse one:
+ * they are controlled by the row's own state, and hoisting them would mean a
+ * portal and a state channel for something that is really one line of CSS.
+ *
+ * `start` rather than `left`, so this still reads correctly if the application
+ * is ever laid out right-to-left.
+ *
+ * NOTE WHAT IT DOES NOT UNDO: a table rendered INSIDE a dialog — the line list
+ * on the Edit Goods Receipt form — keeps its centring, because the `th, td`
+ * rule above applies directly to those cells and a direct declaration always
+ * beats an inherited one. That is the intended reading of the convention:
+ * table record UI is centred wherever it appears; form fields never are.
+ */
+dialog {
+  text-align: start;
+}
+
+/**
+ * The same reset for a form that sits in a table cell without a dialog.
+ *
+ * Inline forms in cells are deliberately NOT covered — the requisition status
+ * dropdown submits itself on change and belongs centred with its row. This
+ * class is for the case where a cell holds something that should read as a
+ * form rather than as part of the record.
+ */
+.form-fields {
+  text-align: start;
+}
+
+th.cell-align-left,
+td.cell-align-left {
+  text-align: left;
+}
+
+th.cell-align-right,
+td.cell-align-right {
+  text-align: right;
+}
+
 th,
 td {
   padding: 0;

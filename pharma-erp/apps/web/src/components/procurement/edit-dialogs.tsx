@@ -1,6 +1,6 @@
 'use client';
 
-import { PURCHASE_ORDER_STATUS_LABELS } from '@pharma-erp/types';
+import { formatUom, PURCHASE_ORDER_STATUS_LABELS } from '@pharma-erp/types';
 import type {
   GoodsReceiptListItem,
   PartySummary,
@@ -369,6 +369,28 @@ export function EditPurchaseOrderButton({
   );
 }
 
+/**
+ * Stored facts, shown as facts rather than as disabled inputs.
+ *
+ * A greyed-out text box invites a click and then refuses it; a definition list
+ * reads as a record, which is what these are. The requirement is that the
+ * values are VISIBLE and NOT EDITABLE, and this is the honest way to be both —
+ * the same treatment the create form already gives the fields the system fills
+ * in for itself.
+ */
+function ReadOnlyGrid({ facts }: { facts: [string, string, boolean?][] }) {
+  return (
+    <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs sm:grid-cols-3">
+      {facts.map(([label, value, mono]) => (
+        <div key={label}>
+          <dt className="font-medium uppercase tracking-wide text-slate-500">{label}</dt>
+          <dd className={`mt-0.5 text-slate-800${mono ? ' font-mono' : ''}`}>{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
 export function EditGoodsReceiptButton({
   receipt,
   isOpen,
@@ -386,7 +408,7 @@ export function EditGoodsReceiptButton({
       closeWhen={state.status === 'success'}
       isOpen={isOpen}
       onOpenChange={onOpenChange}
-      width="34rem"
+      width="52rem"
     >
       {() => (
         <form action={formAction} className="space-y-4">
@@ -394,32 +416,87 @@ export function EditGoodsReceiptButton({
 
           <input type="hidden" name="id" value={receipt.id} />
 
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs">
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">GRN number</dt>
-              <dd className="mt-0.5 font-mono text-slate-800">{receipt.number}</dd>
-            </div>
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Purchase order</dt>
-              <dd className="mt-0.5 font-mono text-slate-800">{receipt.purchaseOrder.number}</dd>
-            </div>
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Vendor</dt>
-              <dd className="mt-0.5 text-slate-800">{receipt.vendor.name}</dd>
-            </div>
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Received by</dt>
-              <dd className="mt-0.5 text-slate-800">{receipt.receivedBy ?? '—'}</dd>
-            </div>
-          </dl>
-
-          {/* Why the quantities are absent, said once where somebody looking
-              for them will be. */}
-          <p className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-            {receipt.lines.length} line{receipt.lines.length === 1 ? '' : 's'}, already batched and
-            posted to stock. To correct a quantity, receive the difference against the order or
-            reject the batch at incoming QC — the stock ledger cannot be rewritten.
+          {/* WHAT CAN AND CANNOT BE CHANGED, said once at the top rather than
+              left for the reader to infer from which boxes happen to be grey. */}
+          <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            The whole receipt is shown below. Only the receipt date, the vendor
+            document number and the remarks can be corrected — everything else
+            moved stock when this receipt was booked, and the stock ledger is
+            append-only. To correct a quantity, receive the difference against
+            the order or reject the batch at incoming QC.
           </p>
+
+          <ReadOnlyGrid
+            facts={[
+              ['GRN number', receipt.number, true],
+              ['Purchase order', receipt.purchaseOrder.number, true],
+              ['Vendor', receipt.vendor.name],
+              ['Vendor code', receipt.vendor.code, true],
+              ['Received by', receipt.receivedBy ?? '—'],
+              ['Booked', receipt.createdAt.slice(0, 10), true],
+            ]}
+          />
+
+          {/* THE LINES, IN FULL. These are the traceability record — what
+              arrived, on which batch, made when, expiring when, and where QC
+              has got to with it. All read-only: each one created a stock lot
+              and a ledger entry when the receipt was booked. */}
+          <div>
+            <h3 className="field-label text-xs">
+              Received lines
+              <span className="ml-2 font-normal normal-case tracking-normal text-slate-400">
+                read-only
+              </span>
+            </h3>
+
+            <div className="mt-1.5 overflow-x-auto rounded-md border border-slate-200">
+              <table className="w-full min-w-[46rem] text-left text-xs">
+                <thead className="bg-slate-50">
+                  <tr className="text-[10px] uppercase tracking-wide text-slate-500">
+                    <th className="px-3 py-2 font-medium">Item</th>
+                    <th className="px-3 py-2 font-medium">Batch / lot</th>
+                    <th className="px-3 py-2 font-medium">Mfg</th>
+                    <th className="px-3 py-2 font-medium">Expiry</th>
+                    <th className="px-3 py-2 text-right font-medium">Received</th>
+                    <th className="px-3 py-2 text-right font-medium">Rejected</th>
+                    <th className="px-3 py-2 font-medium">Location</th>
+                    <th className="px-3 py-2 font-medium">QC</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {receipt.lines.map((line) => (
+                    <tr key={line.id} className="text-slate-700">
+                      <td className="px-3 py-2">
+                        <span className="block text-slate-900">{line.item.name}</span>
+                        <span className="font-mono text-[10px] text-slate-500">
+                          {line.item.code}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 font-mono">{line.vendorBatchNumber ?? '—'}</td>
+                      <td className="px-3 py-2 tabular-nums">{line.manufacturingDate ?? '—'}</td>
+                      <td className="px-3 py-2 tabular-nums">{line.expiryDate ?? '—'}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {line.quantityReceived} {formatUom(line.item.uom)}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {line.quantityRejected} {formatUom(line.item.uom)}
+                      </td>
+                      <td className="px-3 py-2">{line.storageLocation ?? '—'}</td>
+                      <td className="px-3 py-2">
+                        {line.lot ? (
+                          <span className="font-mono text-[10px]">{line.lot.status}</span>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <h3 className="field-label pt-1 text-xs">Correctable paperwork</h3>
 
           <Field label="Receipt date" htmlFor={`grn-date-${receipt.id}`}>
             <input
