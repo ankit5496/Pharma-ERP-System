@@ -12,6 +12,7 @@ import {
 
 import { createSalesReturnAction, updateSalesReturnAction } from './actions';
 import { EditButton, EditDialog } from './edit-kit';
+import { SearchableSelect } from './searchable-select';
 import { Note, PRIMARY_BUTTON, SECONDARY_BUTTON, formatDate, formatQuantity } from './ui';
 
 interface DraftReturnLine {
@@ -133,22 +134,21 @@ export function NewReturnForm({
           <label htmlFor="ret-invoice" className="field-label">
             Invoice <span className="text-red-600">*</span>
           </label>
-          <select
-            id="ret-invoice"
-            value={invoiceId}
-            onChange={(event) => {
-              setInvoiceId(event.target.value);
-              setLines({});
-            }}
-            className="field mt-1.5"
-          >
-            <option value="">Choose an invoice…</option>
-            {invoices.map((candidate) => (
-              <option key={candidate.id} value={candidate.id}>
-                {candidate.invoiceNumber} — {candidate.customerName}
-              </option>
-            ))}
-          </select>
+          <div className="mt-1.5">
+            <SearchableSelect
+              id="ret-invoice"
+              value={invoiceId}
+              onChange={(next) => {
+                setInvoiceId(next);
+                setLines({});
+              }}
+              placeholder="Search by invoice number or customer…"
+              options={invoices.map((candidate) => ({
+                value: candidate.id,
+                label: `${candidate.invoiceNumber} — ${candidate.customerName}`,
+              }))}
+            />
+          </div>
         </div>
 
         <div>

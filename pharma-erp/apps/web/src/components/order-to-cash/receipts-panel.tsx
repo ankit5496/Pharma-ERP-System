@@ -9,6 +9,7 @@ import { apiFetch } from '@/lib/api';
 import { NewReceiptForm, ReceiptRowActions } from './receipt-actions';
 import {
   Cell,
+  col,
   EmptyState,
   ErrorState,
   formatDate,
@@ -24,7 +25,7 @@ const COLUMNS = [
   'Customer',
   'Invoice #',
   'Date',
-  'Amount',
+  col.right('Amount'),
   'Payment method',
   'Status',
   'Actions',

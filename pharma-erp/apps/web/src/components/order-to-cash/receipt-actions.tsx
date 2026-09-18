@@ -10,6 +10,7 @@ import {
 
 import { bounceReceiptAction, createReceiptAction, updateReceiptAction } from './actions';
 import { EditButton, EditDialog } from './edit-kit';
+import { SearchableSelect } from './searchable-select';
 import { DANGER_BUTTON, Money, Note, PRIMARY_BUTTON, SECONDARY_BUTTON, formatDate } from './ui';
 
 /**
@@ -138,27 +139,27 @@ export function NewReceiptForm({
           <label htmlFor="rcp-invoice" className="field-label">
             Invoice <span className="text-red-600">*</span>
           </label>
-          <select
-            id="rcp-invoice"
-            name="salesInvoiceId"
-            required
-            value={selectedId}
-            onChange={(event) => {
-              setSelectedId(event.target.value);
-              const invoice = invoices.find((candidate) => candidate.id === event.target.value);
-              // Pre-filled for the common case. Still editable.
-              setAmount(invoice?.amountOutstanding ?? '');
-            }}
-            className="field mt-1.5"
-          >
-            <option value="">Choose an invoice…</option>
-            {invoices.map((invoice) => (
-              <option key={invoice.id} value={invoice.id}>
-                {invoice.invoiceNumber} — {invoice.customerName} ({invoice.amountOutstanding} due)
-              </option>
-            ))}
-          </select>
-
+          {/* The id still posts with the form, because the API reads
+              `salesInvoiceId` from the body and the combobox is not a field. */}
+          <input type="hidden" name="salesInvoiceId" value={selectedId} />
+          <div className="mt-1.5">
+            <SearchableSelect
+              id="rcp-invoice"
+              value={selectedId}
+              onChange={(invoiceId) => {
+                setSelectedId(invoiceId);
+                const invoice = invoices.find((candidate) => candidate.id === invoiceId);
+                // Pre-filled for the common case. Still editable.
+                setAmount(invoice?.amountOutstanding ?? '');
+              }}
+              placeholder="Search by invoice number or customer…"
+              options={invoices.map((invoice) => ({
+                value: invoice.id,
+                label: `${invoice.invoiceNumber} — ${invoice.customerName}`,
+                hint: `${invoice.amountOutstanding} due`,
+              }))}
+            />
+          </div>
           {selected && (
             <p className="field-hint">
               Total <Money value={selected.grandTotal} />, paid{' '}

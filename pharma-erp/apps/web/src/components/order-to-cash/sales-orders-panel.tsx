@@ -5,6 +5,7 @@ import { apiFetch } from '@/lib/api';
 import { NewSalesOrderForm, SalesOrderRowActions } from './sales-order-forms';
 import {
   Cell,
+  col,
   CheckBadge,
   EmptyState,
   ErrorState,
@@ -22,8 +23,8 @@ const COLUMNS = [
   'Order #',
   'Customer',
   'Date',
-  'Qty',
-  'Amount',
+  col.right('Qty'),
+  col.right('Amount'),
   'Licence check',
   'Credit check',
   'Status',
