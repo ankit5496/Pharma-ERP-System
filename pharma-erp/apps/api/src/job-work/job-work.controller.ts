@@ -45,6 +45,18 @@ export class JobWorkController {
     return this.jobWork.list();
   }
 
+  /**
+   * The reference the next agreement would take, so the form can show it
+   * before saving. A prediction; nothing is reserved.
+   *
+   * Declared before any `:id` route so the literal segment is matched first.
+   */
+  @Get('next-reference')
+  @SkipAudit('Reads a number; reserves nothing.')
+  async nextReference(): Promise<{ agreementReference: string }> {
+    return this.jobWork.previewReference();
+  }
+
   @Post()
   @HttpCode(HttpStatus.CREATED)
   @Roles('ADMIN', 'SALES_MANAGER')

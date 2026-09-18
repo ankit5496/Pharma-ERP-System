@@ -79,13 +79,23 @@ export function ItemMasterForm({
     item?.gstRate === null || item?.gstRate === undefined ? '' : String(item.gstRate),
   );
 
+  // Every fallback keeps what is already selected rather than blanking it: a
+  // refusal about one field must not clear the answers to three others.
+  //
+  // `||`, NOT `??`. The action captures every submitted field including the
+  // blank ones, so an unanswered dropdown arrives as '' rather than undefined —
+  // and `'' ?? current` keeps the empty string, which is exactly the reset this
+  // effect exists to prevent. `||` treats '' as "no answer" and holds what is
+  // on screen. The same mistake is why the first attempt at this fix changed
+  // nothing.
   useEffect(() => {
     const values = state.values;
     if (!values) return;
-    setCategory(values.category ?? '');
-    setSchedule(values.scheduleClassification ?? 'NONE');
-    setUom(values.uom ?? '');
-    setGstRate(values.gstRate ?? '');
+
+    setCategory((current) => values.category || current);
+    setSchedule((current) => values.scheduleClassification || current);
+    setUom((current) => values.uom || current);
+    setGstRate((current) => values.gstRate || current);
   }, [state]);
 
   useEffect(() => {
@@ -112,7 +122,6 @@ export function ItemMasterForm({
 
   return (
     <form action={formAction} className="flex flex-col gap-8" noValidate>
-
       <FormSection title="Identity">
         <FormGrid>
           <TextField
@@ -138,8 +147,14 @@ export function ItemMasterForm({
             options={CATEGORY_OPTIONS}
             value={category}
             onChange={setCategory}
-            placeholder="Choose a category…"
           />
+          {/* THE GENERIC NAME IS THE REQUIRED ONE, and the brand is optional.
+
+              It used to be "one or the other", which meant neither could carry
+              a star and the rule only appeared once a save was refused for it.
+              Making the composition the required half is also the sounder
+              rule: every item has one — lactose has no brand, a carton has no
+              brand — and it is the composition that must appear on the label. */}
           <TextField
             name="brandName"
             error={errorFor('brandName')}
@@ -147,11 +162,13 @@ export function ItemMasterForm({
             maxLength={255}
             placeholder="Calpol 500"
             defaultValue={typed('brandName', item?.brandName)}
-            hint="Finished goods only. A raw or packing material has no brand — give it a generic name instead."
+            hint="Finished goods only. A raw or packing material has no brand."
           />
           <TextField
             name="genericName"
+            error={errorFor('genericName')}
             label="Generic name / composition"
+            required
             maxLength={512}
             placeholder="Paracetamol IP 500 mg"
             defaultValue={typed('genericName', item?.genericName)}
@@ -163,7 +180,11 @@ export function ItemMasterForm({
             options={SCHEDULE_OPTIONS}
             value={schedule}
             onChange={setSchedule}
-            placeholder="Choose a schedule…"
+            // No `--None--` above the list: `NONE — General / OTC` is already
+            // in it, and it is a real classification rather than the absence
+            // of one. Two ways to say "unscheduled", one of which the API
+            // rejects, is one too many.
+            placeholder={null}
             hint="Decides what the sale of this item legally requires."
           />
           <SelectField
@@ -190,6 +211,13 @@ export function ItemMasterForm({
             required
             inputMode="numeric"
             maxLength={8}
+            // The API requires `/^[0-9]{4,8}$/`. `maxLength` alone stopped a
+            // NINTH digit and nothing else, so "3004ab" reached the server and
+            // came back refused — a round trip to learn something the control
+            // could refuse outright. The LENGTH is still the server's to judge:
+            // blocking a short value mid-typing would refuse "300" on its way
+            // to "30049099".
+            digitsOnly
             placeholder="30049099"
             defaultValue={typed('hsnCode', item?.hsnCode)}
             hint="4 to 8 digits. Most formulations sit under 3004."
@@ -202,7 +230,6 @@ export function ItemMasterForm({
             options={GST_RATE_OPTIONS}
             value={gstRate}
             onChange={setGstRate}
-            placeholder="Choose a rate…"
           />
           <TextField
             name="mrp"

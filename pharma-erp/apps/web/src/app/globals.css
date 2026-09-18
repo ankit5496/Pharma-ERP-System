@@ -62,6 +62,50 @@
     @apply pr-8;
   }
 
+  /* A number field with no spinner arrows.
+   *
+   * The arrows are for a value somebody nudges. Every number in these forms is
+   * typed outright — a shelf life of 36 months, a reorder quantity of 5000, a
+   * credit limit — and nobody clicks an arrow five thousand times. On a field
+   * this narrow they also sit exactly where the last digit should be, so a
+   * four-digit number reads as though it has been cut off.
+   *
+   * `type="number"` is KEPT on the input: it is what gives a phone the numeric
+   * keypad and what makes the browser refuse letters. Only the arrows go.
+   *
+   * Firefox needs `appearance: textfield` on the input itself; WebKit and
+   * Blink hide a pseudo-element instead, hence both rules.
+   *
+   * Applied to EVERY `.field` number input rather than only where something
+   * opts in, because the four raw `<input type="number">` outside the master
+   * data form-kit — in the procurement dialogs and the licence alert box —
+   * would otherwise keep their arrows, and a control that looks different in
+   * one dialog is the kind of thing nobody reports and everybody notices.
+   * `.no-spinner` stays for an input that takes neither class. */
+  .no-spinner,
+  input[type='number'].field,
+  input[type='number'].field-sm,
+  input[type='number'].field-dark,
+  input[type='number'].field-dark-sm {
+    appearance: textfield;
+    -moz-appearance: textfield;
+  }
+
+  .no-spinner::-webkit-outer-spin-button,
+  .no-spinner::-webkit-inner-spin-button,
+  input[type='number'].field::-webkit-outer-spin-button,
+  input[type='number'].field::-webkit-inner-spin-button,
+  input[type='number'].field-sm::-webkit-outer-spin-button,
+  input[type='number'].field-sm::-webkit-inner-spin-button,
+  input[type='number'].field-dark::-webkit-outer-spin-button,
+  input[type='number'].field-dark::-webkit-inner-spin-button,
+  input[type='number'].field-dark-sm::-webkit-outer-spin-button,
+  input[type='number'].field-dark-sm::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    appearance: none;
+    margin: 0;
+  }
+
   .field-label {
     @apply block text-sm font-medium text-slate-700;
   }

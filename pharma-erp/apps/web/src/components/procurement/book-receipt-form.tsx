@@ -6,6 +6,7 @@ import { type PurchaseOrderListItem } from '@pharma-erp/types';
 import { createGoodsReceiptAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
 import { ActionMessage, Disclosure, Field, SubmitButton, useAction } from './form-kit';
+import { noWheelChange } from '@/lib/number-input';
 
 /**
  * Books a goods receipt against an open purchase order.
@@ -209,6 +210,7 @@ export function BookReceiptForm({
                           min="0"
                           max={line.quantityPending}
                           placeholder="0"
+                          {...noWheelChange}
                           title={`At most ${line.quantityPending} ${line.item.uom} remain on this line.`}
                           className="field"
                         />

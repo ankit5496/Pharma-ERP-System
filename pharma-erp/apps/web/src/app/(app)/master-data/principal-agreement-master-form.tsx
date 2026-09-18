@@ -13,7 +13,7 @@ import {
   type PartySummary,
 } from '@pharma-erp/types';
 
-import { saveAgreementAction, type ActionResult } from './actions';
+import { nextAgreementReferenceAction, saveAgreementAction, type ActionResult } from './actions';
 import {
   AddLineButton,
   FormError,
@@ -76,6 +76,26 @@ export function PrincipalAgreementMasterForm({
     INITIAL,
   );
   const router = useRouter();
+
+  // The reference this agreement would take, shown before it is saved. Asked
+  // once, on a CREATE only — an existing agreement already has one. A
+  // prediction rather than a reservation: nothing is held, and if another
+  // agreement is saved first it takes this number and the next moves on.
+  const [nextReference, setNextReference] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (agreement) return;
+
+    let cancelled = false;
+
+    void nextAgreementReferenceAction().then((next) => {
+      if (!cancelled) setNextReference(next);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [agreement]);
 
   // Editing starts with a row per existing mapping, so an amendment is a change
   // to what is there rather than a re-entry of it.
@@ -170,17 +190,30 @@ export function PrincipalAgreementMasterForm({
             options={principalOptions}
             value={principalId}
             onChange={setPrincipalId}
-            placeholder="Choose a principal…"
             hint="The brand owner, from the Party register. Only parties recorded as job-work principals appear here."
           />
+          {/* ALLOCATED BY THE SERVER as JW-YYYY-NNN, and read-only here.
+
+              It used to be typed by hand and optional, which left the register
+              holding "13123" beside "12341123" — no shape, no order, and
+              nothing anybody could quote on a document. It is fixed once
+              created, like a party code or an item code, because every work
+              order and invoice raised under the agreement cites it.
+
+              `readOnly` rather than `disabled`: a disabled input is left out of
+              the submission entirely, and the value still has to be readable
+              and copyable. The server ignores what is sent regardless. */}
           <TextField
             name="agreementReference"
-            error={errorFor('agreementReference')}
             label="Agreement reference"
-            maxLength={64}
-            placeholder="JW-2026-018"
-            defaultValue={typed('agreementReference', agreement?.agreementReference)}
-            hint="The parties' own reference for the contract. Optional, but unique when given."
+            readOnly
+            defaultValue={agreement?.agreementReference ?? nextReference ?? ''}
+            placeholder={agreement ? undefined : 'Assigned on save'}
+            hint={
+              agreement
+                ? 'Fixed once created — it is cited on every work order raised under this agreement.'
+                : 'Assigned automatically when this agreement is saved.'
+            }
           />
           <SelectField
             name="billingModel"
@@ -190,7 +223,6 @@ export function PrincipalAgreementMasterForm({
             options={BILLING_MODEL_OPTIONS}
             value={billingModel}
             onChange={setBillingModel}
-            placeholder="Choose a billing model…"
             wide
             hint="Mandatory. Decides whose material is consumed and what the invoice is raised on. Once work orders can be raised against an agreement, this will be fixed on any order that has started."
           />
@@ -211,7 +243,6 @@ export function PrincipalAgreementMasterForm({
             options={RATE_BASIS_OPTIONS}
             value={rateBasis}
             onChange={setRateBasis}
-            placeholder="Choose a basis…"
             hint="Required whenever a rate is given — a rate with no basis cannot be invoiced."
           />
           <TextField
@@ -255,7 +286,6 @@ export function PrincipalAgreementMasterForm({
                   options={bomOptions}
                   value={mappingBoms[id] ?? existing?.bomId ?? ''}
                   onChange={(value) => setMappingBoms((rows) => ({ ...rows, [id]: value }))}
-                  placeholder="Choose a formulation…"
                 />
                 <TextField
                   name={`mapping.${id}.principalBrandName`}

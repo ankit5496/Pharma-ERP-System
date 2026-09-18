@@ -102,10 +102,24 @@ export class CreateItemDto {
   @MaxLength(255)
   brandName?: string;
 
-  @IsOptional()
+  /**
+   * REQUIRED, although the column is nullable and rows written before this
+   * keep their NULL.
+   *
+   * Every item has a composition — lactose has no brand, a printed carton has
+   * no brand — and it is the composition that must appear on the label, so it
+   * is the half of the brand/generic pair worth insisting on. The brand stays
+   * optional above it.
+   *
+   * Only on the PRODUCTION route, which is what Master Data posts to.
+   * Procurement and Masters carry their own CreateItemDto and are unchanged:
+   * their forms ask for different things, and tightening a rule under a screen
+   * nobody asked me to change is how a working form starts refusing saves.
+   */
   @IsString()
   @MaxLength(512)
-  genericName?: string;
+  @Matches(/\S/, { message: 'genericName must not be blank' })
+  genericName!: string;
 
   @IsOptional()
   @Matches(MONEY, { message: 'mrp must be an amount with at most 2 decimal places, as a string' })
