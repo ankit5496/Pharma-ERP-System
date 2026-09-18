@@ -3,6 +3,7 @@
 import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
 
 import { MasterDataDrawer } from '@/components/master-data-drawer';
+import { SavedDialog } from '@/components/saved-dialog';
 
 /**
  * How a form tells the register it has saved, with the line to confirm it by.
@@ -114,7 +115,7 @@ export function ProductionRegister({
    * Saved: put the form away and confirm what happened.
    *
    * The two are one step, so the form is never left open behind the
-   * confirmation — closing it first is what makes the dialog the only thing on
+   * confirmation — closing it first is what makes SavedDialog the only thing on
    * screen to answer.
    */
   const reportSaved = useCallback((message: string) => {
@@ -166,34 +167,7 @@ export function ProductionRegister({
         </MasterDataDrawer>
       )}
 
-      {/* The confirmation. Built on the same layer as the form so it inherits
-          the focus trap, Escape and focus return, rather than hand-rolling a
-          second modal that would have to get all three right again. */}
-      {saved && (
-        <MasterDataDrawer title="Saved" placement="center" onClose={dismissSaved}>
-          <div className="flex flex-col gap-6">
-            <div className="flex items-start gap-3">
-              <span
-                aria-hidden="true"
-                className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-lg font-semibold text-emerald-700"
-              >
-                ✓
-              </span>
-              <p className="text-sm text-slate-900">{saved}</p>
-            </div>
-
-            <div className="flex justify-end">
-              <button
-                type="button"
-                onClick={dismissSaved}
-                className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
-              >
-                Done
-              </button>
-            </div>
-          </div>
-        </MasterDataDrawer>
-      )}
+      {saved && <SavedDialog message={saved} onDismiss={dismissSaved} />}
     </>
   );
 }
