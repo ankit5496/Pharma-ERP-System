@@ -5,10 +5,12 @@ import { createContext, useCallback, useContext, useState, type ReactNode } from
 import { MasterDataDrawer } from '@/components/master-data-drawer';
 
 /**
- * How a form tells the register it has saved, so the drawer can close.
+ * How a form tells the register it has saved, with the line to confirm it by.
  *
- * The CONFIRMATION is not this component's business — the application-wide
- * toast raises that, from inside the form. This only puts the form away.
+ * The register puts the form away and raises a confirmation DIALOG carrying
+ * that message. A dialog rather than the application-wide toast, deliberately:
+ * raising a work order is an occasional, deliberate act, and the confirmation
+ * is meant to be acknowledged rather than noticed before it fades.
  *
  * CONTEXT RATHER THAN A PROP, and the reason is the server/client boundary.
  * `form` is built by a SERVER component — it needs the session token to fetch
@@ -21,13 +23,30 @@ import { MasterDataDrawer } from '@/components/master-data-drawer';
  * provides the callback, and the client form inside reads it, with the server
  * element passing through in between untouched.
  *
- * Defaults to a no-op so a form rendered outside a drawer — the packing and
- * release forms sit inline on a batch card — simply reports into nothing.
+ * Defaults to NULL rather than a no-op, so that "no register is listening" is
+ * something a form can actually detect: the packing and release forms sit
+ * inline on a batch card with no drawer around them, and they need the toast
+ * precisely because nothing here will confirm for them. A no-op default would
+ * make those two indistinguishable from a form whose register is listening,
+ * and they would save silently.
  */
-const SavedContext = createContext<(message: string) => void>(() => {});
+const SavedContext = createContext<((message: string) => void) | null>(null);
 
+/** Reports a save, or does nothing when no register is listening. */
 export function useReportSaved(): (message: string) => void {
-  return useContext(SavedContext);
+  const reportSaved = useContext(SavedContext);
+
+  return useCallback((message: string) => reportSaved?.(message), [reportSaved]);
+}
+
+/**
+ * Whether a register is listening, and will therefore confirm the save itself.
+ *
+ * Used by the forms to decide whether a success also needs a toast — see
+ * `Result` in ./forms.
+ */
+export function useIsInsideRegister(): boolean {
+  return useContext(SavedContext) !== null;
 }
 
 /**
@@ -82,19 +101,28 @@ export function ProductionRegister({
 }) {
   const [isOpen, setIsOpen] = useState(false);
 
+  // The confirmation to show, or null for none. Holds the MESSAGE rather than a
+  // boolean so the dialog can name what was saved — "Work order WO-2026-0007
+  // raised" is worth reading; "Saved" is not.
+  const [saved, setSaved] = useState<string | null>(null);
+
   // Stable across renders: the forms hold this in an effect's dependency list,
   // and a new function each render would re-fire it on every keystroke.
   const close = useCallback(() => setIsOpen(false), []);
 
   /**
-   * Saved: put the form away.
+   * Saved: put the form away and confirm what happened.
    *
-   * Only that. This briefly also raised a confirmation dialog of its own, until
-   * the application-wide toast arrived on main doing the same job everywhere —
-   * so the message is the toast's and the closing is this component's. The
-   * parameter is kept because the forms report it; it is deliberately unused.
+   * The two are one step, so the form is never left open behind the
+   * confirmation — closing it first is what makes the dialog the only thing on
+   * screen to answer.
    */
-  const reportSaved = useCallback(() => setIsOpen(false), []);
+  const reportSaved = useCallback((message: string) => {
+    setIsOpen(false);
+    setSaved(message);
+  }, []);
+
+  const dismissSaved = useCallback(() => setSaved(null), []);
 
   return (
     <>
@@ -135,6 +163,35 @@ export function ProductionRegister({
               beside the fields it is about, which is the case that most needs
               reading. */}
           <SavedContext.Provider value={reportSaved}>{form}</SavedContext.Provider>
+        </MasterDataDrawer>
+      )}
+
+      {/* The confirmation. Built on the same layer as the form so it inherits
+          the focus trap, Escape and focus return, rather than hand-rolling a
+          second modal that would have to get all three right again. */}
+      {saved && (
+        <MasterDataDrawer title="Saved" placement="center" onClose={dismissSaved}>
+          <div className="flex flex-col gap-6">
+            <div className="flex items-start gap-3">
+              <span
+                aria-hidden="true"
+                className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-lg font-semibold text-emerald-700"
+              >
+                ✓
+              </span>
+              <p className="text-sm text-slate-900">{saved}</p>
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={dismissSaved}
+                className="rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+              >
+                Done
+              </button>
+            </div>
+          </div>
         </MasterDataDrawer>
       )}
     </>
