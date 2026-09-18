@@ -15,6 +15,7 @@ import {
   type NewOrderLine,
 } from './actions';
 import { EditButton, EditDialog } from './edit-kit';
+import { SearchableSelect } from './searchable-select';
 import {
   Badge,
   DANGER_BUTTON,
@@ -33,6 +34,22 @@ interface DraftLine {
 }
 
 let nextKey = 1;
+
+/**
+ * A blank line.
+ *
+ * The form OPENS with one of these. An order always has at least one line — the
+ * API refuses an empty `items` array — so starting at zero made the first
+ * action on every order the same click, and "No lines yet" read like a state
+ * someone had to repair rather than a form waiting to be filled in.
+ */
+const blankLine = (): DraftLine => ({
+  key: nextKey++,
+  itemId: '',
+  quantityOrdered: '',
+  unitPrice: '',
+  discountPercent: '',
+});
 
 /**
  * The new-order form.
@@ -62,7 +79,7 @@ export function NewSalesOrderForm({
   const [orderDate, setOrderDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [requestedDeliveryDate, setRequestedDeliveryDate] = useState('');
   const [notes, setNotes] = useState('');
-  const [lines, setLines] = useState<DraftLine[]>([]);
+  const [lines, setLines] = useState<DraftLine[]>(() => [blankLine()]);
   // Only failures are surfaced. A created-and-allocated order says so by
   // appearing in the list below with its status; repeating that in a banner
   // over an empty form is noise.
@@ -95,15 +112,11 @@ export function NewSalesOrderForm({
     return { taxable, tax, total: taxable + tax };
   }, [lines, itemsById]);
 
-  const addLine = () =>
-    setLines((current) => [
-      ...current,
-      { key: nextKey++, itemId: '', quantityOrdered: '', unitPrice: '', discountPercent: '' },
-    ]);
+  const addLine = () => setLines((current) => [...current, blankLine()]);
 
   const reset = () => {
     setCustomerId('');
-    setLines([]);
+    setLines([blankLine()]);
     setNotes('');
     setRequestedDeliveryDate('');
   };
@@ -176,19 +189,19 @@ export function NewSalesOrderForm({
           <label htmlFor="so-customer" className="field-label">
             Customer <span className="text-red-600">*</span>
           </label>
-          <select
-            id="so-customer"
-            value={customerId}
-            onChange={(event) => setCustomerId(event.target.value)}
-            className="field mt-1.5"
-          >
-            <option value="">Choose a customer…</option>
-            {customers.map((candidate) => (
-              <option key={candidate.id} value={candidate.id}>
-                {candidate.code} — {candidate.name}
-              </option>
-            ))}
-          </select>
+          <div className="mt-1.5">
+            <SearchableSelect
+              id="so-customer"
+              value={customerId}
+              onChange={setCustomerId}
+              placeholder="Search by code or name…"
+              options={customers.map((candidate) => ({
+                value: candidate.id,
+                label: `${candidate.code} — ${candidate.name}`,
+                hint: candidate.hasValidLicence ? undefined : 'no valid licence',
+              }))}
+            />
+          </div>
 
           {/* Shown before the order is written, because it is what the gate will
               say afterwards. Not a substitute for the check — the API decides —
@@ -273,27 +286,24 @@ export function NewSalesOrderForm({
                   className="grid gap-2.5 rounded-md border border-slate-200 bg-slate-50 p-3 sm:grid-cols-12"
                 >
                   <div className="sm:col-span-5">
-                    <select
-                      aria-label="Product"
+                    <SearchableSelect
+                      small
+                      ariaLabel="Product"
                       value={line.itemId}
-                      onChange={(event) =>
+                      onChange={(itemId) =>
                         setLines((current) =>
                           current.map((candidate) =>
-                            candidate.key === line.key
-                              ? { ...candidate, itemId: event.target.value }
-                              : candidate,
+                            candidate.key === line.key ? { ...candidate, itemId } : candidate,
                           ),
                         )
                       }
-                      className="field-sm w-full"
-                    >
-                      <option value="">Choose a product…</option>
-                      {items.map((candidate) => (
-                        <option key={candidate.id} value={candidate.id}>
-                          {candidate.code} — {candidate.name}
-                        </option>
-                      ))}
-                    </select>
+                      placeholder="Search by code or name…"
+                      options={items.map((candidate) => ({
+                        value: candidate.id,
+                        label: `${candidate.code} — ${candidate.name}`,
+                        hint: `${candidate.availableQuantity} saleable`,
+                      }))}
+                    />
 
                     {item && (
                       <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
@@ -397,17 +407,19 @@ export function NewSalesOrderForm({
                   </div>
 
                   <div className="flex items-start sm:col-span-1">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setLines((current) =>
-                          current.filter((candidate) => candidate.key !== line.key),
-                        )
-                      }
-                      className="text-xs font-semibold text-red-700 hover:underline"
-                    >
-                      Remove
-                    </button>
+                    {lines.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setLines((current) =>
+                            current.filter((candidate) => candidate.key !== line.key),
+                          )
+                        }
+                        className="text-xs font-semibold text-red-700 hover:underline"
+                      >
+                        Remove
+                      </button>
+                    )}
                   </div>
                 </div>
               );

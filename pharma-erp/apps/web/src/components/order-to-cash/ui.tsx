@@ -80,20 +80,65 @@ export function Panel({
 // Table
 // ---------------------------------------------------------------------------
 
-export function Table({ columns, children }: { columns: readonly string[]; children: ReactNode }) {
+/**
+ * A column: either a plain label, or a label with its alignment.
+ *
+ * Alignment belongs on the COLUMN, not only on the cell. A header that says
+ * "Credit limit" flush left above figures flush right is the misalignment this
+ * type exists to make impossible — the heading and the numbers under it are one
+ * column and have to be declared once.
+ */
+export type TableColumn = string | { label: string; align: 'left' | 'right' };
+
+/** Right-aligns a column. `col.right('Amount')` reads better at the call site. */
+export const col = {
+  right: (label: string): TableColumn => ({ label, align: 'right' }),
+};
+
+export function Table({
+  columns,
+  children,
+  minWidth = 'min-w-[64rem]',
+}: {
+  columns: readonly TableColumn[];
+  children: ReactNode;
+  /**
+   * Floor for the table's width, so a wide table scrolls sideways instead of
+   * crushing its columns. Overridable: a six-column table does not need the
+   * same floor as a ten-column one.
+   */
+  minWidth?: string;
+}) {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-left text-sm">
+    // `table-scroll` is the application-wide grid treatment defined in
+    // globals.css — column separators, a firmer header rule, row borders, a
+    // hover highlight and a sticky header. Procure-to-Pay already uses it, and
+    // opting in here rather than restyling means the two workflows cannot drift
+    // apart. Its selectors are direct-child (`> table > tbody > tr`), so this
+    // div must remain the table's immediate parent.
+    <div className="table-scroll max-h-[34rem] overflow-auto">
+      <table className={`w-full text-left text-sm ${minWidth}`}>
         <thead>
-          <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
-            {columns.map((column) => (
-              <th key={column} scope="col" className="whitespace-nowrap px-5 py-3 font-medium">
-                {column}
-              </th>
-            ))}
+          <tr className="text-xs uppercase tracking-wide text-slate-500">
+            {columns.map((column) => {
+              const label = typeof column === 'string' ? column : column.label;
+              const align = typeof column === 'string' ? 'left' : column.align;
+
+              return (
+                <th
+                  key={label}
+                  scope="col"
+                  className={`whitespace-nowrap px-5 py-3 font-medium ${
+                    align === 'right' ? 'text-right' : ''
+                  }`}
+                >
+                  {label}
+                </th>
+              );
+            })}
           </tr>
         </thead>
-        <tbody className="divide-y divide-slate-100">{children}</tbody>
+        <tbody>{children}</tbody>
       </table>
     </div>
   );
@@ -110,7 +155,9 @@ export function Cell({
 }) {
   return (
     <td
-      className={`px-5 py-3.5 align-top ${align === 'right' ? 'text-right' : ''} ${className}`}
+      className={`px-5 py-3.5 align-top ${
+        align === 'right' ? 'text-right tabular-nums' : ''
+      } ${className}`}
     >
       {children}
     </td>

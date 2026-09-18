@@ -10,6 +10,7 @@ import { apiFetch } from '@/lib/api';
 import { NewReturnForm, SalesReturnRowActions } from './return-actions';
 import {
   Cell,
+  col,
   EmptyState,
   ErrorState,
   formatDate,
@@ -26,7 +27,7 @@ const COLUMNS = [
   'Customer',
   'Invoice #',
   'Date',
-  'Amount',
+  col.right('Amount'),
   'Reason',
   'Status',
   'Actions',

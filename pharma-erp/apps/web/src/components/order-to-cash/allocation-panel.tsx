@@ -10,6 +10,7 @@ import { AllocateOrderButton, AllocationRowActions } from './allocation-actions'
 import {
   Badge,
   Cell,
+  col,
   EmptyState,
   ErrorState,
   formatDate,
@@ -26,8 +27,8 @@ const COLUMNS = [
   'Product',
   'Batch',
   'Expiry',
-  'Qty ordered',
-  'Qty allocated',
+  col.right('Qty ordered'),
+  col.right('Qty allocated'),
   'Status',
   'Actions',
 ] as const;
