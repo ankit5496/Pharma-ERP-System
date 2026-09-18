@@ -6,6 +6,7 @@ import { formatUom, type PurchaseOrderListItem } from '@pharma-erp/types';
 import { createGoodsReceiptAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
 import { ActionMessage, Disclosure, Field, SubmitButton, useAction } from './form-kit';
+import { noWheelChange } from '@/lib/number-input';
 
 /**
  * Books a goods receipt against an open purchase order.
@@ -297,7 +298,12 @@ export function BookReceiptForm({
                         error={errors[`quantityReceived_${line.id}`]}
                         hint={`At most ${line.quantityPending} ${formatUom(line.item.uom)} remain.`}
                       >
-                        {/* `min` is above zero rather than at it: receiving
+                        {/* `noWheelChange`: a scroll over a focused number
+                            input changes its value in every browser, so on a
+                            form this long, passing the wheel over a received
+                            quantity silently edits it.
+
+                            `min` is above zero rather than at it: receiving
                             "0" of something is not a receipt, it is a line
                             that should have been left blank. The API checks
                             the ceiling again against the live figure, which is
@@ -310,6 +316,7 @@ export function BookReceiptForm({
                           min="0"
                           max={line.quantityPending}
                           placeholder="0"
+                          {...noWheelChange}
                           aria-invalid={Boolean(errors[`quantityReceived_${line.id}`])}
                           className="field"
                         />

@@ -140,12 +140,25 @@ export function PartyMasterForm({
   // The two dropdowns were already held in state for the conditional section;
   // they are now CONTROLLED by it, and re-seeded when a save is refused —
   // React 19 resets the form and a <select> does not re-read defaultValue.
+  //
+  // EVERY FALLBACK KEEPS WHAT IS ALREADY SELECTED. Reading `values.x ?? ''`
+  // blanked a dropdown whenever the submitted value did not come back — which
+  // happens for a field the form renders read-only, and for any path that
+  // returns a result without `values` at all. The symptom was a refused save
+  // that cleared Party type and Status, so a refusal about the GSTIN silently
+  // took two unrelated answers with it. Falling back to the live state means
+  // the worst case is a dropdown that does not change, never one that empties.
   useEffect(() => {
     const values = state.values;
     if (!values) return;
-    setPartyType(values.partyType ?? '');
-    setStatus(values.status ?? '');
-    setPhoneDial(values.phoneDial || storedPhone.dial);
+
+    // `||`, NOT `??`: the action captures every submitted field including the
+    // blank ones, so an unanswered dropdown arrives as '' rather than
+    // undefined, and `'' ?? current` keeps the empty string — the very reset
+    // this effect exists to prevent.
+    setPartyType((current) => values.partyType || party?.partyType || current);
+    setStatus((current) => values.status || party?.status || current);
+    setPhoneDial((current) => values.phoneDial || current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state]);
 
@@ -169,7 +182,6 @@ export function PartyMasterForm({
 
   return (
     <form action={formAction} className="flex flex-col gap-8" noValidate>
-
       <FormSection title="Identity">
         <FormGrid>
           <TextField
@@ -187,16 +199,38 @@ export function PartyMasterForm({
                 : 'Short, unique, and never reused.'
             }
           />
-          <SelectField
-            name="partyType"
-            error={errorFor('partyType')}
-            label="Party type"
-            required
-            options={TYPE_OPTIONS}
-            value={partyType}
-            onChange={setPartyType}
-            hint="Decides which of the sections below apply."
-          />
+          {/* FIXED ONCE CREATED, like the code above it.
+
+              A party's type decides which rules apply to it — a customer needs
+              a drug licence to be active, a principal carries job-work
+              agreements — and those decisions have already been made against
+              orders, invoices and agreements that cite this row. Turning a
+              customer into a supplier would leave that paperwork describing a
+              party it no longer matches.
+
+              A read-only TEXT field rather than a disabled select: a disabled
+              control is left out of the submission entirely, and the value
+              still has to be readable. The API refuses a change regardless. */}
+          {party ? (
+            <TextField
+              name="partyTypeDisplay"
+              label="Party type"
+              readOnly
+              defaultValue={PARTY_TYPE_LABELS[party.partyType]}
+              hint="Fixed once created — orders and agreements already cite this party as this type."
+            />
+          ) : (
+            <SelectField
+              name="partyType"
+              error={errorFor('partyType')}
+              label="Party type"
+              required
+              options={TYPE_OPTIONS}
+              value={partyType}
+              onChange={setPartyType}
+              hint="Decides which of the sections below apply."
+            />
+          )}
           <TextField
             name="name"
             error={errorFor('name')}

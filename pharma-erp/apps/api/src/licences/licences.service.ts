@@ -1,4 +1,9 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 
 import type { Licence, Prisma } from '@pharma-erp/database';
 import type {
@@ -7,7 +12,9 @@ import type {
   LicenceSummary,
   LicenceType,
 } from '@pharma-erp/types';
+import { LICENCE_NUMBER_RULES } from '@pharma-erp/types';
 
+import { fieldBadRequest } from '../common/field-error';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
@@ -85,6 +92,7 @@ export class LicencesService {
     const tenantId = this.tenantContext.requireTenantId();
 
     assertExpiryAfterIssue(dto.expiryDate, dto.issuedOn ?? null);
+    assertNumberMatchesType(dto.licenceType, dto.licenceNumber.trim());
 
     try {
       const licence = await this.prisma.scoped.licence.create({
@@ -122,6 +130,15 @@ export class LicencesService {
         : existing.issuedOn
           ? toIsoDate(existing.issuedOn)
           : null,
+    );
+
+    // Against the row's RESULTING state, like the dates above: changing the
+    // type alone has to re-check the number it will then be paired with, and
+    // changing the number alone has to check it against the type already
+    // stored.
+    assertNumberMatchesType(
+      dto.licenceType ?? (existing.licenceType as LicenceType),
+      (dto.licenceNumber ?? existing.licenceNumber).trim(),
     );
 
     const data: Prisma.LicenceUpdateInput = {};
@@ -217,6 +234,27 @@ function assertExpiryAfterIssue(expiryDate: string, issuedOn: string | null): vo
   }
 }
 
+/**
+ * The number has to match the shape its TYPE requires.
+ *
+ * Not something a DTO decorator can do: the rule for `licenceNumber` depends on
+ * `licenceType`, and class-validator checks one property at a time. A GSTIN has
+ * a statutory 15-character format worth insisting on; a state drug licence does
+ * not, so only its alphabet is checked. Both rules come from
+ * LICENCE_NUMBER_RULES, which the form reads too — one definition, so a value
+ * the screen accepts is one the server accepts.
+ *
+ * Attributed to `licenceNumber` so the message lands under that control rather
+ * than as a sentence over the whole drawer.
+ */
+function assertNumberMatchesType(licenceType: LicenceType, licenceNumber: string): void {
+  const rule = LICENCE_NUMBER_RULES[licenceType];
+
+  if (new RegExp(rule.pattern).test(licenceNumber)) return;
+
+  throw fieldBadRequest('licenceNumber', rule.message);
+}
+
 /** Turns a database refusal into something the person who hit it can read. */
 function translate(error: unknown, licenceNumber: string): unknown {
   if (
@@ -257,7 +295,11 @@ function translate(error: unknown, licenceNumber: string): unknown {
  * pnpm workspace can produce — silently returns false.
  */
 function isConstraint(error: unknown, marker: string): boolean {
-  if (typeof error === 'object' && error !== null && (error as { code?: unknown }).code === marker) {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === marker
+  ) {
     return true;
   }
 

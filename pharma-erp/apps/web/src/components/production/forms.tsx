@@ -23,20 +23,17 @@ import {
   releaseBatchAction,
   type ActionResult,
 } from '@/app/(app)/workflows/production-actions';
-import { useReportSaved } from '@/components/production/register';
+import { useIsInsideRegister, useReportSaved } from '@/components/production/register';
 
 import { ExpiryHint, Quantity } from './shared';
 
 const IDLE: ActionResult = { ok: true };
 
 /**
- * Closes the drawer once a form has saved.
+ * Hands a finished save to the register, which closes the drawer and confirms.
  *
- * ONLY closes it. The confirmation itself is the application-wide toast — see
- * `Result` below — which arrived on main while this branch was building a
- * dialog of its own to do the same job. The toast wins: it is what every other
- * module raises, and it renders in the browser's top layer, so it stays
- * readable over an open modal in a way an ordinary fixed element cannot.
+ * The message travels with it: the register names what was saved in its
+ * confirmation dialog, and only the form knows what the server said.
  *
  * THE MESSAGE IS WHAT MAKES IT A SUCCESS, not `ok` alone. The idle state is
  * `{ ok: true }` with nothing in it, so testing `state.ok` by itself matched
@@ -57,16 +54,31 @@ function useReportOnSaved(state: ActionResult) {
 }
 
 /**
- * Announces a finished submission through the application-wide toast.
+ * Announces a finished submission.
  *
- * This used to be a banner rendered inline in each of the five forms. It now
- * raises the same centred message every other module raises — `ok: true` with
- * no message is still the idle state, so a fresh form announces nothing.
+ * A FAILURE always goes to the toast. A SUCCESS depends on where the form is:
+ *
+ *   * Inside a register's drawer, the register raises a confirmation dialog of
+ *     its own — so a toast here would be the same news twice, once in a box
+ *     that has to be dismissed and once in a strip that fades.
+ *   * Inline on a batch card — the packing and release forms — there is no
+ *     drawer and no register listening, so the toast is the only confirmation
+ *     there is and it has to stay.
+ *
+ * `useIsInsideRegister` is what tells the two apart, rather than a prop each
+ * caller would have to set correctly.
  *
  * Renders nothing: the toast has its own host.
  */
 function Result({ state, pending }: { state: ActionResult; pending: boolean }) {
-  useActionToast(pending, state.ok ? 'success' : 'error', state.message);
+  const confirmedByRegister = useIsInsideRegister();
+  const suppressSuccess = confirmedByRegister && state.ok;
+
+  useActionToast(
+    pending,
+    state.ok ? 'success' : 'error',
+    suppressSuccess ? undefined : state.message,
+  );
 
   return null;
 }

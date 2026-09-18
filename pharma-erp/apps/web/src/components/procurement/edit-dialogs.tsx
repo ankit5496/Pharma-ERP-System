@@ -20,6 +20,7 @@ import {
 } from '@/app/(app)/workflows/procure-to-pay/actions';
 
 import { ActionMessage, Disclosure, Field, SubmitButton, useAction } from './form-kit';
+import { noWheelChange } from '@/lib/number-input';
 
 /**
  * The Edit dialog for every Procure-to-Pay document that has one.
@@ -152,7 +153,10 @@ export function EditRequisitionButton({
               id={`rd-${requisition.id}`}
               name="requiredByDate"
               type="date"
-              defaultValue={typed('requiredByDate', requisition.requiredByDate?.slice(0, 10) ?? null)}
+              defaultValue={typed(
+                'requiredByDate',
+                requisition.requiredByDate?.slice(0, 10) ?? null,
+              )}
               className="field"
             />
           </Field>
@@ -339,6 +343,7 @@ export function EditPurchaseOrderButton({
               type="number"
               min={0}
               max={365}
+              {...noWheelChange}
               defaultValue={typed('paymentTermsDays', String(order.paymentTermsDays))}
               className="field"
             />

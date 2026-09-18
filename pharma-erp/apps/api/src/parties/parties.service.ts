@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 
 import type { Party, Prisma } from '@pharma-erp/database';
 import type { PartySummary, PartyStatus, PartyType } from '@pharma-erp/types';
+import { PARTY_TYPE_LABELS } from '@pharma-erp/types';
 
 import { fieldConflict } from '../common/field-error';
 import { PrismaService } from '../prisma/prisma.service';
@@ -90,6 +91,26 @@ export class PartiesService {
     });
 
     if (!existing) throw new NotFoundException('That party does not exist.');
+
+    // THE TYPE IS FIXED ONCE THE PARTY EXISTS.
+    //
+    // It decides which rules apply — a customer needs a drug licence to be
+    // active, a principal carries job-work agreements — and those decisions
+    // have already been made against orders, invoices and agreements citing
+    // this row. Turning a customer into a supplier would leave that paperwork
+    // describing a party it no longer matches.
+    //
+    // The same value is accepted silently: an edit form that round-trips every
+    // field should not be refused for sending back what is already stored.
+    if (dto.partyType !== undefined && dto.partyType !== existing.partyType) {
+      throw fieldConflict(
+        'partyType',
+        `"${existing.code}" is already recorded as ` +
+          `${PARTY_TYPE_LABELS[existing.partyType].toLowerCase()}, and its type cannot be ` +
+          'changed — documents that cite it were raised against that type. Create a separate ' +
+          'party instead.',
+      );
+    }
 
     // Checked against the state the row will be IN, not the fields that
     // happen to be in this request: activating a customer and supplying its

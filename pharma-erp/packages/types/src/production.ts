@@ -129,7 +129,11 @@ export interface CreateItemRequest {
   gstRate: string;
   scheduleClassification?: ScheduleClassification;
   brandName?: string;
-  genericName?: string;
+  /**
+   * Required: every item has a composition, and it is what must appear on the
+   * label. The BRAND is the optional half of the pair — lactose has none.
+   */
+  genericName: string;
   mrp?: string;
   dpcoCeiling?: boolean;
   storageConditions?: string;

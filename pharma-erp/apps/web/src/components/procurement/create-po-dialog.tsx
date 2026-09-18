@@ -7,6 +7,7 @@ import { formatUom, type PartySummary, type RequisitionListItem } from '@pharma-
 import { createPurchaseOrderAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
 import { ActionMessage, Field, SubmitButton, useAction } from './form-kit';
+import { noWheelChange } from '@/lib/number-input';
 
 /**
  * Create Purchase Order, opened from a requisition.
@@ -215,6 +216,7 @@ export function CreatePoDialog({
               type="number"
               min={0}
               max={365}
+              {...noWheelChange}
               className="field-sm w-full"
             />
           </Field>

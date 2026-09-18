@@ -164,7 +164,6 @@ export function BomMasterForm({
 
   return (
     <form action={formAction} className="flex flex-col gap-8" noValidate>
-
       <FormSection title="Formulation">
         <FormGrid>
           {bom ? (
@@ -187,7 +186,6 @@ export function BomMasterForm({
               required
               options={toOptions(products)}
               value={productId}
-              placeholder="Choose a finished good…"
               onChange={setProductId}
               wide
               hint="Only finished goods can be made to a formulation."
@@ -250,7 +248,6 @@ export function BomMasterForm({
                 required
                 options={rawOptions}
                 value={lineItems[`raw.${id}`] ?? ''}
-                placeholder="Choose a material…"
                 onChange={(value) => setLineItems((map) => ({ ...map, [`raw.${id}`]: value }))}
               />
               <TextField
@@ -299,7 +296,6 @@ export function BomMasterForm({
                     compact
                     options={packOptions}
                     value={lineItems[`pack.${id}`] ?? ''}
-                    placeholder="Choose a material…"
                     onChange={(value) => setLineItems((map) => ({ ...map, [`pack.${id}`]: value }))}
                   />
                   <TextField
