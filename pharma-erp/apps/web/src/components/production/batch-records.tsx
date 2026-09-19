@@ -70,18 +70,6 @@ export function BatchRecords({
           shown={view.filtered.length}
           total={view.total}
         />
-
-        <RegisterPager
-          page={view.page}
-          pageCount={view.pageCount}
-          first={view.first}
-          last={view.last}
-          total={view.filtered.length}
-          noun="batches"
-          pageSize={view.pageSize}
-          onPage={view.goTo}
-          onPageSize={view.setPageSize}
-        />
       </div>
 
       {view.visible.length === 0 ? (
@@ -125,6 +113,25 @@ export function BatchRecords({
           {open && <BatchDetail batch={open} packingForm={packingFormFor[open.id]} />}
         </div>
       )}
+
+      {/* AFTER the list, not under the toolbar. This register is a master/detail
+          split rather than a table, so the pager sat in the toolbar's own box
+          with the batches below it — a footer above the thing it pages through.
+          In its own box here, it reads as the foot of the list the way it does
+          on every other register. */}
+      <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+        <RegisterPager
+          page={view.page}
+          pageCount={view.pageCount}
+          first={view.first}
+          last={view.last}
+          total={view.filtered.length}
+          noun="batches"
+          pageSize={view.pageSize}
+          onPage={view.goTo}
+          onPageSize={view.setPageSize}
+        />
+      </div>
     </div>
   );
 }

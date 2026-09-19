@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useCallback, useContext, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
 
 import { MasterDataDrawer } from '@/components/master-data-drawer';
 import { SavedDialog } from '@/components/saved-dialog';
@@ -51,6 +51,26 @@ export function useIsInsideRegister(): boolean {
 }
 
 /**
+ * The register's New button, for the toolbar to render.
+ *
+ * Context for the same reason as SavedContext, and then some: the toolbar is
+ * several components down inside `children`, which is a SERVER-rendered tree
+ * passed through this client component untouched. Threading a prop through it
+ * would mean every table component taking and forwarding a button it has no
+ * other use for.
+ *
+ * Null when the step creates nothing — Batch release decides on batches that
+ * already exist, and giving it a New button would invent an action the
+ * workflow does not have.
+ */
+const NewActionContext = createContext<{ label: string; onClick: () => void } | null>(null);
+
+/** The New button to put in the toolbar, or null when the step creates nothing. */
+export function useNewAction() {
+  return useContext(NewActionContext);
+}
+
+/**
  * A Production step as a register: the records, and a button that opens the
  * form over them.
  *
@@ -72,8 +92,6 @@ export function useIsInsideRegister(): boolean {
  * action the workflow does not have.
  */
 export function ProductionRegister({
-  title,
-  description,
   newLabel,
   newTitle,
   newDescription,
@@ -81,8 +99,6 @@ export function ProductionRegister({
   form,
   children,
 }: {
-  title: string;
-  description?: string;
   /** Omit to render no New button — see the note above. */
   newLabel?: string;
   newTitle?: string;
@@ -125,27 +141,26 @@ export function ProductionRegister({
 
   const dismissSaved = useCallback(() => setSaved(null), []);
 
+  // Memoised: it is a context value, and a new object each render would
+  // re-render every toolbar below on any state change here.
+  const newAction = useMemo(
+    () => (newLabel && form ? { label: newLabel, onClick: () => setIsOpen(true) } : null),
+    [newLabel, form],
+  );
+
   return (
     <>
       <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
-        <header className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-200 px-6 py-4">
-          <div className="min-w-0">
-            <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
-            {description && <p className="mt-1 max-w-3xl text-sm text-slate-600">{description}</p>}
-          </div>
+        {/* NO HEADER OF ITS OWN. The title, the count, the search box, Filter
+            and this button all belong on ONE line, and the toolbar inside
+            `children` is what draws that line — so the New button is handed
+            down through context and rendered there, beside the controls.
 
-          {newLabel && form && (
-            <button
-              type="button"
-              onClick={() => setIsOpen(true)}
-              className="whitespace-nowrap rounded-md bg-slate-900 px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
-            >
-              {newLabel}
-            </button>
-          )}
-        </header>
-
-        {children}
+            This section used to render its own header above the toolbar, which
+            stacked the title and button over the search and filter as two
+            rows. `description` is gone with it: none of the five steps set one,
+            and it had nowhere left to sit. */}
+        <NewActionContext.Provider value={newAction}>{children}</NewActionContext.Provider>
       </section>
 
       {isOpen && form && (

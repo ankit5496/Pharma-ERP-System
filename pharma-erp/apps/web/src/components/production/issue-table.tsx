@@ -31,6 +31,7 @@ export function IssueTable({ issues }: { issues: MaterialIssueView[] }) {
   return (
     <>
       <RegisterToolbar
+        title="Material issue"
         query={view.query}
         onQuery={view.setQuery}
         placeholder="Search issue, order, material or lot…"
@@ -46,10 +47,10 @@ export function IssueTable({ issues }: { issues: MaterialIssueView[] }) {
             : 'No dispensing record matches that search.'}
         </p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="table-scroll overflow-x-auto">
           <table className="w-full min-w-[52rem] text-left text-sm">
             <thead>
-              <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
+              <tr className="text-xs uppercase tracking-wide text-slate-500">
                 <Th>Issue</Th>
                 <Th>Order</Th>
                 <Th>Dispensed</Th>
@@ -144,11 +145,11 @@ export function StockTable({ lots }: { lots: ProductionStockLot[] }) {
 
   return (
     <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-      <div className="border-b border-slate-200 px-6 py-4">
-        <h3 className="text-sm font-semibold text-slate-900">Stock on hand</h3>
-      </div>
-
+      {/* No heading row of its own: the toolbar below carries the title, so one
+          here meant "Stock on hand" printed above "Lots" — the same table named
+          twice, in two different words. */}
       <RegisterToolbar
+        title="Stock on hand"
         query={view.query}
         onQuery={view.setQuery}
         placeholder="Search material or lot…"
@@ -170,10 +171,10 @@ export function StockTable({ lots }: { lots: ProductionStockLot[] }) {
             : 'No lot matches that search.'}
         </p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="table-scroll overflow-x-auto">
           <table className="w-full min-w-[44rem] text-left text-sm">
             <thead>
-              <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
+              <tr className="text-xs uppercase tracking-wide text-slate-500">
                 <Th>Material</Th>
                 <Th>Lot</Th>
                 <Th>Owner</Th>

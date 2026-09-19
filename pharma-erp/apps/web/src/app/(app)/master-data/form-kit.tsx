@@ -3,6 +3,8 @@
 import { UOM_LABELS } from '@pharma-erp/types';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 
+import { SearchableSelect } from '@/components/searchable-select';
+
 /**
  * Shared parts for the six master-data forms.
  *
@@ -258,9 +260,15 @@ export function SelectField({
   defaultValue,
   value,
   onChange,
+  searchable,
   ...shell
 }: FieldShell & {
   options: readonly { value: string; label: string }[];
+  /**
+   * Type-to-search, for options drawn from RECORDS rather than from a fixed
+   * enum. Requires `value`/`onChange`, and expects options newest-first.
+   */
+  searchable?: boolean;
   /**
    * Set `null` for a field whose own options already include a "none".
    *
@@ -303,6 +311,35 @@ export function SelectField({
 
     element.value = value;
   });
+
+  // A picklist whose options come from RECORDS gets a search box and offers
+  // the most recent few. See SearchableSelect for which fields those are and
+  // why a fixed enum is deliberately left as a plain dropdown.
+  if (searchable) {
+    return (
+      <Shell {...shell}>
+        <div className={shell.compact ? 'mt-1' : 'mt-1.5'}>
+          <SearchableSelect
+            id={shell.name}
+            options={options}
+            placeholder={placeholder}
+            // Controlled only. An uncontrolled searchable select would have to
+            // track the DOM's value to render its own text box, and the two
+            // would disagree the moment React 19 reset the form.
+            value={value ?? defaultValue ?? ''}
+            onChange={(next) => onChange?.(next)}
+            required={shell.required}
+            invalid={shell.error ? true : undefined}
+            describedBy={shell.error ? `${shell.name}-error` : undefined}
+          />
+          {/* The value the form actually submits. SearchableSelect's own
+              <select> carries no `name`, because it renders one per field and
+              a second named control would submit twice. */}
+          <input type="hidden" name={shell.name} value={value ?? defaultValue ?? ''} />
+        </div>
+      </Shell>
+    );
+  }
 
   return (
     <Shell {...shell}>

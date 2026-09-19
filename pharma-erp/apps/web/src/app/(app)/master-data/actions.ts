@@ -403,6 +403,12 @@ export async function savePartyAction(
   // against a supplier would store a receivable nobody meant to record.
   const isCustomer = partyType === 'CUSTOMER';
 
+  // The drug licence is NOT customer-only. A job-work principal is a licensed
+  // pharmaceutical business whose licence we hold on file for the same reason
+  // we hold a customer's — so the two fields are sent for either, and dropped
+  // for a plain vendor, who is not one.
+  const holdsLicence = isCustomer || partyType === 'JOB_WORK_PRINCIPAL';
+
   const payload = {
     name,
     partyType,
@@ -419,8 +425,8 @@ export async function savePartyAction(
     ),
     address: optional(formData, 'address') ?? null,
     ...(terms ? { paymentTermsDays: Number(terms) } : {}),
-    drugLicenceNumber: isCustomer ? (optional(formData, 'drugLicenceNumber') ?? null) : null,
-    drugLicenceValidTo: isCustomer ? (optional(formData, 'drugLicenceValidTo') ?? null) : null,
+    drugLicenceNumber: holdsLicence ? (optional(formData, 'drugLicenceNumber') ?? null) : null,
+    drugLicenceValidTo: holdsLicence ? (optional(formData, 'drugLicenceValidTo') ?? null) : null,
     creditLimit: isCustomer ? (optional(formData, 'creditLimit') ?? null) : null,
     creditPeriodDays: isCustomer && creditPeriod ? Number(creditPeriod) : null,
   } satisfies UpdatePartyRequest;

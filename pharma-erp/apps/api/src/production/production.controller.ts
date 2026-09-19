@@ -52,13 +52,12 @@ import { ProductionService } from './production.service';
  *
  *   PRODUCTION_OFFICER  plans the order, records manufacture and packing
  *   STORE_OFFICER       dispenses material from stores
- *   QUALITY_OFFICER     and nobody else decides release
+ *   QUALITY_OFFICER     decides release, with ADMIN
  *
- * ADMIN is included on each so a small company can operate with one account,
- * but note what is NOT here: ADMIN is absent from the release decision. The
- * quality gate is the one action that should require the person who is
- * accountable for it, and letting an administrator sign it off would make the
- * separation cosmetic.
+ * ADMIN is included on each so a small company can operate with one account.
+ * That now includes the release decision, which it deliberately did not — see
+ * the note on `decideRelease` for what that traded and why it is recorded
+ * rather than forgotten.
  *
  * MANAGEMENT is refused on every mutating verb by RolesGuard regardless.
  */
@@ -279,11 +278,22 @@ export class ProductionController {
   // -------------------------------------------------------------------------
 
   /**
-   * Deliberately NOT open to ADMIN. See the class comment: an administrator
-   * signing off a quality decision would make the role separation decorative.
+   * ADMIN AND QUALITY_OFFICER, at the product owner's instruction (2026-09-19).
+   *
+   * This was QUALITY_OFFICER alone, deliberately: a release is the quality
+   * gate, and an administrator signing one off makes the separation of duties
+   * cosmetic. That argument has not gone away — it is recorded here rather than
+   * deleted, because the decision is a business one and whoever revisits it
+   * should see what it traded.
+   *
+   * What makes it defensible: the deciding user is recorded on the batch and
+   * the action is audited, so an admin release is attributable rather than
+   * anonymous. A company small enough to run on one account can now operate;
+   * one large enough to separate the roles should give its Quality Officers
+   * their own accounts and leave admins out of the gate by convention.
    */
   @Post('batches/:id/release')
-  @Roles('QUALITY_OFFICER')
+  @Roles('ADMIN', 'QUALITY_OFFICER')
   async decideRelease(
     @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: ReleaseDecisionDto,

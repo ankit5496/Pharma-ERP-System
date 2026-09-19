@@ -36,22 +36,18 @@ export function PendingReleaseList({
 
   return (
     <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-      <div className="border-b border-slate-200 px-6 py-4">
-        <h3 className="text-sm font-semibold text-slate-900">
-          {batches.length} batch{batches.length === 1 ? '' : 'es'} awaiting a decision
-        </h3>
-      </div>
-
-      {batches.length > 0 && (
-        <RegisterToolbar
-          query={view.query}
-          onQuery={view.setQuery}
-          placeholder="Search batch, order or product…"
-          noun="batches"
-          shown={view.filtered.length}
-          total={view.total}
-        />
-      )}
+      {/* The toolbar is the heading — see StockTable for why a separate one
+          above it named the same table twice. Rendered even when empty, so the
+          panel always says what it is rather than opening on a bare sentence. */}
+      <RegisterToolbar
+        title="Awaiting a decision"
+        query={view.query}
+        onQuery={view.setQuery}
+        placeholder="Search batch, order or product…"
+        noun="batches"
+        shown={view.filtered.length}
+        total={view.total}
+      />
 
       {view.filtered.length === 0 ? (
         <p className="px-6 py-8 text-sm text-slate-600">
@@ -114,30 +110,25 @@ export function SellableStockTable({ lots }: { lots: FinishedGoodsLotView[] }) {
 
   return (
     <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-      <div className="border-b border-slate-200 px-6 py-4">
-        <h3 className="text-sm font-semibold text-slate-900">Sellable stock</h3>
-      </div>
-
-      {lots.length > 0 && (
-        <RegisterToolbar
-          query={view.query}
-          onQuery={view.setQuery}
-          placeholder="Search product or batch…"
-          noun="lots"
-          shown={view.filtered.length}
-          total={view.total}
-        />
-      )}
+      <RegisterToolbar
+        title="Sellable stock"
+        query={view.query}
+        onQuery={view.setQuery}
+        placeholder="Search product or batch…"
+        noun="lots"
+        shown={view.filtered.length}
+        total={view.total}
+      />
 
       {view.filtered.length === 0 ? (
         <p className="px-6 py-8 text-sm text-slate-600">
           {lots.length === 0 ? 'No released stock yet.' : 'No lot matches that search.'}
         </p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="table-scroll overflow-x-auto">
           <table className="w-full min-w-[40rem] text-left text-sm">
             <thead>
-              <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
+              <tr className="text-xs uppercase tracking-wide text-slate-500">
                 <Th>Product</Th>
                 <Th>Batch</Th>
                 <Th>Expiry</Th>
@@ -206,29 +197,24 @@ export function DecidedTable({ batches }: { batches: BatchView[] }) {
 
   return (
     <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
-      <div className="border-b border-slate-200 px-6 py-4">
-        <h3 className="text-sm font-semibold text-slate-900">Decided</h3>
-      </div>
-
-      {batches.length > 0 && (
-        <RegisterToolbar
-          query={view.query}
-          onQuery={view.setQuery}
-          placeholder="Search batch, decider or reason…"
-          noun="decisions"
-          filter={view.filter}
-          onFilter={view.setFilter}
-          filterLabel="Verdict"
-          // PENDING is excluded: a pending batch is not a decision, and it is on
-          // the first tab. Offering it here would be a filter that always
-          // returns nothing.
-          filterOptions={BATCH_RELEASE_STATUSES.filter((status) => status !== 'PENDING').map(
-            (status) => ({ value: status, label: BATCH_RELEASE_STATUS_LABELS[status] }),
-          )}
-          shown={view.filtered.length}
-          total={view.total}
-        />
-      )}
+      <RegisterToolbar
+        title="Decided"
+        query={view.query}
+        onQuery={view.setQuery}
+        placeholder="Search batch, decider or reason…"
+        noun="decisions"
+        filter={view.filter}
+        onFilter={view.setFilter}
+        filterLabel="Verdict"
+        // PENDING is excluded: a pending batch is not a decision, and it is on
+        // the first tab. Offering it here would be a filter that always
+        // returns nothing.
+        filterOptions={BATCH_RELEASE_STATUSES.filter((status) => status !== 'PENDING').map(
+          (status) => ({ value: status, label: BATCH_RELEASE_STATUS_LABELS[status] }),
+        )}
+        shown={view.filtered.length}
+        total={view.total}
+      />
 
       {view.filtered.length === 0 ? (
         <p className="px-6 py-8 text-sm text-slate-600">
@@ -237,10 +223,10 @@ export function DecidedTable({ batches }: { batches: BatchView[] }) {
             : 'No decision matches that search.'}
         </p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="table-scroll overflow-x-auto">
           <table className="w-full min-w-[46rem] text-left text-sm">
             <thead>
-              <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
+              <tr className="text-xs uppercase tracking-wide text-slate-500">
                 <Th>Batch</Th>
                 <Th>Decision</Th>
                 <Th>By</Th>

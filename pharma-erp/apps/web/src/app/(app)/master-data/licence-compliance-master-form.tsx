@@ -47,7 +47,8 @@ export function LicenceComplianceMasterForm({
   onSaved,
 }: {
   licence?: LicenceSummary;
-  onSaved?: () => void;
+  /** Called with the confirmation line, so the workspace can show it. */
+  onSaved?: (message?: string) => void;
 }) {
   const [state, formAction, isPending] = useActionState(
     saveLicenceAction.bind(null, licence?.id ?? null),
@@ -70,8 +71,8 @@ export function LicenceComplianceMasterForm({
     if (!state.ok) return;
 
     router.refresh();
-    onSaved?.();
-  }, [state.ok, router, onSaved]);
+    onSaved?.(state.message);
+  }, [state.ok, state.message, router, onSaved]);
 
   // What was typed wins over what was stored, so a rejected save re-renders
   // the attempt rather than reverting to the saved record. React 19 resets an

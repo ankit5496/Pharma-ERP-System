@@ -17,6 +17,7 @@ export type ItemRow = Item;
 export function toItemSummary(item: ItemRow): ItemSummary {
   return {
     id: item.id,
+    createdAt: item.createdAt.toISOString(),
     code: item.code,
     name: item.name,
     type: item.type,

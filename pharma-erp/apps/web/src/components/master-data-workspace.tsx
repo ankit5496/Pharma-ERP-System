@@ -33,6 +33,7 @@ import {
   PartyGrid,
 } from '@/components/master-data-grid';
 import { MasterDataDrawer } from '@/components/master-data-drawer';
+import { SavedDialog } from '@/components/saved-dialog';
 import type { ApiResult } from '@/lib/api';
 
 /**
@@ -91,6 +92,10 @@ export function MasterDataWorkspace({
   // drawer branch had to explain why it is not the inventory.
   const [inventoryFor, setInventoryFor] = useState<ItemSummary | null>(null);
 
+  // The confirmation to show, or null for none. Holds the MESSAGE rather than
+  // a boolean so the dialog can name what was saved.
+  const [saved, setSaved] = useState<string | null>(null);
+
   // One piece of state, not an `isOpen` plus an `editing`: those two can
   // disagree, and "open with nothing to edit" is not a state that exists.
   const [drawer, setDrawer] = useState<DrawerState | null>(null);
@@ -121,6 +126,23 @@ export function MasterDataWorkspace({
   }
 
   const closeDrawer = () => setDrawer(null);
+
+  /**
+   * Saved: put the form away and confirm what happened.
+   *
+   * One handler for all six registers, so every save in Master Data confirms
+   * the same way — and the same way the Production steps do, since both raise
+   * SavedDialog. The two are one step, so the form is never left open behind
+   * the confirmation.
+   *
+   * The message is the server's own line ("PCM-500 — ColdAway updated."), which
+   * is why it travels up from the form rather than being written here: only the
+   * action knows what was saved and whether it was created or updated.
+   */
+  const reportSaved = (message?: string) => {
+    setDrawer(null);
+    if (message) setSaved(message);
+  };
 
   return (
     <>
@@ -230,30 +252,30 @@ export function MasterDataWorkspace({
             <BomMasterForm
               bom={drawer.bom}
               items={items.ok ? items.data : []}
-              onSaved={closeDrawer}
+              onSaved={reportSaved}
             />
           ) : drawer.mode === 'edit' ? (
-            <ItemMasterForm item={drawer.item} onSaved={closeDrawer} />
+            <ItemMasterForm item={drawer.item} onSaved={reportSaved} />
           ) : drawer.mode === 'edit-party' ? (
-            <PartyMasterForm party={drawer.party} onSaved={closeDrawer} />
+            <PartyMasterForm party={drawer.party} onSaved={reportSaved} />
           ) : drawer.mode === 'edit-licence' ? (
-            <LicenceComplianceMasterForm licence={drawer.licence} onSaved={closeDrawer} />
+            <LicenceComplianceMasterForm licence={drawer.licence} onSaved={reportSaved} />
           ) : drawer.mode === 'edit-agreement' ? (
             <PrincipalAgreementMasterForm
               agreement={drawer.agreement}
               parties={parties.ok ? parties.data : []}
               boms={boms.ok ? boms.data : []}
-              onSaved={closeDrawer}
+              onSaved={reportSaved}
             />
           ) : drawer.mode === 'edit-packaging' ? (
             <PackagingRequirementMasterForm
               requirement={drawer.requirement}
               items={items.ok ? items.data : []}
-              onSaved={closeDrawer}
+              onSaved={reportSaved}
             />
           ) : (
             <Form
-              onSaved={closeDrawer}
+              onSaved={reportSaved}
               items={items.ok ? items.data : []}
               parties={parties.ok ? parties.data : []}
               boms={boms.ok ? boms.data : []}
@@ -265,6 +287,8 @@ export function MasterDataWorkspace({
       {inventoryFor && (
         <ItemInventoryDialog item={inventoryFor} onClose={() => setInventoryFor(null)} />
       )}
+
+      {saved && <SavedDialog message={saved} onDismiss={() => setSaved(null)} />}
     </>
   );
 }

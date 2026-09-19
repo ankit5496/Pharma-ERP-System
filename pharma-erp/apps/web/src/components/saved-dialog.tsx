@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
  * The box that confirms a save.
@@ -21,9 +21,46 @@ import { useEffect, useRef } from 'react';
  * purpose: Escape, the focus trap and returning focus to whatever opened it are
  * what a keyboard user needs from any modal, and a confirmation that skipped
  * them would strand them on a box they cannot dismiss.
+ *
+ * IT ANIMATES BOTH WAYS. The card eases up into place and fades out again when
+ * dismissed — which needs the component's help, because the exit cannot be a
+ * plain CSS transition: the element is unmounted the moment it is dismissed,
+ * and there is nothing left on screen to transition. See `leave` below.
  */
+
+/**
+ * How long the exit animation runs. Matches `saved-dialog-out` in globals.css;
+ * the two have to agree or the card is removed mid-fade or lingers after it.
+ */
+const LEAVE_MS = 180;
+
 export function SavedDialog({ message, onDismiss }: { message: string; onDismiss: () => void }) {
   const doneRef = useRef<HTMLButtonElement>(null);
+
+  // Dismissing plays an animation before the card is removed, so `onDismiss`
+  // is delayed rather than called straight away. Without this the element is
+  // unmounted on the click and there is nothing left to animate out — which is
+  // why a CSS transition alone cannot do this.
+  const [leaving, setLeaving] = useState(false);
+  const leavingRef = useRef(false);
+
+  // Held in a ref so `leave` can stay stable across renders. Two call sites
+  // pass an inline arrow for `onDismiss`, which is a new function every render
+  // — and the focus effect below depends on `leave`, so without this it would
+  // re-run constantly and yank focus back to Done while the page worked.
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
+
+  const leave = useCallback(() => {
+    // Guarded: Escape, the backdrop and Done all lead here, and two of them in
+    // quick succession would otherwise queue two dismissals.
+    if (leavingRef.current) return;
+
+    leavingRef.current = true;
+    setLeaving(true);
+
+    setTimeout(() => onDismissRef.current(), LEAVE_MS);
+  }, []);
 
   useEffect(() => {
     // Remembered before focus moves, so dismissing returns the keyboard to
@@ -38,7 +75,7 @@ export function SavedDialog({ message, onDismiss }: { message: string; onDismiss
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
         event.stopPropagation();
-        onDismiss();
+        leave();
         return;
       }
 
@@ -57,7 +94,7 @@ export function SavedDialog({ message, onDismiss }: { message: string; onDismiss
       document.removeEventListener('keydown', handleKeyDown);
       opener?.focus?.();
     };
-  }, [onDismiss]);
+  }, [leave]);
 
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center p-4">
@@ -67,8 +104,9 @@ export function SavedDialog({ message, onDismiss }: { message: string; onDismiss
       <button
         type="button"
         aria-label="Dismiss"
-        onClick={onDismiss}
-        className="absolute inset-0 h-full w-full cursor-default bg-slate-900/30 backdrop-blur-[1px]"
+        onClick={leave}
+        data-leaving={leaving}
+        className="saved-dialog-backdrop absolute inset-0 h-full w-full cursor-default bg-slate-900/30 backdrop-blur-[1px]"
       />
 
       <div
@@ -76,7 +114,8 @@ export function SavedDialog({ message, onDismiss }: { message: string; onDismiss
         aria-modal="true"
         aria-labelledby="saved-title"
         aria-describedby="saved-message"
-        className="relative w-full max-w-sm rounded-xl bg-white px-6 py-7 text-center shadow-2xl"
+        data-leaving={leaving}
+        className="saved-dialog-card relative w-full max-w-sm rounded-xl bg-white px-6 py-7 text-center shadow-2xl"
       >
         {/* Decorative: the heading and message below already say what happened,
             so announcing a tick as well would just be noise to a screen
@@ -109,7 +148,7 @@ export function SavedDialog({ message, onDismiss }: { message: string; onDismiss
         <button
           ref={doneRef}
           type="button"
-          onClick={onDismiss}
+          onClick={leave}
           className="mt-6 rounded-md bg-blue-600 px-8 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
         >
           Done

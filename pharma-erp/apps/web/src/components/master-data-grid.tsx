@@ -2,6 +2,9 @@
 
 import { useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
+
+import { ListFilters, type FilterField } from '@/components/list-filters';
+import { ListPager } from '@/components/list-pager';
 import {
   AGREEMENT_STATUS_LABELS,
   BILLING_MODEL_LABELS,
@@ -11,6 +14,7 @@ import {
   LICENCE_TYPE_LABELS,
   PACKAGING_LEVEL_LABELS,
   PACKAGING_QUANTITY_BASIS_LABELS,
+  PARTY_STATUS_LABELS,
   PARTY_TYPE_LABELS,
   SCHEDULE_CLASSIFICATION_LABELS,
   type AgreementStatus,
@@ -87,17 +91,31 @@ type SearchText<Row> = (row: Row) => string;
 const DEFAULT_PAGE_SIZE = 10;
 const PAGE_SIZES = [10, 25, 50, 100] as const;
 
+/**
+ * Search, filters and the New button.
+ *
+ * The controls themselves are the shared `ListFilters`, so this register looks
+ * and behaves like the Production and Procurement lists. What stays here is the
+ * New button, which is the one part that is this register's own.
+ *
+ * The row count that used to sit beside the search box is gone: the pager below
+ * now says "Showing 1-10 of 34", and two counts in one view only invite a
+ * comparison to check they agree.
+ */
 function Toolbar({
-  count,
+  title,
   total,
   noun,
   singular,
   query,
   onQuery,
+  fields,
+  values,
+  onField,
+  onClear,
   onNew,
-  disabled,
 }: {
-  count: number;
+  title: string;
   total: number;
   noun: string;
   /**
@@ -108,36 +126,34 @@ function Toolbar({
   singular: string;
   query: string;
   onQuery: (value: string) => void;
+  fields: readonly FilterField[];
+  values: Record<string, string>;
+  onField: (name: string, value: string) => void;
+  onClear: () => void;
   onNew: () => void;
-  disabled: boolean;
 }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-4 py-3">
-      <div className="flex min-w-0 flex-1 items-center gap-3">
-        <input
-          type="search"
-          value={query}
-          onChange={(event) => onQuery(event.target.value)}
-          placeholder={`Search ${noun}…`}
-          aria-label={`Search ${noun}`}
-          disabled={disabled}
-          className="field-sm w-full max-w-xs"
-        />
-        {total > 0 && (
-          <span className="whitespace-nowrap text-xs tabular-nums text-slate-500">
-            {count === total ? `${total} ${noun}` : `${count} of ${total}`}
-          </span>
-        )}
-      </div>
-
+    <ListFilters
+      title={title}
+      total={total}
+      noun={noun}
+      singular={singular}
+      fields={fields}
+      values={values}
+      onChange={onField}
+      onClear={onClear}
+      query={query}
+      onQuery={onQuery}
+      searchPlaceholder={`Search ${noun}…`}
+    >
       <button
         type="button"
         onClick={onNew}
-        className="whitespace-nowrap rounded-md bg-slate-900 px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+        className="h-9 whitespace-nowrap rounded-md bg-slate-900 px-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
       >
         New {singular}
       </button>
-    </div>
+    </ListFilters>
   );
 }
 
@@ -148,6 +164,11 @@ function Toolbar({
  * genuinely good for: saying what the register holds. It also made the live
  * registers look broken next to the planned ones, which show their columns.
  */
+/** "items" -> "Items", for the heading when a register names no title of its own. */
+function capitalise(text: string): string {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 function HeadRow({ labels }: { labels: readonly string[] }) {
   return (
     <thead className="sticky top-0 z-10 bg-slate-50">
@@ -199,52 +220,22 @@ function Pager({
   onPage: (page: number) => void;
   onPageSize: (size: number) => void;
 }) {
+  // `flex-none` so the pager keeps its height while the table above it takes
+  // the remaining space — this grid is inside a column that scrolls internally.
   return (
-    <div className="flex flex-none flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white px-4 py-2.5">
-      <p className="text-xs tabular-nums text-slate-600">
-        Showing <strong className="font-semibold text-slate-900">{first}</strong>–
-        <strong className="font-semibold text-slate-900">{last}</strong> of {total} {noun}
-      </p>
-
-      <div className="flex flex-wrap items-center gap-3">
-        <label className="flex items-center gap-1.5 whitespace-nowrap text-xs text-slate-600">
-          Rows
-          <select
-            value={pageSize}
-            onChange={(event) => onPageSize(Number(event.target.value))}
-            aria-label={`Rows of ${noun} per page`}
-            className="rounded-md border border-slate-300 bg-white px-1.5 py-1 text-xs tabular-nums text-slate-900"
-          >
-            {PAGE_SIZES.map((size) => (
-              <option key={size} value={size}>
-                {size}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => onPage(page - 1)}
-            disabled={page <= 1}
-            className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Previous
-          </button>
-          <span className="whitespace-nowrap px-1.5 text-xs tabular-nums text-slate-600">
-            Page {page} of {pageCount}
-          </span>
-          <button
-            type="button"
-            onClick={() => onPage(page + 1)}
-            disabled={page >= pageCount}
-            className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Next
-          </button>
-        </div>
-      </div>
+    <div className="flex-none bg-white">
+      <ListPager
+        page={page}
+        pageCount={pageCount}
+        pageSize={pageSize}
+        first={first}
+        last={last}
+        total={total}
+        noun={noun}
+        pageSizes={PAGE_SIZES}
+        onPage={onPage}
+        onPageSize={onPageSize}
+      />
     </div>
   );
 }
@@ -262,9 +253,12 @@ export function Grid<Row>({
   rowKey,
   noun,
   singular,
+  title,
   onNew,
   empty,
   notice,
+  filters,
+  matchesField,
 }: {
   rows: readonly Row[];
   columns: readonly GridColumn<Row>[];
@@ -272,21 +266,48 @@ export function Grid<Row>({
   rowKey: (row: Row) => string;
   noun: string;
   singular: string;
+  /** The heading. Defaults to the plural noun, capitalised. */
+  title?: string;
   onNew: () => void;
   empty: ReactNode;
   /** Shown under the toolbar — a refusal from a row action, typically. */
   notice?: ReactNode;
+  /** Filters for the panel. Omitted renders the search box with no Filter button. */
+  filters?: readonly FilterField[];
+  /**
+   * Whether a row passes one filter. Called once per field actually set, so
+   * several filters narrow rather than widen.
+   */
+  matchesField?: (row: Row, name: string, value: string) => boolean;
 }) {
   const [query, setQuery] = useState('');
+  const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return rows;
-    return rows.filter((row) => searchText(row).toLowerCase().includes(needle));
-  }, [rows, query, searchText]);
+
+    // Only the fields actually set — an unset field was never asked for, and
+    // calling the predicate for it would make every register handle an empty
+    // value.
+    const active = Object.entries(fieldValues).filter(([, value]) => value !== '');
+
+    if (!needle && active.length === 0) return rows;
+
+    return rows.filter((row) => {
+      if (matchesField) {
+        for (const [name, value] of active) {
+          if (!matchesField(row, name, value)) return false;
+        }
+      }
+
+      if (!needle) return true;
+
+      return searchText(row).toLowerCase().includes(needle);
+    });
+  }, [rows, query, fieldValues, searchText, matchesField]);
 
   // At least 1, so an empty register reads "Page 1 of 1" rather than "of 0".
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
@@ -310,7 +331,7 @@ export function Grid<Row>({
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <Toolbar
-        count={filtered.length}
+        title={title ?? capitalise(noun)}
         total={rows.length}
         noun={noun}
         singular={singular}
@@ -321,19 +342,37 @@ export function Grid<Row>({
           // page 4 of a result that has one page.
           setPage(1);
         }}
+        fields={filters ?? []}
+        values={fieldValues}
+        onField={(name, value) => {
+          setFieldValues((current) => ({ ...current, [name]: value }));
+          setPage(1);
+        }}
+        onClear={() => {
+          setFieldValues({});
+          setPage(1);
+        }}
         onNew={onNew}
-        disabled={rows.length === 0}
       />
 
       {notice}
 
-      {/* The grid scrolls in both directions inside its own box, so a wide
-          register never makes the page itself scroll sideways. */}
-      <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto overscroll-contain">
-        <table className="w-full border-separate border-spacing-0 text-left text-sm">
+      {/* `table-scroll` is what draws the rules BETWEEN cells — a slate-200 line
+          under every row, a fainter slate-100 line down each column, and a
+          firmer edge under the header. It is a stylesheet rule rather than
+          classes here (see globals.css) so that every table in the application
+          is ruled identically; this grid used to draw its own borders per cell
+          and so quietly looked different from the Procure-to-Pay lists.
+
+          `border-separate` is gone with them: those column rules land on
+          adjacent cell edges, and only `border-collapse` merges the two into
+          one line instead of two abutting ones. */}
+      <div ref={scrollRef} className="table-scroll min-h-0 flex-1 overflow-auto overscroll-contain">
+        <table className="w-full text-left text-sm">
           {/* Sticky so the column names stay readable once the register is
-              longer than the box — which is the entire point of a grid. */}
-          <thead className="sticky top-0 z-10 bg-slate-50">
+              longer than the box — which is the entire point of a grid. The
+              pinning itself comes from `.table-scroll thead th`. */}
+          <thead>
             <tr>
               {columns.map((column) => (
                 <th
@@ -342,9 +381,9 @@ export function Grid<Row>({
                   // A pinned header cell sits at the crossing of two sticky
                   // axes, so it needs to outrank both the row it is in and
                   // the pinned body cells scrolling beneath it.
-                  className={`whitespace-nowrap border-b border-slate-200 px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500 ${
+                  className={`whitespace-nowrap px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500 ${
                     column.align === 'right' ? 'text-right' : ''
-                  } ${column.pinned ? 'sticky right-0 z-20 bg-slate-50' : ''}`}
+                  } ${column.pinned ? 'sticky right-0 z-20 bg-white' : ''}`}
                 >
                   {column.label}
                 </th>
@@ -372,7 +411,10 @@ export function Grid<Row>({
               </tr>
             ) : (
               visible.map((row) => (
-                <tr key={rowKey(row)} className="group transition hover:bg-slate-50">
+                // No hover class: `.table-scroll` hovers the whole row for
+                // every table in the application. `group` stays, because the
+                // pinned cell still has to follow it.
+                <tr key={rowKey(row)} className="group">
                   {columns.map((column) => (
                     <td
                       key={column.key}
@@ -380,7 +422,7 @@ export function Grid<Row>({
                       // over the scrolling ones — and has to repeat the row's
                       // hover, or it stays white while the rest of the row
                       // highlights.
-                      className={`whitespace-nowrap border-b border-slate-100 px-4 py-2.5 text-slate-700 ${
+                      className={`whitespace-nowrap px-4 py-2.5 text-slate-700 ${
                         column.align === 'right' ? 'text-right tabular-nums' : ''
                       } ${
                         column.pinned
@@ -398,30 +440,30 @@ export function Grid<Row>({
         </table>
       </div>
 
-      {/* Hidden when there is nothing to page through: a single page of four
-          rows does not need a "Page 1 of 1" and a pair of dead buttons under
-          it. It reappears the moment a register outgrows one page. */}
-      {filtered.length > 0 && (filtered.length > pageSize || pageSize !== DEFAULT_PAGE_SIZE) && (
-        <Pager
-          page={current}
-          pageCount={pageCount}
-          first={start + 1}
-          last={start + visible.length}
-          total={filtered.length}
-          noun={noun}
-          pageSize={pageSize}
-          onPage={goTo}
-          onPageSize={(size) => {
-            setPageSize(size);
-            // Row 1 again rather than trying to keep the current rows in view:
-            // the arithmetic for "which page holds the row I was looking at"
-            // is guesswork once the size changes, and landing at the top is
-            // the one outcome nobody has to work out.
-            setPage(1);
-            scrollRef.current?.scrollTo({ top: 0 });
-          }}
-        />
-      )}
+      {/* ALWAYS SHOWN, like every Procure-to-Pay list. It used to hide itself
+          whenever everything fit on one page, which took the row count and the
+          page-size control away exactly when somebody wanted to raise the size
+          to see more — and it made these registers look unlike the rest of the
+          application for no reason a reader could work out. */}
+      <Pager
+        page={current}
+        pageCount={pageCount}
+        first={filtered.length === 0 ? 0 : start + 1}
+        last={start + visible.length}
+        total={filtered.length}
+        noun={noun}
+        pageSize={pageSize}
+        onPage={goTo}
+        onPageSize={(size) => {
+          setPageSize(size);
+          // Row 1 again rather than trying to keep the current rows in view:
+          // the arithmetic for "which page holds the row I was looking at"
+          // is guesswork once the size changes, and landing at the top is
+          // the one outcome nobody has to work out.
+          setPage(1);
+          scrollRef.current?.scrollTo({ top: 0 });
+        }}
+      />
     </div>
   );
 }
@@ -830,6 +872,39 @@ function RowActions({
   );
 }
 
+/**
+ * Turns one of the shared label maps into filter options.
+ *
+ * The maps are the single source for what each code is CALLED, so building the
+ * options from them means a filter can never offer a value the register cannot
+ * display, or miss one that was added to the enum.
+ */
+function optionsFrom(labels: Record<string, string>) {
+  return Object.entries(labels).map(([value, label]) => ({ value, label }));
+}
+
+const ITEM_FILTERS: readonly FilterField[] = [
+  {
+    name: 'type',
+    label: 'Item type',
+    options: optionsFrom(ITEM_TYPE_LABELS),
+    allLabel: 'Any type',
+  },
+  {
+    name: 'schedule',
+    label: 'Schedule',
+    options: optionsFrom(SCHEDULE_CLASSIFICATION_LABELS),
+    allLabel: 'Any schedule',
+  },
+];
+
+function matchesItemField(item: ItemSummary, name: string, value: string): boolean {
+  if (name === 'type') return item.type === value;
+  if (name === 'schedule') return item.scheduleClassification === value;
+
+  return true;
+}
+
 export function ItemGrid({
   result,
   onNew,
@@ -902,6 +977,8 @@ export function ItemGrid({
       noun="items"
       singular="item"
       onNew={onNew}
+      filters={ITEM_FILTERS}
+      matchesField={matchesItemField}
       empty={
         <>
           No items yet. Seed the demo data with <code>pnpm seed:production</code>.
@@ -948,6 +1025,29 @@ const BOM_COLUMNS: readonly GridColumn<BomView>[] = [
   { key: 'from', label: 'Effective', align: 'right', render: (bom) => bom.effectiveFrom },
 ];
 
+/**
+ * Active versus superseded, which is the question actually asked of this
+ * register: a formulation is never edited, so a product with four revisions has
+ * four rows here and only one of them is the one being manufactured to.
+ */
+const BOM_FILTERS: readonly FilterField[] = [
+  {
+    name: 'version',
+    label: 'Version',
+    options: [
+      { value: 'ACTIVE', label: 'Active only' },
+      { value: 'SUPERSEDED', label: 'Superseded only' },
+    ],
+    allLabel: 'Any version',
+  },
+];
+
+function matchesBomField(bom: BomView, name: string, value: string): boolean {
+  if (name === 'version') return value === 'ACTIVE' ? bom.isActive : !bom.isActive;
+
+  return true;
+}
+
 export function BomGrid({
   result,
   onNew,
@@ -993,6 +1093,8 @@ export function BomGrid({
       searchText={(bom) => `${bom.product.code} ${bom.product.name} v${bom.version}`}
       noun="formulations"
       singular="formulation"
+      filters={BOM_FILTERS}
+      matchesField={matchesBomField}
       onNew={onNew}
       empty={
         <>
@@ -1230,6 +1332,28 @@ function PartyDocumentsCell({ party }: { party: PartySummary }) {
   );
 }
 
+const PARTY_FILTERS: readonly FilterField[] = [
+  {
+    name: 'partyType',
+    label: 'Party type',
+    options: optionsFrom(PARTY_TYPE_LABELS),
+    allLabel: 'Any type',
+  },
+  {
+    name: 'status',
+    label: 'Status',
+    options: optionsFrom(PARTY_STATUS_LABELS),
+    allLabel: 'Any status',
+  },
+];
+
+function matchesPartyField(party: PartySummary, name: string, value: string): boolean {
+  if (name === 'partyType') return party.partyType === value;
+  if (name === 'status') return party.status === value;
+
+  return true;
+}
+
 export function PartyGrid({
   result,
   onNew,
@@ -1285,6 +1409,8 @@ export function PartyGrid({
       noun="parties"
       singular="party"
       onNew={onNew}
+      filters={PARTY_FILTERS}
+      matchesField={matchesPartyField}
       notice={
         actionError && (
           <p
@@ -1459,6 +1585,28 @@ function AlertLeadDays({
   );
 }
 
+const LICENCE_FILTERS: readonly FilterField[] = [
+  {
+    name: 'licenceType',
+    label: 'Licence type',
+    options: optionsFrom(LICENCE_TYPE_LABELS),
+    allLabel: 'Any type',
+  },
+  {
+    name: 'status',
+    label: 'Status',
+    options: optionsFrom(LICENCE_STATUS_LABELS),
+    allLabel: 'Any status',
+  },
+];
+
+function matchesLicenceField(licence: LicenceSummary, name: string, value: string): boolean {
+  if (name === 'licenceType') return licence.licenceType === value;
+  if (name === 'status') return licence.status === value;
+
+  return true;
+}
+
 export function LicenceGrid({
   result,
   onNew,
@@ -1512,6 +1660,8 @@ export function LicenceGrid({
       noun="licences"
       singular="licence"
       onNew={onNew}
+      filters={LICENCE_FILTERS}
+      matchesField={matchesLicenceField}
       notice={
         <>
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50/60 px-4 py-2">
@@ -1671,6 +1821,32 @@ const AGREEMENT_COLUMNS: readonly GridColumn<JobWorkAgreementSummary>[] = [
   },
 ];
 
+const AGREEMENT_FILTERS: readonly FilterField[] = [
+  {
+    name: 'billingModel',
+    label: 'Billing model',
+    options: optionsFrom(BILLING_MODEL_LABELS),
+    allLabel: 'Any model',
+  },
+  {
+    name: 'status',
+    label: 'Status',
+    options: optionsFrom(AGREEMENT_STATUS_LABELS),
+    allLabel: 'Any status',
+  },
+];
+
+function matchesAgreementField(
+  agreement: JobWorkAgreementSummary,
+  name: string,
+  value: string,
+): boolean {
+  if (name === 'billingModel') return agreement.billingModel === value;
+  if (name === 'status') return agreement.status === value;
+
+  return true;
+}
+
 export function AgreementGrid({
   result,
   onNew,
@@ -1731,6 +1907,8 @@ export function AgreementGrid({
       noun="agreements"
       singular="agreement"
       onNew={onNew}
+      filters={AGREEMENT_FILTERS}
+      matchesField={matchesAgreementField}
       notice={
         actionError && (
           <p
@@ -1847,6 +2025,28 @@ const PACKAGING_COLUMNS: readonly GridColumn<PackagingRequirementView>[] = [
   },
 ];
 
+const PACKAGING_FILTERS: readonly FilterField[] = [
+  {
+    name: 'active',
+    label: 'Status',
+    options: [
+      { value: 'ACTIVE', label: 'Active only' },
+      { value: 'INACTIVE', label: 'Inactive only' },
+    ],
+    allLabel: 'Any status',
+  },
+];
+
+function matchesPackagingField(
+  row: PackagingRequirementView,
+  name: string,
+  value: string,
+): boolean {
+  if (name === 'active') return value === 'ACTIVE' ? row.isActive : !row.isActive;
+
+  return true;
+}
+
 export function PackagingGrid({
   result,
   onNew,
@@ -1899,6 +2099,8 @@ export function PackagingGrid({
       noun="pack specifications"
       singular="pack specification"
       onNew={onNew}
+      filters={PACKAGING_FILTERS}
+      matchesField={matchesPackagingField}
       notice={
         <>
           {inactive > 0 && (
