@@ -3,10 +3,7 @@
 import type { PartySummary, PurchaseOrderListItem } from '@pharma-erp/types';
 import { startTransition, useState } from 'react';
 
-import {
-  discardDraftPurchaseOrderAction,
-  submitDraftPurchaseOrderAction,
-} from '@/app/(app)/workflows/procure-to-pay/actions';
+import { discardDraftPurchaseOrderAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 import { RowActionMenu, type RowAction } from '@/components/row-action-menu';
 
 import { EditPurchaseOrderButton } from './edit-dialogs';
@@ -24,11 +21,14 @@ import { ActionMessage, useAction } from './form-kit';
  *  - EDIT reopens the same dialog the draft was written in, with everything
  *    that was filled in still there, and saves it as a draft again — no
  *    required fields, which is the point of a draft.
- *  - SUBMIT places the order, and THAT is where the real validation runs: the
- *    API refuses a draft with no lines and re-checks every requisition behind
- *    it, because a draft can sit for a week and the world moves on.
  *  - DISCARD asks first. It is soft in the database, but it is a one-way door
  *    from this screen, so it should be treated as one.
+ *
+ * THERE IS NO "SUBMIT ORDER" ENTRY. Placing the order is not a separate act any
+ * more: the edit dialog's own button creates the actual purchase order from the
+ * draft, saving any correction on the way through. The API's placing step is
+ * still what runs the real validation; it is simply no longer something the
+ * user has to ask for as a second step.
  */
 export function DraftOrderActions({
   order,
@@ -38,7 +38,6 @@ export function DraftOrderActions({
   /** Offered on the edit form: an unplaced draft may still change vendor. */
   vendors?: readonly PartySummary[];
 }) {
-  const [submitState, submitAction, submitting] = useAction(submitDraftPurchaseOrderAction);
   const [discardState, discardAction, discarding] = useAction(discardDraftPurchaseOrderAction);
   const [editing, setEditing] = useState(false);
 
@@ -67,14 +66,6 @@ export function DraftOrderActions({
   const actions: RowAction[] = [
     { label: 'Edit', onSelect: () => setEditing(true) },
     {
-      label: 'Submit order',
-      onSelect: () => run(submitAction),
-      // Said here as well as by the API, because it is the one refusal a
-      // person can act on without leaving the row.
-      disabledReason:
-        order.lines.length === 0 ? 'Add at least one line before placing this order.' : null,
-    },
-    {
       label: 'Discard draft',
       tone: 'danger',
       onSelect: () => {
@@ -91,10 +82,9 @@ export function DraftOrderActions({
 
   return (
     <div className="flex flex-col items-center gap-1.5">
-      <ActionMessage state={submitState} />
       <ActionMessage state={discardState} />
 
-      <RowActionMenu label={order.number} actions={actions} busy={submitting || discarding} />
+      <RowActionMenu label={order.number} actions={actions} busy={discarding} />
 
       {/* No trigger of its own: the menu entry above opens it. */}
       <EditPurchaseOrderButton

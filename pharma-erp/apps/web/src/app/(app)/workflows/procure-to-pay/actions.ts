@@ -353,6 +353,8 @@ export async function submitDraftPurchaseOrderAction(
   );
 }
 
+
+
 /**
  * Edits a purchase order that has not yet been received against.
  *
@@ -393,7 +395,11 @@ export async function updatePurchaseOrderAction(
     taxRatePercent: str(form, `taxRatePercent_${lineId}`),
   }));
 
-  return submit(
+  // Which button was pressed. Only a draft's form offers the choice; anything
+  // else has one submit and this is absent, which reads as false.
+  const placeOrder = str(form, 'placeOrder') === 'true';
+
+  const saved = await submit(
     `${BASE}/purchase-orders/${id}`,
     {
       expectedDeliveryDate: values.expectedDeliveryDate || null,
@@ -408,9 +414,22 @@ export async function updatePurchaseOrderAction(
       ...(values.vendorId ? { vendorId: values.vendorId } : {}),
       ...(lines.length > 0 ? { lines } : {}),
     },
-    'Purchase order updated.',
+    placeOrder ? 'Purchase order saved.' : 'Purchase order updated.',
     values,
     'PATCH',
+  );
+
+  if (!placeOrder || saved.status === 'error') return saved;
+
+  // PLACING IS WHERE THE REAL VALIDATION RUNS — the order must have lines, and
+  // every requisition behind it is re-checked, because a draft can sit for a
+  // week while the world moves on. Its refusal is returned as it stands; the
+  // edits are already saved, so nothing typed is lost by a refusal here.
+  return submit(
+    `${BASE}/purchase-orders/${id}/submit`,
+    {},
+    'Purchase order created. The requisition behind it is now marked converted.',
+    values,
   );
 }
 

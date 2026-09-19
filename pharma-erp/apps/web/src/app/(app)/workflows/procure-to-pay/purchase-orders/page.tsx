@@ -5,7 +5,7 @@ import {
   PURCHASE_ORDER_STATUS_LABELS,
 } from '@pharma-erp/types';
 
-import { FilterButton, FilterPanel } from '@/components/procurement/filter-bar';
+import { FilterButton, FilterPanel, SearchBox } from '@/components/procurement/filter-bar';
 import { Pagination } from '@/components/procurement/pagination';
 import { CreatePoDialog } from '@/components/procurement/create-po-dialog';
 import { DraftOrderActions } from '@/components/procurement/draft-order-actions';
@@ -218,7 +218,12 @@ export default async function PurchaseOrdersPage({
         subtitle={
           orders.ok ? `${orders.data.total} order${orders.data.total === 1 ? '' : 's'}` : undefined
         }
-        action={<FilterButton />}
+        action={
+          <>
+            <SearchBox placeholder="Search by PO number, vendor or item…" />
+            <FilterButton />
+          </>
+        }
       >
         <FilterPanel
           statuses={PURCHASE_ORDER_STATUSES.map((status) => ({
@@ -228,7 +233,6 @@ export default async function PurchaseOrdersPage({
           vendors={vendors.ok ? toOptions(vendors.data) : []}
           items={items.ok ? toOptions(items.data) : []}
           requisitions={requisitionOptions}
-          searchPlaceholder="Search by PO number, vendor or item…"
         />
 
         {!orders.ok ? (

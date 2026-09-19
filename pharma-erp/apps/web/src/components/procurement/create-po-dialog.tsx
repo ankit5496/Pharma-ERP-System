@@ -6,7 +6,14 @@ import { formatUom, type PartySummary, type RequisitionListItem } from '@pharma-
 
 import { createPurchaseOrderAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
-import { ActionMessage, Field, FormFooter, SubmitButton, useAction } from './form-kit';
+import {
+  ActionMessage,
+  DialogCloseButton,
+  Field,
+  FormFooter,
+  SubmitButton,
+  useAction,
+} from './form-kit';
 import { noWheelChange } from '@/lib/number-input';
 
 /**
@@ -81,11 +88,16 @@ export function CreatePoDialog({
       className="w-[min(46rem,92vw)] rounded-lg border border-slate-200 p-0 shadow-xl backdrop:bg-slate-900/40"
     >
       <form action={formAction} className="space-y-4 p-5">
-        <div>
-          <h2 className="text-base font-semibold text-slate-900">Create purchase order</h2>
-          <p className="mt-0.5 text-sm text-slate-600">
-            From requisition <span className="font-mono text-slate-800">{requisition.number}</span>
-          </p>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-base font-semibold text-slate-900">Create purchase order</h2>
+            <p className="mt-0.5 text-sm text-slate-600">
+              From requisition{' '}
+              <span className="font-mono text-slate-800">{requisition.number}</span>
+            </p>
+          </div>
+
+          <DialogCloseButton onClose={close} />
         </div>
 
         <ActionMessage state={state} />

@@ -5,7 +5,15 @@ import { formatUom, type PurchaseOrderListItem } from '@pharma-erp/types';
 
 import { createGoodsReceiptAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
-import { ActionMessage, Disclosure, Field, SubmitButton, useAction } from './form-kit';
+import {
+  ActionMessage,
+  Disclosure,
+  Field,
+  FormFooter,
+  SubmitButton,
+  useAction,
+} from './form-kit';
+import { SearchableSelect } from './searchable-select';
 import { noWheelChange } from '@/lib/number-input';
 
 /**
@@ -151,7 +159,7 @@ export function BookReceiptForm({
       defaultOpen={Boolean(preselectedOrderId)}
       width="46rem"
     >
-      {() => (
+      {(close) => (
         <form
           action={formAction}
           noValidate
@@ -174,43 +182,57 @@ export function BookReceiptForm({
             </p>
           )}
 
-          {/* What the system fills in, stated rather than presented as empty
-          boxes someone might think they forgot. None of it is submitted: the
-          API allocates the number, stamps the time and attributes the receipt
-          to the signed-in user. */}
-          <dl className="grid grid-cols-3 gap-x-4 gap-y-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs">
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">GRN no.</dt>
-              <dd className="mt-0.5 text-slate-800">Generated on save</dd>
-            </div>
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Linked PO</dt>
-              <dd className="mt-0.5 font-mono text-slate-800">{order?.number ?? '—'}</dd>
-            </div>
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Received by</dt>
-              <dd className="mt-0.5 text-slate-800">{receivedBy}</dd>
-            </div>
-          </dl>
+          {/* ONE TWO-COLUMN GRID. What the system fills in is shown as
+              disabled fields rather than as a caption: the API allocates the
+              number, stamps the time and attributes the receipt to the
+              signed-in user, and none of it is submitted from here. */}
+          <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+            <Field label="GRN no." htmlFor="grn-number">
+              <input
+                id="grn-number"
+                disabled
+                readOnly
+                value="Generated on save"
+                className="field-sm w-full"
+              />
+            </Field>
 
-          <div className="grid gap-3">
+            <Field label="Received by" htmlFor="grn-by">
+              <input
+                id="grn-by"
+                disabled
+                readOnly
+                value={receivedBy}
+                className="field-sm w-full"
+              />
+            </Field>
+
+            <Field label="Vendor" htmlFor="grn-vendor">
+              <input
+                id="grn-vendor"
+                disabled
+                readOnly
+                value={order?.vendor.name ?? '—'}
+                className="field-sm w-full"
+              />
+            </Field>
+
             <Field label="Purchase order" htmlFor="grn-order" required>
-              <select
+              <SearchableSelect
                 id="grn-order"
                 name="purchaseOrderId"
                 required
+                options={orders.map((candidate) => ({
+                  value: candidate.id,
+                  label: candidate.number,
+                  hint: `${candidate.vendor.name} — ${
+                    candidate.lines.filter((l) => l.quantityPending !== '0').length
+                  } line(s) pending`,
+                }))}
                 value={orderId}
-                onChange={(event) => setOrderId(event.target.value)}
-                className="field-sm w-full"
-              >
-                {orders.map((candidate) => (
-                  <option key={candidate.id} value={candidate.id}>
-                    {candidate.number} — {candidate.vendor.name} (
-                    {candidate.lines.filter((l) => l.quantityPending !== '0').length} line(s)
-                    pending)
-                  </option>
-                ))}
-              </select>
+                onChange={setOrderId}
+                emptyLabel="Choose an order"
+              />
             </Field>
           </div>
 
@@ -244,31 +266,50 @@ export function BookReceiptForm({
                       )}
                     </legend>
 
-                    {/* What is already true of this line, so the quantity typed
-                        below has something to be judged against. Read-only:
-                        these are facts about the order, not fields. */}
-                    <dl className="mb-4 flex flex-wrap gap-x-6 gap-y-1 text-xs text-slate-600">
-                      <div className="flex gap-1.5">
-                        <dt>On order</dt>
-                        <dd className="font-medium tabular-nums text-slate-800">
-                          {line.quantity} {formatUom(line.item.uom)}
-                        </dd>
-                      </div>
-                      <div className="flex gap-1.5">
-                        <dt>Already received</dt>
-                        <dd className="font-medium tabular-nums text-slate-800">
-                          {line.quantityReceived} {formatUom(line.item.uom)}
-                        </dd>
-                      </div>
-                      <div className="flex gap-1.5">
-                        <dt>Remaining</dt>
-                        <dd className="font-semibold tabular-nums text-slate-900">
-                          {line.quantityPending} {formatUom(line.item.uom)}
-                        </dd>
-                      </div>
-                    </dl>
-
                     <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+                      {/* WHAT IS ALREADY TRUE OF THIS LINE, in the same grid as
+                          the quantity it exists to be judged against — three
+                          numbers that only mean something next to one another
+                          and next to what is being typed. */}
+                      <Field
+                        label={`On order (${formatUom(line.item.uom)})`}
+                        htmlFor={`ord-${line.id}`}
+                      >
+                        <input
+                          id={`ord-${line.id}`}
+                          disabled
+                          readOnly
+                          value={line.quantity}
+                          className="field tabular-nums"
+                        />
+                      </Field>
+
+                      <Field
+                        label={`Already received (${formatUom(line.item.uom)})`}
+                        htmlFor={`prev-${line.id}`}
+                      >
+                        <input
+                          id={`prev-${line.id}`}
+                          disabled
+                          readOnly
+                          value={line.quantityReceived}
+                          className="field tabular-nums"
+                        />
+                      </Field>
+
+                      <Field
+                        label={`Remaining (${formatUom(line.item.uom)})`}
+                        htmlFor={`rem-${line.id}`}
+                      >
+                        <input
+                          id={`rem-${line.id}`}
+                          disabled
+                          readOnly
+                          value={line.quantityPending}
+                          className="field tabular-nums"
+                        />
+                      </Field>
+
                       <Field
                         label="Received quantity"
                         htmlFor={`recv-${line.id}`}
@@ -351,9 +392,9 @@ export function BookReceiptForm({
             </div>
           )}
 
-          <div className="flex justify-end">
+          <FormFooter onCancel={close}>
             <SubmitButton pendingLabel="Creating…">Create GRN</SubmitButton>
-          </div>
+          </FormFooter>
         </form>
       )}
     </Disclosure>

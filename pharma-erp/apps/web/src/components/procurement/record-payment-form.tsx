@@ -4,7 +4,7 @@ import type { VendorPayableRow } from '@pharma-erp/types';
 
 import { recordPaymentAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
-import { ActionMessage, Disclosure, Field, SubmitButton, useAction } from './form-kit';
+import { ActionMessage, Disclosure, Field, FormFooter, SubmitButton, useAction } from './form-kit';
 
 /**
  * Records a payment against one invoice.
@@ -37,7 +37,7 @@ export function RecordPaymentForm({ payable }: { payable: VendorPayableRow }) {
       closeWhen={state.status === 'success'}
       width="30rem"
     >
-      {() => (
+      {(close) => (
         <form action={formAction} className="space-y-3">
           <ActionMessage state={state} />
 
@@ -114,7 +114,9 @@ export function RecordPaymentForm({ payable }: { payable: VendorPayableRow }) {
             />
           </Field>
 
-          <SubmitButton pendingLabel="Recording…">Record payment</SubmitButton>
+          <FormFooter onCancel={close}>
+            <SubmitButton pendingLabel="Recording…">Record payment</SubmitButton>
+          </FormFooter>
         </form>
       )}
     </Disclosure>

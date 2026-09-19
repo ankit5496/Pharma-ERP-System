@@ -10,7 +10,7 @@ import {
   type RequisitionListItem,
 } from '@pharma-erp/types';
 
-import { FilterButton, FilterPanel } from '@/components/procurement/filter-bar';
+import { FilterButton, FilterPanel, SearchBox } from '@/components/procurement/filter-bar';
 import { Pagination } from '@/components/procurement/pagination';
 import {
   RequisitionActions,
@@ -113,6 +113,7 @@ export default async function RequisitionsPage({
       }
       action={
         <>
+          <SearchBox placeholder="Search by number or item…" />
           <FilterButton />
           <RequisitionForm
             items={items.ok ? items.data : []}
@@ -134,7 +135,6 @@ export default async function RequisitionsPage({
         vendors={vendorOptions}
         items={itemOptions}
         raisedBy={raisedByOptions}
-        searchPlaceholder="Search by number, item or vendor…"
       />
 
       {!requisitions.ok ? (

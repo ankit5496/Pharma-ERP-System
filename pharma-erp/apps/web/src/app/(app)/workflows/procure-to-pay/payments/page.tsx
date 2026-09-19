@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { PAYMENT_STATUSES, PAYMENT_STATUS_LABELS, PROCUREMENT_ROUTES } from '@pharma-erp/types';
 
-import { FilterButton, FilterPanel } from '@/components/procurement/filter-bar';
+import { FilterButton, FilterPanel, SearchBox } from '@/components/procurement/filter-bar';
 import { Pagination } from '@/components/procurement/pagination';
 import { PayablesReportPanel } from '@/components/procurement/payables-report';
 import { PayableActions } from '@/components/procurement/payable-actions';
@@ -83,7 +83,12 @@ export default async function PaymentsPage({
             ? `${payables.data.total} approved invoice${payables.data.total === 1 ? '' : 's'}`
             : undefined
         }
-        action={<FilterButton />}
+        action={
+          <>
+            <SearchBox placeholder="Search by invoice number, vendor or PO…" />
+            <FilterButton />
+          </>
+        }
       >
         <FilterPanel
           statuses={PAYMENT_STATUSES.map((status) => ({
@@ -91,7 +96,6 @@ export default async function PaymentsPage({
             label: PAYMENT_STATUS_LABELS[status],
           }))}
           vendors={vendors.ok ? toOptions(vendors.data) : []}
-          searchPlaceholder="Search by invoice number, vendor or PO…"
         />
 
         {!payables.ok ? (

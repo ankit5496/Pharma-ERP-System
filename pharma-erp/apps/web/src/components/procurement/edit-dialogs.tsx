@@ -1,6 +1,11 @@
 'use client';
 
-import { formatUom, PURCHASE_ORDER_STATUS_LABELS } from '@pharma-erp/types';
+import {
+  formatUom,
+  PAYMENT_STATUS_LABELS,
+  PURCHASE_INVOICE_STATUS_LABELS,
+  PURCHASE_ORDER_STATUS_LABELS,
+} from '@pharma-erp/types';
 import type {
   GoodsReceiptListItem,
   PartySummary,
@@ -29,6 +34,7 @@ import {
   SubmitButton,
   useAction,
 } from './form-kit';
+import { SearchableSelect } from './searchable-select';
 import { formatAmount, lineAmounts, sumLineAmounts } from '@/lib/line-amounts';
 import { noWheelChange } from '@/lib/number-input';
 
@@ -109,7 +115,7 @@ export function EditRequisitionButton({
       onOpenChange={onOpenChange}
       width="34rem"
     >
-      {() => (
+      {(close) => (
         <form action={formAction} className="space-y-4">
           <ActionMessage state={state} />
 
@@ -163,9 +169,9 @@ export function EditRequisitionButton({
             />
           </Field>
 
-          <div className="flex justify-end">
+          <FormFooter onCancel={close}>
             <SubmitButton pendingLabel="Saving…">Save changes</SubmitButton>
-          </div>
+          </FormFooter>
         </form>
       )}
     </Disclosure>
@@ -283,6 +289,11 @@ export function EditPurchaseOrderButton({
 
   const typed = (field: string, stored: string | null) => state.values?.[field] ?? stored ?? '';
 
+  // The lookup posts through a hidden input, so the chosen vendor is held here.
+  // Seeded from the order, or from the last rejected attempt — EDITING MUST NOT
+  // LOSE THE VALUE THAT IS ALREADY ON THE RECORD.
+  const [vendorId, setVendorId] = useState(typed('vendorId', order.vendor.id));
+
   // Mirrors ALLOWED_TRANSITIONS in purchase-orders.service.ts. The server list
   // is the one that decides; this only decides what to draw.
   const blockedBecause = (status: PurchaseOrderStatus): string | null => {
@@ -315,7 +326,6 @@ export function EditPurchaseOrderButton({
       closeWhen={state.status === 'success'}
       isOpen={isOpen}
       onOpenChange={onOpenChange}
-      headerCancel={false}
       width="42rem"
     >
       {(close) => (
@@ -360,18 +370,19 @@ export function EditPurchaseOrderButton({
 
             {vendorEditable ? (
               <Field label="Vendor" htmlFor={`ov-${order.id}`}>
-                <select
+                <SearchableSelect
                   id={`ov-${order.id}`}
                   name="vendorId"
-                  defaultValue={typed('vendorId', order.vendor.id)}
+                  options={vendors.map((vendor) => ({
+                    value: vendor.id,
+                    label: vendor.name,
+                    hint: vendor.code,
+                  }))}
+                  value={vendorId}
+                  onChange={setVendorId}
+                  emptyLabel="Choose a vendor"
                   className="field"
-                >
-                  {vendors.map((vendor) => (
-                    <option key={vendor.id} value={vendor.id}>
-                      {vendor.name}
-                    </option>
-                  ))}
-                </select>
+                />
               </Field>
             ) : (
               <Field label="Vendor" htmlFor={`ov-${order.id}`}>
@@ -563,7 +574,36 @@ export function EditPurchaseOrderButton({
           ))}
 
           <FormFooter onCancel={close}>
-            <SubmitButton pendingLabel="Saving…">Save changes</SubmitButton>
+            {/* A DRAFT IS PLACED FROM HERE. The primary button creates the
+                actual purchase order out of this draft — it saves whatever
+                has been changed and then places it, against the same record,
+                so the requisition links on its lines are untouched and no
+                second order is made. Keeping it a draft is the other choice,
+                and it is the secondary button because placing is what a draft
+                is usually opened to do. */}
+            {isDraft ? (
+              <>
+                <SubmitButton
+                  variant="secondary"
+                  pendingLabel="Saving…"
+                  name="placeOrder"
+                  value="false"
+                >
+                  Save as draft
+                </SubmitButton>
+
+                <SubmitButton
+                  variant="primary"
+                  pendingLabel="Creating…"
+                  name="placeOrder"
+                  value="true"
+                >
+                  Create purchase order
+                </SubmitButton>
+              </>
+            ) : (
+              <SubmitButton pendingLabel="Saving…">Save changes</SubmitButton>
+            )}
           </FormFooter>
         </form>
       )}
@@ -590,7 +630,7 @@ export function EditGoodsReceiptButton({
       onOpenChange={onOpenChange}
       width="42rem"
     >
-      {() => (
+      {(close) => (
         <form action={formAction} className="space-y-5">
           <ActionMessage state={state} />
 
@@ -708,9 +748,9 @@ export function EditGoodsReceiptButton({
             </fieldset>
           ))}
 
-          <div className="flex justify-end">
+          <FormFooter onCancel={close}>
             <SubmitButton pendingLabel="Saving…">Save changes</SubmitButton>
-          </div>
+          </FormFooter>
         </form>
       )}
     </Disclosure>
@@ -738,51 +778,82 @@ export function EditInvoiceButton({
       closeWhen={state.status === 'success'}
       isOpen={isOpen}
       onOpenChange={onOpenChange}
-      width="34rem"
+      width="46rem"
     >
-      {() => (
-        <form action={formAction} className="space-y-4">
+      {(close) => (
+        <form action={formAction} className="flex grow flex-col gap-5">
           <ActionMessage state={state} />
 
           <input type="hidden" name="id" value={invoice.id} />
 
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs">
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Invoice no.</dt>
-              <dd className="mt-0.5 font-mono text-slate-800">{invoice.number}</dd>
-            </div>
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Goods receipt</dt>
-              <dd className="mt-0.5 font-mono text-slate-800">{invoice.goodsReceipt.number}</dd>
-            </div>
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Purchase order</dt>
-              <dd className="mt-0.5 font-mono text-slate-800">{invoice.purchaseOrder.number}</dd>
-            </div>
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Total</dt>
-              <dd className="mt-0.5 tabular-nums text-slate-800">{invoice.totalAmount}</dd>
-            </div>
-          </dl>
-
-          <p className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-            The amounts came from matching this invoice against the order and the receipt, so they
-            are not editable here. If the vendor billed a different figure, cancel this invoice and
-            book the one they actually sent.
-          </p>
-
-          <Field label="Vendor invoice no." htmlFor={`inv-ref-${invoice.id}`} required>
-            <input
-              id={`inv-ref-${invoice.id}`}
-              name="vendorInvoiceNumber"
-              maxLength={64}
-              required
-              defaultValue={typed('vendorInvoiceNumber', invoice.vendorInvoiceNumber)}
-              className="field"
-            />
-          </Field>
-
+          {/* ONE TWO-COLUMN GRID, settled facts and editable fields together.
+              THE AMOUNTS ARE SHOWN AND DISABLED rather than explained away in a
+              paragraph: they came from matching this invoice against the order
+              and the receipt, and being greyed says that better than a note. A
+              vendor who billed a different figure needs this invoice cancelled
+              and the one they actually sent booked. */}
           <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+            <Field label="Invoice no." htmlFor={`inv-no-${invoice.id}`}>
+              <input
+                id={`inv-no-${invoice.id}`}
+                disabled
+                readOnly
+                value={invoice.number}
+                className="field font-mono"
+              />
+            </Field>
+
+            <Field label="Vendor" htmlFor={`inv-vendor-${invoice.id}`}>
+              <input
+                id={`inv-vendor-${invoice.id}`}
+                disabled
+                readOnly
+                value={invoice.vendor.name}
+                className="field"
+              />
+            </Field>
+
+            <Field label="Purchase order" htmlFor={`inv-po-${invoice.id}`}>
+              <input
+                id={`inv-po-${invoice.id}`}
+                disabled
+                readOnly
+                value={invoice.purchaseOrder.number}
+                className="field font-mono"
+              />
+            </Field>
+
+            <Field label="Goods receipt" htmlFor={`inv-grn-${invoice.id}`}>
+              <input
+                id={`inv-grn-${invoice.id}`}
+                disabled
+                readOnly
+                value={invoice.goodsReceipt.number}
+                className="field font-mono"
+              />
+            </Field>
+
+            <Field label="Vendor invoice no." htmlFor={`inv-ref-${invoice.id}`} required>
+              <input
+                id={`inv-ref-${invoice.id}`}
+                name="vendorInvoiceNumber"
+                maxLength={64}
+                required
+                defaultValue={typed('vendorInvoiceNumber', invoice.vendorInvoiceNumber)}
+                className="field"
+              />
+            </Field>
+
+            <Field label="Payment terms (days)" htmlFor={`inv-terms-${invoice.id}`}>
+              <input
+                id={`inv-terms-${invoice.id}`}
+                disabled
+                readOnly
+                value={String(invoice.paymentTermsDays)}
+                className="field tabular-nums"
+              />
+            </Field>
+
             <Field label="Invoice date" htmlFor={`inv-date-${invoice.id}`}>
               <input
                 id={`inv-date-${invoice.id}`}
@@ -806,22 +877,125 @@ export function EditInvoiceButton({
                 className="field"
               />
             </Field>
+
+            <Field label="Taxable amount" htmlFor={`inv-taxable-${invoice.id}`}>
+              <input
+                id={`inv-taxable-${invoice.id}`}
+                disabled
+                readOnly
+                value={invoice.taxableAmount}
+                className="field tabular-nums"
+              />
+            </Field>
+
+            <Field label="GST" htmlFor={`inv-tax-${invoice.id}`}>
+              <input
+                id={`inv-tax-${invoice.id}`}
+                disabled
+                readOnly
+                value={invoice.taxAmount}
+                className="field tabular-nums"
+              />
+            </Field>
+
+            <Field label="Invoice total" htmlFor={`inv-total-${invoice.id}`}>
+              <input
+                id={`inv-total-${invoice.id}`}
+                disabled
+                readOnly
+                value={invoice.totalAmount}
+                className="field tabular-nums"
+              />
+            </Field>
+
+            <Field label="Paid to date" htmlFor={`inv-paid-${invoice.id}`}>
+              <input
+                id={`inv-paid-${invoice.id}`}
+                disabled
+                readOnly
+                value={invoice.amountPaid}
+                className="field tabular-nums"
+              />
+            </Field>
+
+            <Field label="Outstanding" htmlFor={`inv-out-${invoice.id}`}>
+              <input
+                id={`inv-out-${invoice.id}`}
+                disabled
+                readOnly
+                value={invoice.outstandingAmount}
+                className="field tabular-nums"
+              />
+            </Field>
+
+            <Field label="Status" htmlFor={`inv-status-${invoice.id}`}>
+              <input
+                id={`inv-status-${invoice.id}`}
+                disabled
+                readOnly
+                value={`${PURCHASE_INVOICE_STATUS_LABELS[invoice.status]} · ${
+                  PAYMENT_STATUS_LABELS[invoice.paymentStatus]
+                }`}
+                className="field"
+              />
+            </Field>
+
+            <Field label="Recorded by" htmlFor={`inv-by-${invoice.id}`}>
+              <input
+                id={`inv-by-${invoice.id}`}
+                disabled
+                readOnly
+                value={invoice.recordedBy ?? '—'}
+                className="field"
+              />
+            </Field>
+
+            <Field label="Lines billed" htmlFor={`inv-lines-${invoice.id}`}>
+              <input
+                id={`inv-lines-${invoice.id}`}
+                disabled
+                readOnly
+                value={`${invoice.lines.length}${
+                  invoice.toleranceExceeded ? ' — outside tolerance' : ''
+                }`}
+                className="field"
+              />
+            </Field>
+
+            <Field label="Notes" htmlFor={`inv-notes-${invoice.id}`} className="sm:col-span-2">
+              <textarea
+                id={`inv-notes-${invoice.id}`}
+                name="notes"
+                rows={3}
+                maxLength={1000}
+                defaultValue={typed('notes', invoice.notes)}
+                className="field"
+              />
+            </Field>
+
+            {/* Only when there is something to say: which lines differed from
+                the order or the receipt, and by how much. */}
+            {invoice.matchNotes && (
+              <Field
+                label="Three-way match"
+                htmlFor={`inv-match-${invoice.id}`}
+                className="sm:col-span-2"
+              >
+                <textarea
+                  id={`inv-match-${invoice.id}`}
+                  disabled
+                  readOnly
+                  rows={2}
+                  value={invoice.matchNotes}
+                  className="field"
+                />
+              </Field>
+            )}
           </div>
 
-          <Field label="Notes" htmlFor={`inv-notes-${invoice.id}`}>
-            <textarea
-              id={`inv-notes-${invoice.id}`}
-              name="notes"
-              rows={3}
-              maxLength={1000}
-              defaultValue={typed('notes', invoice.notes)}
-              className="field"
-            />
-          </Field>
-
-          <div className="flex justify-end">
+          <FormFooter onCancel={close}>
             <SubmitButton pendingLabel="Saving…">Save changes</SubmitButton>
-          </div>
+          </FormFooter>
         </form>
       )}
     </Disclosure>
@@ -845,31 +1019,49 @@ export function EditPaymentButton({
       closeWhen={state.status === 'success'}
       isOpen={isOpen}
       onOpenChange={onOpenChange}
-      width="32rem"
+      width="42rem"
     >
-      {() => (
-        <form action={formAction} className="space-y-4">
+      {(close) => (
+        <form action={formAction} className="flex grow flex-col gap-5">
           <ActionMessage state={state} />
 
           <input type="hidden" name="id" value={payment.id} />
 
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs">
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Payment no.</dt>
-              <dd className="mt-0.5 font-mono text-slate-800">{payment.number}</dd>
-            </div>
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Amount</dt>
-              <dd className="mt-0.5 tabular-nums text-slate-800">{payment.amount}</dd>
-            </div>
-          </dl>
-
-          <p className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-            The amount is not editable: it decides what this vendor is still owed. Correct a wrong
-            payment by recording another one.
-          </p>
-
+          {/* ONE TWO-COLUMN GRID, settled facts and editable fields together.
+              THE AMOUNT IS SHOWN AND DISABLED: it decides what this vendor is
+              still owed, and a wrong payment is corrected by recording another
+              one rather than by re-typing this. */}
           <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+            <Field label="Payment no." htmlFor={`pay-no-${payment.id}`}>
+              <input
+                id={`pay-no-${payment.id}`}
+                disabled
+                readOnly
+                value={payment.number}
+                className="field font-mono"
+              />
+            </Field>
+
+            <Field label="Amount" htmlFor={`pay-amt-${payment.id}`}>
+              <input
+                id={`pay-amt-${payment.id}`}
+                disabled
+                readOnly
+                value={payment.amount}
+                className="field tabular-nums"
+              />
+            </Field>
+
+            <Field label="Recorded by" htmlFor={`pay-by-${payment.id}`}>
+              <input
+                id={`pay-by-${payment.id}`}
+                disabled
+                readOnly
+                value={payment.recordedBy ?? '—'}
+                className="field"
+              />
+            </Field>
+
             <Field label="Payment date" htmlFor={`pay-date-${payment.id}`}>
               <input
                 id={`pay-date-${payment.id}`}
@@ -890,36 +1082,40 @@ export function EditPaymentButton({
                 className="field"
               />
             </Field>
+
+            <Field
+              label="Reference"
+              htmlFor={`pay-ref-${payment.id}`}
+              hint="How this payment is matched against the bank statement."
+            >
+              <input
+                id={`pay-ref-${payment.id}`}
+                name="reference"
+                maxLength={64}
+                defaultValue={typed('reference', payment.reference)}
+                className="field"
+              />
+            </Field>
+
+            <Field
+              label="Notes"
+              htmlFor={`pay-notes-${payment.id}`}
+              className="sm:col-span-2"
+            >
+              <textarea
+                id={`pay-notes-${payment.id}`}
+                name="notes"
+                rows={3}
+                maxLength={500}
+                defaultValue={typed('notes', payment.notes)}
+                className="field"
+              />
+            </Field>
           </div>
 
-          <Field
-            label="Reference"
-            htmlFor={`pay-ref-${payment.id}`}
-            hint="How this payment is matched against the bank statement."
-          >
-            <input
-              id={`pay-ref-${payment.id}`}
-              name="reference"
-              maxLength={64}
-              defaultValue={typed('reference', payment.reference)}
-              className="field"
-            />
-          </Field>
-
-          <Field label="Notes" htmlFor={`pay-notes-${payment.id}`}>
-            <textarea
-              id={`pay-notes-${payment.id}`}
-              name="notes"
-              rows={3}
-              maxLength={500}
-              defaultValue={typed('notes', payment.notes)}
-              className="field"
-            />
-          </Field>
-
-          <div className="flex justify-end">
+          <FormFooter onCancel={close}>
             <SubmitButton pendingLabel="Saving…">Save changes</SubmitButton>
-          </div>
+          </FormFooter>
         </form>
       )}
     </Disclosure>

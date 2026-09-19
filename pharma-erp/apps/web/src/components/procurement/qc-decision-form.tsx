@@ -1,11 +1,12 @@
 'use client';
 
 import { useState } from 'react';
+import { STOCK_LOT_STATUS_LABELS } from '@pharma-erp/types';
 import type { QcQueueItem } from '@pharma-erp/types';
 
 import { recordQcDecisionAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
-import { ActionMessage, Disclosure, Field, SubmitButton, useAction } from './form-kit';
+import { ActionMessage, Disclosure, Field, FormFooter, SubmitButton, useAction } from './form-kit';
 
 /**
  * Records the incoming-QC decision on one batch.
@@ -89,40 +90,179 @@ export function QcDecisionForm({ lot }: { lot: QcQueueItem }) {
       title="Incoming QC decision"
       subtitle={`${lot.item.name} — batch ${lot.lot.lotNumber}`}
       closeWhen={state.status === 'success'}
-      width="32rem"
+      width="46rem"
     >
-      {() => (
-        <form action={formAction} className="space-y-4">
+      {(close) => (
+        <form action={formAction} className="flex grow flex-col gap-5">
           <ActionMessage state={state} />
 
           <input type="hidden" name="lotId" value={lot.lot.id} />
 
-          {/* What the decision is about, carried from the record so nothing has to
-          be looked up in the row behind the dialog. */}
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs">
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Item</dt>
-              <dd className="mt-0.5 text-slate-800">{lot.item.name}</dd>
-            </div>
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Batch</dt>
-              <dd className="mt-0.5 font-mono text-slate-800">{lot.lot.lotNumber}</dd>
-            </div>
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Received</dt>
-              <dd className="mt-0.5 tabular-nums text-slate-800">
-                {lot.lot.quantityReceived} {lot.item.uom}
-              </dd>
-            </div>
-            <div>
-              <dt className="font-medium uppercase tracking-wide text-slate-500">Expiry</dt>
-              <dd className="mt-0.5 tabular-nums text-slate-800">
-                {lot.lot.expiryDate?.slice(0, 10) ?? '—'}
-              </dd>
-            </div>
-          </dl>
+          {/* ONE TWO-COLUMN GRID. What is settled about the lot is rendered as
+              disabled fields rather than as a caption above the form: these are
+              the record the decision is taken on, and being greyed is what says
+              they are not the officer's to change. */}
+          <div className="grid gap-x-4 gap-y-3 sm:grid-cols-2">
+            <Field label="Item" htmlFor={`qc-item-${lot.lot.id}`}>
+              <input
+                id={`qc-item-${lot.lot.id}`}
+                disabled
+                readOnly
+                value={lot.item.name}
+                className="field"
+              />
+            </Field>
 
-          <Field label="Decision" htmlFor={`decision-${lot.lot.id}`} required>
+            <Field label="Item code" htmlFor={`qc-code-${lot.lot.id}`}>
+              <input
+                id={`qc-code-${lot.lot.id}`}
+                disabled
+                readOnly
+                value={lot.item.code}
+                className="field font-mono"
+              />
+            </Field>
+
+            <Field label="Lot number" htmlFor={`qc-lot-${lot.lot.id}`}>
+              <input
+                id={`qc-lot-${lot.lot.id}`}
+                disabled
+                readOnly
+                value={lot.lot.lotNumber}
+                className="field font-mono"
+              />
+            </Field>
+
+            <Field label="Vendor batch no." htmlFor={`qc-vbatch-${lot.lot.id}`}>
+              <input
+                id={`qc-vbatch-${lot.lot.id}`}
+                disabled
+                readOnly
+                value={lot.lot.vendorBatchNumber ?? '—'}
+                className="field font-mono"
+              />
+            </Field>
+
+            <Field label="Vendor" htmlFor={`qc-vendor-${lot.lot.id}`}>
+              <input
+                id={`qc-vendor-${lot.lot.id}`}
+                disabled
+                readOnly
+                value={lot.vendor.name}
+                className="field"
+              />
+            </Field>
+
+            <Field label="Purchase order" htmlFor={`qc-po-${lot.lot.id}`}>
+              <input
+                id={`qc-po-${lot.lot.id}`}
+                disabled
+                readOnly
+                value={lot.purchaseOrder.number}
+                className="field font-mono"
+              />
+            </Field>
+
+            <Field label="Goods receipt" htmlFor={`qc-grn-${lot.lot.id}`}>
+              <input
+                id={`qc-grn-${lot.lot.id}`}
+                disabled
+                readOnly
+                value={lot.goodsReceipt.number}
+                className="field font-mono"
+              />
+            </Field>
+
+            <Field label="Received on" htmlFor={`qc-recd-${lot.lot.id}`}>
+              <input
+                id={`qc-recd-${lot.lot.id}`}
+                disabled
+                readOnly
+                value={lot.goodsReceipt.receiptDate.slice(0, 10)}
+                className="field tabular-nums"
+              />
+            </Field>
+
+            <Field label={`Quantity received (${lot.item.uom})`} htmlFor={`qc-qty-${lot.lot.id}`}>
+              <input
+                id={`qc-qty-${lot.lot.id}`}
+                disabled
+                readOnly
+                value={lot.lot.quantityReceived}
+                className="field tabular-nums"
+              />
+            </Field>
+
+            <Field
+              label={`Quantity available (${lot.item.uom})`}
+              htmlFor={`qc-avail-${lot.lot.id}`}
+            >
+              <input
+                id={`qc-avail-${lot.lot.id}`}
+                disabled
+                readOnly
+                value={lot.lot.quantityAvailable}
+                className="field tabular-nums"
+              />
+            </Field>
+
+            <Field label="Manufactured" htmlFor={`qc-mfg-${lot.lot.id}`}>
+              <input
+                id={`qc-mfg-${lot.lot.id}`}
+                disabled
+                readOnly
+                value={lot.lot.manufacturingDate?.slice(0, 10) ?? '—'}
+                className="field tabular-nums"
+              />
+            </Field>
+
+            <Field
+              label="Expiry"
+              htmlFor={`qc-exp-${lot.lot.id}`}
+              // The countdown, where there is one: a lot with weeks left is a
+              // different decision from one with two years.
+              hint={
+                lot.daysToExpiry === null
+                  ? undefined
+                  : lot.daysToExpiry < 0
+                    ? `Expired ${Math.abs(lot.daysToExpiry)} days ago.`
+                    : `${lot.daysToExpiry} days remaining.`
+              }
+            >
+              <input
+                id={`qc-exp-${lot.lot.id}`}
+                disabled
+                readOnly
+                value={lot.lot.expiryDate?.slice(0, 10) ?? '—'}
+                className="field tabular-nums"
+              />
+            </Field>
+
+            <Field label="Current lot status" htmlFor={`qc-status-${lot.lot.id}`}>
+              <input
+                id={`qc-status-${lot.lot.id}`}
+                disabled
+                readOnly
+                value={STOCK_LOT_STATUS_LABELS[lot.lot.status]}
+                className="field"
+              />
+            </Field>
+
+            <Field label="Decisions recorded" htmlFor={`qc-history-${lot.lot.id}`}>
+              <input
+                id={`qc-history-${lot.lot.id}`}
+                disabled
+                readOnly
+                value={
+                  lot.history.length === 0
+                    ? 'None yet'
+                    : `${lot.history.length} — latest ${lot.history[0]!.decision.toLowerCase()}`
+                }
+                className="field"
+              />
+            </Field>
+
+            <Field label="Decision" htmlFor={`decision-${lot.lot.id}`} required>
             <select
               id={`decision-${lot.lot.id}`}
               name="decision"
@@ -142,7 +282,7 @@ export function QcDecisionForm({ lot }: { lot: QcQueueItem }) {
             </select>
           </Field>
 
-          <Field label="COA / test reference" htmlFor={`coa-${lot.lot.id}`}>
+            <Field label="COA / test reference" htmlFor={`coa-${lot.lot.id}`}>
             <input
               id={`coa-${lot.lot.id}`}
               name="testReference"
@@ -152,28 +292,30 @@ export function QcDecisionForm({ lot }: { lot: QcQueueItem }) {
             />
           </Field>
 
-          <Field
-            label="Remarks"
-            htmlFor={`remarks-${lot.lot.id}`}
-            required={needsReason}
-            hint={needsReason ? 'Required for a rejection or hold.' : undefined}
-          >
-            <textarea
-              id={`remarks-${lot.lot.id}`}
-              name="remarks"
-              rows={2}
+            <Field
+              label="Remarks"
+              htmlFor={`remarks-${lot.lot.id}`}
               required={needsReason}
-              maxLength={1000}
-              defaultValue={state.values?.remarks ?? ''}
-              className="field"
-            />
-          </Field>
+              hint={needsReason ? 'Required for a rejection or hold.' : undefined}
+              className="sm:col-span-2"
+            >
+              <textarea
+                id={`remarks-${lot.lot.id}`}
+                name="remarks"
+                rows={2}
+                required={needsReason}
+                maxLength={1000}
+                defaultValue={state.values?.remarks ?? ''}
+                className="field"
+              />
+            </Field>
+          </div>
 
-          <div className="flex justify-end">
+          <FormFooter onCancel={close}>
             <SubmitButton variant={needsReason ? 'danger' : 'primary'} pendingLabel="Recording…">
               Record decision
             </SubmitButton>
-          </div>
+          </FormFooter>
         </form>
       )}
     </Disclosure>

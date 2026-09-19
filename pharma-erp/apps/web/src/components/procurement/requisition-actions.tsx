@@ -231,9 +231,22 @@ export function RequisitionActions({ requisition }: { requisition: RequisitionLi
     },
   ];
 
+  /**
+   * Nothing at all can be done to a converted requisition.
+   *
+   * The API says the same: CONVERTED_TO_PO has no onward transition and is not
+   * an editable status, so every entry in this menu would be refused. Closing
+   * the menu is the honest presentation of that, and it is presentation only —
+   * the rule lives in the service, not here.
+   */
+  const locked =
+    requisition.status === 'CONVERTED_TO_PO'
+      ? `${requisition.number} has been converted to a purchase order. A converted requisition can no longer be edited or converted again.`
+      : null;
+
   return (
     <div className="flex flex-col items-center gap-1.5">
-      <RowActionMenu label={requisition.number} actions={actions} />
+      <RowActionMenu label={requisition.number} actions={actions} disabledReason={locked} />
 
       {/* No trigger of its own: the menu entry above opens it. */}
       <EditRequisitionButton
