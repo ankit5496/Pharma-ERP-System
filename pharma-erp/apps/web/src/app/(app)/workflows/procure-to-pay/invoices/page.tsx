@@ -7,7 +7,7 @@ import {
   PURCHASE_INVOICE_STATUS_LABELS,
 } from '@pharma-erp/types';
 
-import { FilterButton, FilterPanel } from '@/components/procurement/filter-bar';
+import { FilterButton, FilterPanel, SearchBox } from '@/components/procurement/filter-bar';
 import { Pagination } from '@/components/procurement/pagination';
 import { InvoiceActions } from '@/components/procurement/invoice-actions';
 import { RecordInvoiceForm } from '@/components/procurement/record-invoice-form';
@@ -100,6 +100,7 @@ export default async function InvoicesPage({
         }
         action={
           <>
+            <SearchBox placeholder="Search invoice no., vendor invoice no., vendor, PO, GRN or item…" />
             <FilterButton />
 
             {/* Offered only when there is something to bill for. A dialog
@@ -119,7 +120,6 @@ export default async function InvoicesPage({
           statuses={statusOptions}
           vendors={vendors.ok ? toOptions(vendors.data) : []}
           searchableLookups
-          searchPlaceholder="Search invoice no., vendor invoice no., vendor, PO, GRN or item…"
         />
 
         {!invoices.ok ? (

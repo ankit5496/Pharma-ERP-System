@@ -3,7 +3,7 @@ import { PROCUREMENT_ROUTES } from '@pharma-erp/types';
 
 import { BookReceiptForm } from '@/components/procurement/book-receipt-form';
 import { EditGoodsReceiptButton } from '@/components/procurement/edit-dialogs';
-import { FilterButton, FilterPanel } from '@/components/procurement/filter-bar';
+import { FilterButton, FilterPanel, SearchBox } from '@/components/procurement/filter-bar';
 import { Pagination } from '@/components/procurement/pagination';
 import {
   Blank,
@@ -80,6 +80,7 @@ export default async function GoodsReceiptsPage({
         }
         action={
           <>
+            <SearchBox placeholder="Search by GRN, PO, vendor or batch number…" />
             <FilterButton />
 
             {/* The button is only offered when there is something to receive
@@ -105,7 +106,6 @@ export default async function GoodsReceiptsPage({
           statuses={QC_FILTERS}
           vendors={vendors.ok ? toOptions(vendors.data) : []}
           items={items.ok ? toOptions(items.data) : []}
-          searchPlaceholder="Search by GRN, PO, vendor or batch number…"
         />
 
         {!receipts.ok ? (

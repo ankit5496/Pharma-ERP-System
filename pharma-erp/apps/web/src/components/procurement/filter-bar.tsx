@@ -34,6 +34,15 @@ const FILTER_KEYS = [
 
 type FilterKey = (typeof FILTER_KEYS)[number];
 
+/**
+ * The keys that count as A FILTER BEING IN FORCE.
+ *
+ * The search term is deliberately not among them. It has its own box
+ * outside the panel, it is plainly visible, and counting it here is what
+ * used to make typing a search term open the filter panel by itself.
+ */
+const ACTIVE_FILTER_KEYS = FILTER_KEYS.filter((key) => key !== 'search');
+
 // A fixed id, not `useId`: the button and the panel are separate components and
 // `aria-controls` has to name the same element from both.
 const PANEL_ID = 'list-filters';
@@ -60,6 +69,17 @@ const PANEL_ID = 'list-filters';
  * One boolean, two subscribers, no round trip.
  */
 let panelOpen = false;
+
+/**
+ * The screen this open/closed state was decided for.
+ *
+ * WITHOUT IT, A REMOUNT RESETS THE PANEL. Committing a search re-renders
+ * the page from the server and remounts the button; if arriving were the
+ * same as mounting, every keystroke would re-decide whether the panel
+ * should be open. Comparing the pathname makes "a new screen" mean what it
+ * says.
+ */
+let panelPath: string | null = null;
 const openListeners = new Set<() => void>();
 
 function setPanelOpen(next: boolean) {
@@ -90,7 +110,7 @@ function useFilterPanelOpen() {
 function useActiveCount() {
   const params = useSearchParams();
 
-  return FILTER_KEYS.filter((key) => params.get(key)).length;
+  return ACTIVE_FILTER_KEYS.filter((key) => params.get(key)).length;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,17 +128,29 @@ export function FilterButton() {
   const activeCount = useActiveCount();
   const pathname = usePathname();
 
-  // A link arriving with filters on it — a shared URL, or a summary card that
-  // deep-links into a filtered list — opens the panel. Leaving the reason a
-  // list looks short hidden behind a button is how someone concludes the data
-  // is missing.
+  /**
+   * Decided ONCE PER SCREEN, and never again.
+   *
+   * Arriving on a list that is already filtered — a shared URL, or a summary
+   * card that deep-links into one — opens the panel, because a list looking
+   * short for a reason nobody can see is how someone concludes the data is
+   * missing. Arriving on an unfiltered one leaves it closed.
+   *
+   * AFTER THAT THE PANEL IS THE USER’S. Typing in the search box, clearing
+   * it, changing a filter, and the remount that a committed search causes
+   * all leave it exactly as they found it. The stored pathname is what makes
+   * a remount different from an arrival.
+   */
   useEffect(() => {
-    if (activeCount > 0) setPanelOpen(true);
-  }, [activeCount]);
+    if (panelPath === pathname) return;
 
-  // The next screen's filters are different ones, and the panel should not be
-  // left standing open over them.
-  useEffect(() => () => setPanelOpen(false), [pathname]);
+    panelPath = pathname;
+    setPanelOpen(activeCount > 0);
+    // activeCount is read ON ARRIVAL ONLY. Listing it as a dependency would
+    // re-decide the panel every time a filter or the search term changed,
+    // which is the coupling being removed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
 
   return (
     <button
@@ -209,7 +241,6 @@ export function FilterPanel({
   triggerTypes,
   raisedBy,
   requisitions,
-  searchPlaceholder = 'Search…',
   showDates = true,
   searchableLookups = false,
 }: {
@@ -219,7 +250,6 @@ export function FilterPanel({
   triggerTypes?: readonly FilterOption[];
   raisedBy?: readonly FilterOption[];
   requisitions?: readonly FilterOption[];
-  searchPlaceholder?: string;
   showDates?: boolean;
   /** Renders the record lookups — vendor, item, requisition — as typeable. */
   searchableLookups?: boolean;
@@ -393,15 +423,6 @@ export function FilterPanel({
             isPending ? 'pointer-events-none opacity-60' : ''
           }`}
         >
-          <Control label="Search">
-            <input
-              type="search"
-              value={draft.search ?? ''}
-              onChange={(event) => set('search', event.target.value)}
-              placeholder={searchPlaceholder}
-              className="field h-10"
-            />
-          </Control>
 
           {statuses && statuses.length > 0 && (
             <Select
@@ -578,5 +599,107 @@ function Select({
         </select>
       )}
     </Control>
+  );
+}
+
+/**
+ * The search box, outside the filter panel.
+ *
+ * Sits on the title line beside the Filter button, so it is visible and usable
+ * without opening anything. Writes the same `search` parameter the panel used
+ * to write, so every list keeps searching exactly as it did.
+ *
+ * SEEDED FROM THE URL AND RE-SEEDED WHENEVER IT CHANGES, which is what makes a
+ * shared link, the back button and the panel's own Clear all arrive here
+ * correctly rather than leaving a stale term in the box.
+ */
+export function SearchBox({ placeholder = 'Search…' }: { placeholder?: string }) {
+  const router = useRouter();
+  const pathname = usePathname();
+  const params = useSearchParams();
+  const [isPending, startTransition] = useTransition();
+
+  const committed = params.get('search') ?? '';
+  const [draft, setDraft] = useState(committed);
+
+  useEffect(() => {
+    setDraft(committed);
+  }, [committed]);
+
+  /** Pending commit, cancelled whenever something overtakes it. */
+  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // A timer outliving the box would navigate after the user left the screen.
+  useEffect(
+    () => () => {
+      if (debounce.current) clearTimeout(debounce.current);
+    },
+    [],
+  );
+
+  const commit = useCallback(
+    (value: string) => {
+      const next = new URLSearchParams(params.toString());
+
+      if (value.trim()) next.set('search', value.trim());
+      else next.delete('search');
+
+      // Page 1: a search narrowing the list to fewer rows than the page you
+      // were on would otherwise land you on an empty page.
+      next.delete('page');
+
+      startTransition(() => {
+        router.replace(next.size > 0 ? `${pathname}?${next}` : pathname, { scroll: false });
+      });
+    },
+    [params, pathname, router],
+  );
+
+  const change = (value: string) => {
+    setDraft(value);
+
+    if (debounce.current) clearTimeout(debounce.current);
+
+    debounce.current = setTimeout(() => {
+      debounce.current = null;
+      commit(value);
+    }, SEARCH_DEBOUNCE_MS);
+  };
+
+  return (
+    <form
+      // Enter commits at once rather than waiting out the debounce. There is no
+      // Apply button for it to press; the submit exists only to skip the wait.
+      onSubmit={(event) => {
+        event.preventDefault();
+
+        if (debounce.current) {
+          clearTimeout(debounce.current);
+          debounce.current = null;
+        }
+
+        commit(draft);
+      }}
+      // A WIDTH, NOT A CAP. flex-1 had nothing to expand into -- the row
+      // sizes to its content -- so a larger max-width changed nothing and the
+      // box stayed at the 189px its placeholder asked for. 24rem is close to
+      // twice that; full width below the breakpoint, so it does not crowd the
+      // Filter button on a phone.
+      className="w-full min-w-0 sm:w-96"
+      role="search"
+    >
+      <label className="sr-only" htmlFor="list-search">
+        Search
+      </label>
+
+      <input
+        id="list-search"
+        type="search"
+        value={draft}
+        onChange={(event) => change(event.target.value)}
+        placeholder={placeholder}
+        className={`field h-9 w-full ${isPending ? 'opacity-70' : ''}`}
+      />
+    </form>
   );
 }

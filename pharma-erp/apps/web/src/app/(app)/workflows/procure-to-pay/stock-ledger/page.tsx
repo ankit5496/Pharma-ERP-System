@@ -6,7 +6,7 @@ import {
   type StockLedgerRow,
 } from '@pharma-erp/types';
 
-import { FilterButton, FilterPanel } from '@/components/procurement/filter-bar';
+import { FilterButton, FilterPanel, SearchBox } from '@/components/procurement/filter-bar';
 import {
   Blank,
   DateText,
@@ -97,12 +97,16 @@ export default async function StockLedgerPage({
       <Panel
         title="Stock by batch"
         subtitle="Usable batches in first-expiry-first-out order — the order production must pick in."
-        action={<FilterButton />}
+        action={
+          <>
+            <SearchBox placeholder="Search the ledger by item or batch…" />
+            <FilterButton />
+          </>
+        }
       >
         <FilterPanel
           items={items.ok ? toOptions(items.data) : []}
           showDates={false}
-          searchPlaceholder="Search the ledger by item or batch…"
         />
 
         {!positions.ok ? (
