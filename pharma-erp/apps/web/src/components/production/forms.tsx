@@ -1,6 +1,6 @@
 'use client';
 
-import { useActionState, useEffect, useState } from 'react';
+import { useActionState, useEffect, useMemo, useState } from 'react';
 import type {
   ItemSummary,
   MaterialIssuePlan,
@@ -10,6 +10,8 @@ import type {
 } from '@pharma-erp/types';
 
 import { useActionToast } from '@/components/toast';
+import { SearchableSelect } from '@/components/searchable-select';
+import { SavedDialog } from '@/components/saved-dialog';
 
 import {
   checkWorkOrderFeasibilityAction,
@@ -56,31 +58,46 @@ function useReportOnSaved(state: ActionResult) {
 /**
  * Announces a finished submission.
  *
- * A FAILURE always goes to the toast. A SUCCESS depends on where the form is:
+ * A FAILURE goes to the toast, beside a form that is still open with the
+ * entered data in it. A SUCCESS is the confirmation dialog, everywhere — the
+ * same card Master Data and the Production registers raise, so a save looks the
+ * same wherever it was made.
  *
- *   * Inside a register's drawer, the register raises a confirmation dialog of
- *     its own — so a toast here would be the same news twice, once in a box
- *     that has to be dismissed and once in a strip that fades.
+ * WHO RAISES THAT DIALOG depends on where the form is:
+ *
+ *   * Inside a register's drawer, the REGISTER does, because it also has to
+ *     close the drawer — and the two are one step, so the form is never left
+ *     standing open behind the confirmation.
  *   * Inline on a batch card — the packing and release forms — there is no
- *     drawer and no register listening, so the toast is the only confirmation
- *     there is and it has to stay.
+ *     drawer and no register listening, so this raises it directly.
  *
- * `useIsInsideRegister` is what tells the two apart, rather than a prop each
- * caller would have to set correctly.
- *
- * Renders nothing: the toast has its own host.
+ * `useIsInsideRegister` tells the two apart, rather than a prop every caller
+ * would have to set correctly. Without it both would fire and the dialogs
+ * would stack.
  */
 function Result({ state, pending }: { state: ActionResult; pending: boolean }) {
   const confirmedByRegister = useIsInsideRegister();
-  const suppressSuccess = confirmedByRegister && state.ok;
 
-  useActionToast(
-    pending,
-    state.ok ? 'success' : 'error',
-    suppressSuccess ? undefined : state.message,
-  );
+  // A FAILURE always goes to the toast: it belongs beside the form, which is
+  // still open with the entered data in it.
+  useActionToast(pending, 'error', state.ok ? undefined : state.message);
 
-  return null;
+  // A SUCCESS is a dialog — the same one the registers raise, so every save in
+  // Production confirms identically whether the form was in a drawer or not.
+  // Only for a form NOT inside a register: there, the register is already
+  // showing this message and a second dialog would stack on the first.
+  const [saved, setSaved] = useState<string | null>(null);
+  const message = state.ok ? state.message : undefined;
+
+  useEffect(() => {
+    if (confirmedByRegister || !message) return;
+
+    setSaved(message);
+  }, [confirmedByRegister, message]);
+
+  if (!saved) return null;
+
+  return <SavedDialog message={saved} onDismiss={() => setSaved(null)} />;
 }
 
 const FIELD =
@@ -274,6 +291,16 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
 
   useReportOnSaved(state);
 
+  // Newest first — see SearchableSelect for why the closed picklist offers the
+  // most recent few rather than the whole register.
+  const productOptions = useMemo(
+    () =>
+      [...products]
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .map((product) => ({ value: product.id, label: `${product.code} — ${product.name}` })),
+    [products],
+  );
+
   const [productId, setProductId] = useState(products[0]?.id ?? '');
   const [quantity, setQuantity] = useState('');
   const [feasibility, setFeasibility] = useState<{
@@ -371,20 +398,22 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
           <label htmlFor="productId" className={LABEL}>
             Product
           </label>
-          <select
+          {/* Searchable, and offering the newest few before anything is typed:
+              the item register grows without limit, and the product somebody
+              is raising a work order for is often one just added.
+
+              `placeholder={null}` because this field has no empty state — the
+              form opens with the first product already chosen, and the
+              feasibility check below is about whichever one that is. */}
+          <SearchableSelect
             id="productId"
-            name="productId"
-            required
+            options={productOptions}
+            placeholder={null}
             value={productId}
-            onChange={(event) => setProductId(event.target.value)}
-            className={FIELD}
-          >
-            {products.map((product) => (
-              <option key={product.id} value={product.id}>
-                {product.code} — {product.name}
-              </option>
-            ))}
-          </select>
+            onChange={setProductId}
+            required
+          />
+          <input type="hidden" name="productId" value={productId} />
         </div>
 
         <div>
@@ -570,18 +599,19 @@ export function IssueMaterialForm({
           <label htmlFor="issue-order" className={LABEL}>
             Work order
           </label>
-          <select
+          {/* Already newest-first: the orders endpoint returns them that way,
+              which is also the order somebody dispenses against. No sort here
+              for that reason. */}
+          <SearchableSelect
             id="issue-order"
+            options={orders.map((candidate) => ({
+              value: candidate.id,
+              label: `${candidate.orderNumber} — ${candidate.product.code}`,
+            }))}
+            placeholder={null}
             value={orderId}
-            onChange={(event) => setOrderId(event.target.value)}
-            className={`${FIELD} font-mono`}
-          >
-            {orders.map((candidate) => (
-              <option key={candidate.id} value={candidate.id}>
-                {candidate.orderNumber} — {candidate.product.code}
-              </option>
-            ))}
-          </select>
+            onChange={setOrderId}
+          />
         </div>
       </div>
 
@@ -819,7 +849,7 @@ export function IssueMaterialForm({
 function IssuePlanTable({ plan }: { plan: MaterialIssuePlan }) {
   return (
     <div className="overflow-x-auto rounded-md border border-slate-200">
-      <table className="w-full min-w-[42rem] text-left text-sm">
+      <table className="w-full min-w-[48rem] text-left text-sm">
         <thead>
           <tr className="border-b border-slate-200 bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
             <th scope="col" className="px-4 py-2.5 font-medium">
@@ -829,7 +859,17 @@ function IssuePlanTable({ plan }: { plan: MaterialIssuePlan }) {
               Required
             </th>
             <th scope="col" className="px-4 py-2.5 font-medium">
-              Lots the plan will take
+              Lot
+            </th>
+            <th scope="col" className="px-4 py-2.5 font-medium">
+              Expiry
+            </th>
+            {/* The per-lot quantity, which is NOT a repeat of Required: a line
+                short of one lot is filled from several, and those figures are
+                what say how much comes out of each. It equals Required only in
+                the common case where one lot covers the whole line. */}
+            <th scope="col" className="px-4 py-2.5 text-right font-medium">
+              From lot
             </th>
             <th scope="col" className="px-4 py-2.5 text-right font-medium">
               Short
@@ -846,35 +886,59 @@ function IssuePlanTable({ plan }: { plan: MaterialIssuePlan }) {
               <td className="px-4 py-3 text-right">
                 <Quantity value={line.quantityRequired} uom={line.item.uom} />
               </td>
+              {/* THREE COLUMNS, not one cell holding a run of text. The lot
+                  number, its expiry and the amount taken from it used to sit on
+                  one line — "TEST-PCM-600 exp 2028-09-17 24mo 0.4 KG" — which
+                  read as a sentence and put a quantity under the "Lots" heading
+                  where nothing lined up with anything.
+
+                  Stacked within each cell when a line draws on several lots, so
+                  the nth lot's expiry and quantity stay level with the nth lot
+                  number. One row per allocation would have been tidier still,
+                  but it means a rowSpan on Material, Required and Short, and a
+                  line with no usable stock has no allocation row to hang them
+                  from. */}
               <td className="px-4 py-3">
                 {line.allocations.length === 0 ? (
                   <span className="text-red-700">No usable stock</span>
                 ) : (
-                  <ul className="space-y-1">
+                  <ul className="space-y-1.5">
                     {line.allocations.map((allocation) => (
-                      <li key={allocation.lotId} className="flex flex-wrap items-center gap-x-2">
-                        <span className="font-mono text-xs text-slate-700">
-                          {allocation.lotNumber}
-                        </span>
-                        {/* A stock lot's expiry is optional — cartons and
-                            leaflets usually have none. "no expiry" is the fact,
-                            and it differs from a missing value: FEFO
-                            deliberately keeps such lots until last. */}
-                        {allocation.expiryDate ? (
-                          <>
-                            <span className="text-xs text-slate-500">
-                              exp {allocation.expiryDate}
-                            </span>
-                            <ExpiryHint date={allocation.expiryDate} />
-                          </>
-                        ) : (
-                          <span className="text-xs text-slate-400">no expiry</span>
-                        )}
-                        <Quantity value={allocation.quantity} uom={line.item.uom} />
+                      <li key={allocation.lotId} className="font-mono text-xs text-slate-700">
+                        {allocation.lotNumber}
                       </li>
                     ))}
                   </ul>
                 )}
+              </td>
+              <td className="px-4 py-3">
+                <ul className="space-y-1.5">
+                  {line.allocations.map((allocation) => (
+                    <li key={allocation.lotId} className="flex items-center gap-x-2">
+                      {/* A stock lot's expiry is optional — cartons and
+                          leaflets usually have none. "no expiry" is the fact,
+                          and it differs from a missing value: FEFO
+                          deliberately keeps such lots until last. */}
+                      {allocation.expiryDate ? (
+                        <>
+                          <span className="text-xs text-slate-500">{allocation.expiryDate}</span>
+                          <ExpiryHint date={allocation.expiryDate} />
+                        </>
+                      ) : (
+                        <span className="text-xs text-slate-400">no expiry</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </td>
+              <td className="px-4 py-3 text-right">
+                <ul className="space-y-1.5">
+                  {line.allocations.map((allocation) => (
+                    <li key={allocation.lotId}>
+                      <Quantity value={allocation.quantity} uom={line.item.uom} />
+                    </li>
+                  ))}
+                </ul>
               </td>
               <td className="px-4 py-3 text-right">
                 {line.quantityShort === '0' ? (
@@ -958,20 +1022,18 @@ export function RecordBatchForm({ orders }: { orders: ProductionOrderSummary[] }
           <label htmlFor="productionOrderId" className={LABEL}>
             Work order
           </label>
-          <select
+          <SearchableSelect
             id="productionOrderId"
-            name="productionOrderId"
-            required
+            options={orders.map((candidate) => ({
+              value: candidate.id,
+              label: `${candidate.orderNumber} — ${candidate.product.code}`,
+            }))}
+            placeholder={null}
             value={orderId}
-            onChange={(event) => setOrderId(event.target.value)}
-            className={FIELD}
-          >
-            {orders.map((candidate) => (
-              <option key={candidate.id} value={candidate.id}>
-                {candidate.orderNumber} — {candidate.product.code}
-              </option>
-            ))}
-          </select>
+            onChange={setOrderId}
+            required
+          />
+          <input type="hidden" name="productionOrderId" value={orderId} />
         </div>
 
         <div>

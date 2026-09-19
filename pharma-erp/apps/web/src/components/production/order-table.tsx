@@ -60,10 +60,10 @@ export function OrderTable({ orders }: { orders: ProductionOrderSummary[] }) {
           {orders.length === 0 ? 'No work orders yet.' : 'No work order matches that search.'}
         </p>
       ) : (
-        <div className="overflow-x-auto">
+        <div className="table-scroll overflow-x-auto">
           <table className="w-full min-w-[52rem] text-left text-sm">
             <thead>
-              <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
+              <tr className="text-xs uppercase tracking-wide text-slate-500">
                 <Th>Order</Th>
                 <Th>Product</Th>
                 <Th align="right">Planned</Th>

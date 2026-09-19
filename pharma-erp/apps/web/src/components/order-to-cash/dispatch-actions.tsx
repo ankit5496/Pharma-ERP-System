@@ -10,6 +10,7 @@ import {
   updateDispatchAction,
 } from './actions';
 import { EditButton, EditDialog } from './edit-kit';
+import { SearchableSelect } from './searchable-select';
 import { Note, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 
 /** One allocated batch with stock still to ship. */
@@ -165,19 +166,19 @@ export function NewDispatchForm({
           <label htmlFor="dsp-order" className="field-label">
             Order <span className="text-red-600">*</span>
           </label>
-          <select
-            id="dsp-order"
-            value={salesOrderId}
-            onChange={(event) => setSalesOrderId(event.target.value)}
-            className="field mt-1.5"
-          >
-            <option value="">Choose an order…</option>
-            {orders.map((order) => (
-              <option key={order.salesOrderId} value={order.salesOrderId}>
-                {order.orderNumber} — {order.customerName}
-              </option>
-            ))}
-          </select>
+          <div className="mt-1.5">
+            <SearchableSelect
+              id="dsp-order"
+              value={salesOrderId}
+              onChange={setSalesOrderId}
+              placeholder="Search by order number or customer…"
+              options={orders.map((order) => ({
+                value: order.salesOrderId,
+                label: `${order.orderNumber} — ${order.customerName}`,
+                hint: `${order.lines.length} line${order.lines.length === 1 ? '' : 's'}`,
+              }))}
+            />
+          </div>
         </div>
 
         <div>

@@ -2,6 +2,10 @@
 
 import { useMemo, useState } from 'react';
 
+import { ANY, ListFilters, type FilterField } from '@/components/list-filters';
+import { useNewAction } from '@/components/production/register';
+import { ListPager } from '@/components/list-pager';
+
 /**
  * Search, filter and paging for the Production registers.
  *
@@ -17,7 +21,7 @@ import { useMemo, useState } from 'react';
  */
 
 const DEFAULT_PAGE_SIZE = 10;
-const PAGE_SIZES = [10, 25, 50, 100] as const;
+export const PAGE_SIZES = [10, 25, 50, 100] as const;
 
 export interface FilterOption {
   value: string;
@@ -35,28 +39,48 @@ export function useRegisterView<Row>({
   rows,
   searchText,
   matchesFilter,
+  matchesField,
 }: {
   rows: readonly Row[];
   /** Everything on a row the search box should match against. */
   searchText: (row: Row) => string;
   /** Applied when a filter other than "all" is chosen. */
   matchesFilter?: (row: Row, value: string) => boolean;
+  /**
+   * Applied per named field for the multi-field filter panel, once for each
+   * field actually set. Returning false on any one drops the row, so several
+   * filters narrow rather than widen — "schedule H AND active", never "or".
+   */
+  matchesField?: (row: Row, name: string, value: string) => boolean;
 }) {
   const [query, setQuery] = useState('');
   const [filter, setFilter] = useState('ALL');
+  const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
 
+    // Only the fields actually set. An unset field is not a filter that matches
+    // everything, it is a filter that was never asked for — and calling the
+    // predicate for it would make every register handle an empty value.
+    const active = Object.entries(fieldValues).filter(([, value]) => value !== '');
+
     return rows.filter((row) => {
       if (filter !== 'ALL' && matchesFilter && !matchesFilter(row, filter)) return false;
+
+      if (matchesField) {
+        for (const [name, value] of active) {
+          if (!matchesField(row, name, value)) return false;
+        }
+      }
+
       if (!needle) return true;
 
       return searchText(row).toLowerCase().includes(needle);
     });
-  }, [rows, query, filter, searchText, matchesFilter]);
+  }, [rows, query, filter, fieldValues, searchText, matchesFilter, matchesField]);
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
 
@@ -78,6 +102,15 @@ export function useRegisterView<Row>({
     filter,
     setFilter: (value: string) => {
       setFilter(value);
+      setPage(1);
+    },
+    fieldValues,
+    setField: (name: string, value: string) => {
+      setFieldValues((current) => ({ ...current, [name]: value }));
+      setPage(1);
+    },
+    clearFields: () => {
+      setFieldValues({});
       setPage(1);
     },
     filtered,
@@ -106,8 +139,13 @@ export function RegisterToolbar({
   onFilter,
   filterLabel = 'Status',
   filterOptions,
-  shown,
-  total,
+  fields,
+  fieldValues,
+  onField,
+  onClearFields,
+  title,
+  singular,
+  total = 0,
   children,
 }: {
   query: string;
@@ -118,69 +156,101 @@ export function RegisterToolbar({
   onFilter?: (value: string) => void;
   filterLabel?: string;
   filterOptions?: readonly FilterOption[];
-  shown: number;
-  total: number;
-  /** Anything the register wants beside the count — a New button, usually. */
+  /** Extra filters for the panel, beyond the single one above. */
+  fields?: readonly FilterField[];
+  fieldValues?: Record<string, string>;
+  onField?: (name: string, value: string) => void;
+  onClearFields?: () => void;
+  /** The heading. Defaults to the plural noun, capitalised. */
+  title?: string;
+  /** Defaults to trimming a trailing "s", which is right for every noun here. */
+  singular?: string;
+  /**
+   * Rows AFTER the current filter, which the registers pass as `filtered.length`.
+   *
+   * ACCEPTED AND IGNORED — the count beside the title is `total`, the whole
+   * register. What is on screen is the pager's business, and two counts saying
+   * nearly the same thing invite a comparison to check they agree.
+   */
+  shown?: number;
+  /** Rows the register holds, shown under the title. */
+  total?: number;
+  /** Anything the register wants beside the controls — a New button, usually. */
   children?: React.ReactNode;
 }) {
+  // The register's New button, if the step has one. From context because the
+  // register cannot pass a prop down through its server-rendered children.
+  const newAction = useNewAction();
+
+  // The single `filter` prop, presented as one more field in the panel. This is
+  // what lets the five registers keep the API they already call while the panel
+  // underneath is the shared one — a register that wants a second filter adds
+  // `fields`, and a register that does not carries on unchanged.
+  const allFields: FilterField[] = [];
+
+  if (filterOptions && onFilter) {
+    allFields.push({
+      name: LEGACY_FILTER,
+      label: filterLabel,
+      options: filterOptions,
+      allLabel: `All ${noun}`,
+    });
+  }
+
+  if (fields) allFields.push(...fields);
+
+  const values: Record<string, string> = { ...fieldValues };
+
+  // 'ALL' is this toolbar's "unset"; the panel's is the empty string. Mapping
+  // between them here keeps that difference from reaching either side.
+  if (filterOptions && onFilter) values[LEGACY_FILTER] = filter === 'ALL' ? ANY : (filter ?? ANY);
+
   return (
-    <div className="flex flex-wrap items-center gap-3 border-b border-slate-200 px-4 py-3">
-      {/* Capped at roughly the width of its own placeholder. It was `flex-1`,
-          which stretched it across the whole toolbar on a wide screen — a box
-          the width of the page for a value that is rarely more than a document
-          number, and it pushed the filter and the count out to the far edge
-          where they read as unrelated controls. `flex-1` is kept below the cap
-          so it still shrinks on a narrow screen. */}
-      <input
-        type="search"
-        value={query}
-        onChange={(event) => onQuery(event.target.value)}
-        placeholder={placeholder}
-        aria-label={`Search ${noun}`}
-        className="w-full min-w-0 max-w-sm flex-1 rounded-md border border-slate-300 px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
-      />
-
-      {filterOptions && onFilter && (
-        <label className="flex items-center gap-2 whitespace-nowrap text-xs text-slate-600">
-          {filterLabel}
-          <select
-            value={filter}
-            onChange={(event) => onFilter(event.target.value)}
-            aria-label={`Filter ${noun} by ${filterLabel.toLowerCase()}`}
-            className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
-          >
-            <option value="ALL">All</option>
-            {filterOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-
-      {/* `mr-auto` rather than letting the input stretch: the count takes the
-          slack, which keeps the search and the filter together as one group
-          instead of pinning them to opposite edges of a wide screen. */}
-      <span className="mr-auto whitespace-nowrap text-xs tabular-nums text-slate-500">
-        {shown === total ? `${total} ${noun}` : `${shown} of ${total}`}
-      </span>
-
+    <ListFilters
+      fields={allFields}
+      values={values}
+      onChange={(name, value) => {
+        if (name === LEGACY_FILTER) onFilter?.(value === ANY ? 'ALL' : value);
+        else onField?.(name, value);
+      }}
+      onClear={() => {
+        onFilter?.('ALL');
+        onClearFields?.();
+      }}
+      query={query}
+      onQuery={onQuery}
+      searchPlaceholder={placeholder}
+      title={title ?? noun.charAt(0).toUpperCase() + noun.slice(1)}
+      total={total}
+      noun={noun}
+      singular={singular ?? noun.replace(/s$/, '')}
+    >
       {children}
-    </div>
+      {newAction && (
+        <button
+          type="button"
+          onClick={newAction.onClick}
+          className="h-9 whitespace-nowrap rounded-md bg-slate-900 px-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+        >
+          {newAction.label}
+        </button>
+      )}
+    </ListFilters>
   );
 }
+
+/** The panel key standing in for the single `filter` prop. */
+const LEGACY_FILTER = '__filter';
 
 /**
  * Which slice is on screen, and how to move.
  *
- * Prev/Next and a page count rather than a numbered strip: a register of two
- * hundred is twenty pages, and twenty little numbers is a lot of furniture for
- * a decision that is almost always "the next one" or "search instead".
- *
- * Hidden when everything fits on one page at the default size — a single page
- * does not need dead buttons under it. It reappears once the size has been
- * changed deliberately, so the control does not vanish on whoever changed it.
+ * A thin wrapper over the shared `ListPager`, so the Production registers, the
+ * Master Data grids and the Procurement lists all present the same control.
+ * This once drew a Prev/Next pair and hid itself whenever everything fit on one
+ * page; both are gone. The numbered strip matches the other lists, and the row
+ * count and page-size control are worth having under a short list too — hiding
+ * them removed the size control exactly when somebody wanted to raise it.
  */
 export function RegisterPager({
   page,
@@ -203,55 +273,18 @@ export function RegisterPager({
   onPage: (page: number) => void;
   onPageSize: (size: number) => void;
 }) {
-  if (total === 0) return null;
-  if (total <= pageSize && pageSize === DEFAULT_PAGE_SIZE) return null;
-
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-4 py-2.5">
-      <p className="text-xs tabular-nums text-slate-600">
-        Showing <strong className="font-semibold text-slate-900">{first}</strong>–
-        <strong className="font-semibold text-slate-900">{last}</strong> of {total} {noun}
-      </p>
-
-      <div className="flex flex-wrap items-center gap-3">
-        <label className="flex items-center gap-1.5 whitespace-nowrap text-xs text-slate-600">
-          Rows
-          <select
-            value={pageSize}
-            onChange={(event) => onPageSize(Number(event.target.value))}
-            aria-label={`Rows of ${noun} per page`}
-            className="rounded-md border border-slate-300 bg-white px-1.5 py-1 text-xs tabular-nums text-slate-900"
-          >
-            {PAGE_SIZES.map((size) => (
-              <option key={size} value={size}>
-                {size}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <div className="flex items-center gap-1">
-          <button
-            type="button"
-            onClick={() => onPage(page - 1)}
-            disabled={page <= 1}
-            className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Previous
-          </button>
-          <span className="whitespace-nowrap px-1.5 text-xs tabular-nums text-slate-600">
-            Page {page} of {pageCount}
-          </span>
-          <button
-            type="button"
-            onClick={() => onPage(page + 1)}
-            disabled={page >= pageCount}
-            className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Next
-          </button>
-        </div>
-      </div>
-    </div>
+    <ListPager
+      page={page}
+      pageCount={pageCount}
+      pageSize={pageSize}
+      first={first}
+      last={last}
+      total={total}
+      noun={noun}
+      pageSizes={PAGE_SIZES}
+      onPage={onPage}
+      onPageSize={onPageSize}
+    />
   );
 }

@@ -55,7 +55,8 @@ export function ItemMasterForm({
 }: {
   /** Present when editing; absent when creating. */
   item?: ItemSummary;
-  onSaved?: () => void;
+  /** Called with the confirmation line, so the workspace can show it. */
+  onSaved?: (message?: string) => void;
 }) {
   const [state, formAction, isPending] = useActionState(
     saveItemAction.bind(null, item?.id ?? null),
@@ -65,7 +66,10 @@ export function ItemMasterForm({
   // The result is announced by the application-wide centred toast rather
   // than by a banner inside this form, which on a form this long sat above
   // the fold while the submit button being watched was below it.
-  useActionToast(isPending, state.ok ? 'success' : 'error', state.message);
+  // ERRORS ONLY. A success is confirmed by the workspace's SavedDialog, and a
+  // toast as well would be the same news twice — once in a box to dismiss and
+  // once in a strip that fades.
+  useActionToast(isPending, 'error', state.ok ? undefined : state.message);
   const router = useRouter();
 
   // Controlled dropdowns. React 19 resets an uncontrolled form once its action
@@ -105,8 +109,8 @@ export function ItemMasterForm({
     // appears once the server component re-runs. `refresh` does that without
     // a full navigation, which would lose the selected register.
     router.refresh();
-    onSaved?.();
-  }, [state.ok, router, onSaved]);
+    onSaved?.(state.message);
+  }, [state.ok, state.message, router, onSaved]);
 
   /**
    * What to show in a field: whatever was typed on a rejected attempt, then

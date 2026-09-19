@@ -64,7 +64,8 @@ export function PartyMasterForm({
   onSaved,
 }: {
   party?: PartySummary;
-  onSaved?: () => void;
+  /** Called with the confirmation line, so the workspace can show it. */
+  onSaved?: (message?: string) => void;
 }) {
   const documentRef = useRef<HTMLInputElement | null>(null);
   const [pendingName, setPendingName] = useState<string | null>(null);
@@ -120,7 +121,10 @@ export function PartyMasterForm({
   // The result is announced by the application-wide centred toast rather than
   // by a banner inside this form, which on a form this long sat above the fold
   // while the submit button being watched was below it.
-  useActionToast(isPending, state.ok ? 'success' : 'error', state.message);
+  // ERRORS ONLY. A success is confirmed by the workspace's SavedDialog, and a
+  // toast as well would be the same news twice — once in a box to dismiss and
+  // once in a strip that fades.
+  useActionToast(isPending, 'error', state.ok ? undefined : state.message);
   const router = useRouter();
 
   const [partyType, setPartyType] = useState<string>(party?.partyType ?? '');
@@ -135,6 +139,11 @@ export function PartyMasterForm({
   const [phoneDial, setPhoneDial] = useState<string>(storedPhone.dial);
 
   const isCustomer = partyType === 'CUSTOMER';
+
+  // Who is asked for a drug licence. A job-work principal is a licensed
+  // pharmaceutical business too, so the fields are offered — but only a
+  // customer is REQUIRED to have one, which is the rule the table enforces.
+  const holdsLicence = isCustomer || partyType === 'JOB_WORK_PRINCIPAL';
   const needsLicence = isCustomer && status === 'ACTIVE';
 
   // The two dropdowns were already held in state for the conditional section;
@@ -171,8 +180,8 @@ export function PartyMasterForm({
     // message with it, and the file is still in the control to retry.
     if (documentError) return;
 
-    onSaved?.();
-  }, [state.ok, router, onSaved, documentError]);
+    onSaved?.(state.message);
+  }, [state.ok, state.message, router, onSaved, documentError]);
 
   const typed = (field: string, stored?: string | number | null) =>
     state.values?.[field] ?? (stored === null || stored === undefined ? undefined : String(stored));
@@ -212,13 +221,26 @@ export function PartyMasterForm({
               control is left out of the submission entirely, and the value
               still has to be readable. The API refuses a change regardless. */}
           {party ? (
-            <TextField
-              name="partyTypeDisplay"
-              label="Party type"
-              readOnly
-              defaultValue={PARTY_TYPE_LABELS[party.partyType]}
-              hint="Fixed once created — orders and agreements already cite this party as this type."
-            />
+            <>
+              <TextField
+                name="partyTypeDisplay"
+                label="Party type"
+                readOnly
+                defaultValue={PARTY_TYPE_LABELS[party.partyType]}
+                hint="Fixed once created — orders and agreements already cite this party as this type."
+              />
+              {/* SUBMITTED, even though it cannot be changed. The visible field
+                  above is `partyTypeDisplay` and carries a LABEL, so without
+                  this the form sent no `partyType` at all on an edit — and the
+                  action reads it to decide whether the customer-only fields
+                  apply. A customer editing their licence expiry was therefore
+                  treated as "not a customer", and the save cleared the licence
+                  number and date instead of updating them.
+
+                  The API refuses a change to it regardless, so sending the
+                  party's own type is stating what is already true. */}
+              <input type="hidden" name="partyType" value={party.partyType} />
+            </>
           ) : (
             <SelectField
               name="partyType"
@@ -278,6 +300,9 @@ export function PartyMasterForm({
               is one value: the two halves are joined into E.164 on save. */}
           <PhoneField
             name="phone"
+            // Without this a number the API refuses — a legacy 9-digit one, say
+            // — failed the save with no message anywhere on screen.
+            error={errorFor('phone')}
             label="Contact number"
             dialOptions={DIAL_OPTIONS}
             dialValue={phoneDial}
@@ -315,10 +340,23 @@ export function PartyMasterForm({
         </FormGrid>
       </FormSection>
 
-      {isCustomer && (
+      {/* THE LICENCE IS ITS OWN SECTION, shared by customers and job-work
+          principals. It used to sit inside "Customer terms" beside the credit
+          limit, which made it look like a commercial term — it is not. A
+          principal is a licensed pharmaceutical business whose licence we hold
+          on file for the same reason we hold a customer's.
+
+          Only the CUSTOMER rule makes it mandatory, though: the constraint on
+          the table is about an active customer, and requiring it of a principal
+          here would refuse records the database is perfectly willing to store. */}
+      {holdsLicence && (
         <FormSection
-          title="Customer terms"
-          description="A drug licence is required before this party can be active — the number and its validity are both checked, by the API and by the database."
+          title="Drug licence"
+          description={
+            isCustomer
+              ? 'Required before this party can be active — the number and its validity are both checked, by the API and by the database.'
+              : "The principal's own licence, kept on file. Optional here."
+          }
         >
           <FormGrid>
             <TextField
@@ -340,6 +378,16 @@ export function PartyMasterForm({
               defaultValue={typed('drugLicenceValidTo', party?.drugLicenceValidTo)}
               hint="The last day the licence is valid."
             />
+          </FormGrid>
+        </FormSection>
+      )}
+
+      {isCustomer && (
+        <FormSection
+          title="Customer terms"
+          description="What this party may owe, and for how long."
+        >
+          <FormGrid>
             <TextField
               name="creditLimit"
               error={errorFor('creditLimit')}

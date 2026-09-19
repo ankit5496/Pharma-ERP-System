@@ -5,6 +5,7 @@ import { apiFetch } from '@/lib/api';
 import { DispatchRowActions, NewDispatchForm, type ReadyOrder } from './dispatch-actions';
 import {
   Cell,
+  col,
   EmptyState,
   ErrorState,
   formatDate,
@@ -21,7 +22,7 @@ const COLUMNS = [
   'Invoice #',
   'Customer',
   'Dispatch date',
-  'Qty',
+  col.right('Qty'),
   'Transport',
   'Status',
   'Actions',
