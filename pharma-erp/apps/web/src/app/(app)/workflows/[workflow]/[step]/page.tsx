@@ -57,8 +57,14 @@ export default async function WorkflowStepPage({ params, searchParams }: PagePro
   const query = await searchParams;
   const search = typeof query.search === 'string' ? query.search : undefined;
   // Written by the panel's Filter button. Read here so a filtered list is a
-  // URL somebody can share, and so the back button undoes it.
-  const status = typeof query.status === 'string' ? query.status : undefined;
+  // URL somebody can share, and so the back button undoes it. Every string
+  // parameter is passed on: each Order-to-Cash tab filters on different fields,
+  // and naming them here would mean editing this shared page for each one.
+  const filters: Record<string, string> = Object.fromEntries(
+    Object.entries(query).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1] !== '',
+    ),
+  );
 
   /**
    * ORDER-TO-CASH RENDERS NO STEP HEADING.
@@ -95,7 +101,7 @@ export default async function WorkflowStepPage({ params, searchParams }: PagePro
             'ready' has a screen registered for it and renders it; anything else
             still gets the honest placeholder. */}
         {workflow.key === 'order-to-cash' && step.state === 'ready' ? (
-          <OrderToCashStep step={step.key} search={search} status={status} />
+          <OrderToCashStep step={step.key} search={search} filters={filters} />
         ) : step.state === 'ready' ? (
           <BuiltStep workflowKey={workflow.key} stepKey={step.key} />
         ) : (

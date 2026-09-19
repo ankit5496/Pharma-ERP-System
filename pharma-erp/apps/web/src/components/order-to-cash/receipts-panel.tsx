@@ -1,4 +1,7 @@
 import {
+  RECEIPT_STATUSES,
+  RECEIPT_STATUS_LABELS,
+  PAYMENT_METHODS,
   PAYMENT_METHOD_LABELS,
   type ReceiptListItem,
   type SalesInvoiceListItem,
@@ -6,8 +9,11 @@ import {
 
 import { apiFetch } from '@/lib/api';
 
+import { choicesFrom, matchesChoice, withinDates, paginate, type Filters } from './filtering';
+
 import {
   CreateDialogButton,
+  ListPagerBar,
   FilterPanel,
   FilterToggle,
   PanelSearch,
@@ -31,21 +37,22 @@ const RECEIPT_FILTERS = [
     param: 'status',
     label: 'Status',
     allLabel: 'Any status',
-    choices: [
-      { value: 'RECORDED', label: 'Recorded' },
-      { value: 'CLEARED', label: 'Cleared' },
-      { value: 'BOUNCED', label: 'Bounced' },
-      { value: 'CANCELLED', label: 'Cancelled' },
-    ],
+    choices: choicesFrom(RECEIPT_STATUSES, RECEIPT_STATUS_LABELS),
+  },
+  {
+    param: 'paymentMethod',
+    label: 'Payment method',
+    allLabel: 'Any method',
+    choices: choicesFrom(PAYMENT_METHODS, PAYMENT_METHOD_LABELS),
   },
   { param: 'dateFrom', label: 'Date from' },
   { param: 'dateTo', label: 'Date to' },
 ] as const;
 
 const COLUMNS = [
-  'Receipt #',
+  'Receipt',
   'Customer',
-  'Invoice #',
+  'Invoice',
   'Date',
   col.right('Amount'),
   'Payment method',
@@ -65,14 +72,16 @@ const COLUMNS = [
  */
 export async function ReceiptsPanel({
   search,
-  status,
+  filters,
 }: {
   search?: string;
   /**
-   * From the panel's Filter button. Applied here rather than on the wire: the
-   * list endpoint takes no status parameter, and the rows are already loaded.
+   * The Filter panel's selections. Applied here rather than on the wire:
+   * the list endpoint takes only a search term, and the rows are already
+   * loaded. What search covers is deliberately not repeated here — see
+   * filtering.ts.
    */
-  status?: string;
+  filters: Filters;
 }) {
   const query = search ? `?search=${encodeURIComponent(search)}` : '';
 
@@ -103,12 +112,17 @@ export async function ReceiptsPanel({
   );
 
   // Filtered after fetching, for the reason in the prop's comment.
-  const visible =
-    receipts.ok && status
-      ? receipts.data.filter((row) => row.status === status)
-      : receipts.ok
-        ? receipts.data
-        : [];
+  const visible = receipts.ok
+    ? receipts.data.filter(
+        (row) =>
+          matchesChoice(row.status, filters.status) &&
+          matchesChoice(row.paymentMethod, filters.paymentMethod) &&
+          withinDates(row.receiptDate, filters.dateFrom, filters.dateTo),
+      )
+    : [];
+
+  // One page of it. The list is already in hand, so paging is a slice.
+  const paged = paginate(visible, filters);
 
   return (
     <>
@@ -123,7 +137,6 @@ export async function ReceiptsPanel({
             <CreateDialogButton
               label="New receipt"
               title="New receipt"
-              description="Applied to one invoice. The amount cannot exceed its outstanding balance."
               disabled={collectable.length === 0}
               disabledHint="Nothing is currently outstanding."
             >
@@ -136,7 +149,6 @@ export async function ReceiptsPanel({
             </CreateDialogButton>
           </>
         }
-        footer="A receipt can never exceed the invoice's outstanding balance — this system holds no payments on account. A bounced cheque is reversed with a visible adjustment, never by deleting the receipt."
       >
         <FilterPanel fields={RECEIPT_FILTERS} />
         {!receipts.ok ? (
@@ -152,11 +164,21 @@ export async function ReceiptsPanel({
           />
         ) : (
           <Table columns={COLUMNS}>
-            {visible.map((receipt) => (
+            {paged.rows.map((receipt) => (
               <ReceiptRow key={receipt.id} receipt={receipt} />
             ))}
           </Table>
         )}
+
+        <ListPagerBar
+          page={paged.page}
+          pageCount={paged.pageCount}
+          pageSize={paged.pageSize}
+          first={paged.first}
+          last={paged.last}
+          total={paged.total}
+          noun="receipts"
+        />
       </Panel>
     </>
   );

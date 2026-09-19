@@ -49,6 +49,8 @@ export class SalesReturnsService {
                 { returnNumber: { contains: term, mode: 'insensitive' } },
                 { customer: { name: { contains: term, mode: 'insensitive' } } },
                 { salesInvoice: { invoiceNumber: { contains: term, mode: 'insensitive' } } },
+                { salesOrder: { orderNumber: { contains: term, mode: 'insensitive' } } },
+                { reasonNotes: { contains: term, mode: 'insensitive' } },
               ],
             }
           : {}),

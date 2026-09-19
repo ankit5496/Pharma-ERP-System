@@ -8,6 +8,15 @@ export interface SelectOption {
   label: string;
   /** Secondary line in the list — a total, a status, a due date. */
   hint?: string;
+  /**
+   * Matched when typing, never shown.
+   *
+   * For an identifier the list no longer displays: a customer code dropped from
+   * the label is still what somebody types to find them, and a picker that
+   * cannot find DIST-002 because it now reads "ROX PHARMA" is worse than the
+   * label it replaced.
+   */
+  keywords?: string;
 }
 
 /**
@@ -70,7 +79,9 @@ export function SearchableSelect({
     if (!needle) return options;
 
     return options.filter((option) =>
-      `${option.label} ${option.hint ?? ''}`.toLowerCase().includes(needle),
+      `${option.label} ${option.hint ?? ''} ${option.keywords ?? ''}`
+        .toLowerCase()
+        .includes(needle),
     );
   }, [options, needle]);
 
@@ -174,7 +185,10 @@ export function SearchableSelect({
                     choose(option);
                   }}
                   onMouseEnter={() => setHighlighted(index)}
-                  className={`flex w-full items-baseline justify-between gap-3 px-3 py-2 text-left text-sm ${
+                  // Stacked, not side by side: pushed to opposite ends of a
+                  // narrow row, a name long enough to wrap broke across the
+                  // hint and the two read as one sentence.
+                  className={`block w-full px-3 py-2 text-left text-sm ${
                     index === highlighted
                       ? 'bg-slate-100'
                       : option.value === value
@@ -182,9 +196,9 @@ export function SearchableSelect({
                         : 'hover:bg-slate-50'
                   }`}
                 >
-                  <span className="text-slate-800">{option.label}</span>
+                  <span className="block text-slate-800">{option.label}</span>
                   {option.hint && (
-                    <span className="shrink-0 text-[11px] text-slate-500">{option.hint}</span>
+                    <span className="mt-0.5 block text-[11px] text-slate-500">{option.hint}</span>
                   )}
                 </button>
               </li>

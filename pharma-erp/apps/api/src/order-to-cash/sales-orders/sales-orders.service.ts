@@ -56,6 +56,10 @@ export class SalesOrdersService {
                 { orderNumber: { contains: term, mode: 'insensitive' } },
                 { customer: { name: { contains: term, mode: 'insensitive' } } },
                 { customer: { code: { contains: term, mode: 'insensitive' } } },
+                // The line items, so an order can be found by what is on it.
+                { items: { some: { item: { code: { contains: term, mode: 'insensitive' } } } } },
+                { items: { some: { item: { name: { contains: term, mode: 'insensitive' } } } } },
+                { notes: { contains: term, mode: 'insensitive' } },
               ],
             }
           : {}),

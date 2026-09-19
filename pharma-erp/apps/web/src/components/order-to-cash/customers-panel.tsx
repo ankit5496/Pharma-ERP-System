@@ -2,7 +2,8 @@ import { LICENCE_EXPIRY_WARNING_DAYS, type PartySummary } from '@pharma-erp/type
 
 import { apiFetch } from '@/lib/api';
 
-import { PanelSearch } from './panel-toolbar';
+import { matchesChoice, paginate, type Filters } from './filtering';
+import { FilterPanel, FilterToggle, ListPagerBar, PanelSearch } from './panel-toolbar';
 
 import {
   Badge,
@@ -16,6 +17,29 @@ import {
   StatusBadge,
   Table,
 } from './ui';
+
+const CUSTOMER_FILTERS = [
+  {
+    param: 'status',
+    label: 'Status',
+    allLabel: 'Any status',
+    choices: [
+      { value: 'ACTIVE', label: 'Active' },
+      { value: 'INACTIVE', label: 'Inactive' },
+      { value: 'BLOCKED', label: 'Blocked' },
+    ],
+  },
+  {
+    param: 'licence',
+    label: 'Licence',
+    allLabel: 'Any licence standing',
+    choices: [
+      { value: 'VALID', label: 'Valid' },
+      { value: 'EXPIRED', label: 'Expired' },
+      { value: 'MISSING', label: 'None on file' },
+    ],
+  },
+] as const;
 
 const COLUMNS = [
   'Customer',
@@ -42,7 +66,13 @@ const COLUMNS = [
  * licence US-MD-02 tests — so what is shown here is exactly what the order gate
  * will check.
  */
-export async function CustomersPanel({ search }: { search?: string }) {
+export async function CustomersPanel({
+  search,
+  filters,
+}: {
+  search?: string;
+  filters: Filters;
+}) {
   const result = await apiFetch<PartySummary[]>('/api/v1/parties?type=CUSTOMER', {
     authenticated: true,
   });
@@ -51,17 +81,43 @@ export async function CustomersPanel({ search }: { search?: string }) {
   // parameter, and adding one to a register three other modules read is not
   // this screen's call to make.
   const term = search?.trim().toLowerCase();
-  const customers =
-    result.ok && term
-      ? result.data.filter((party) =>
-          [party.code, party.name, party.gstin ?? '']
-            .join(' ')
-            .toLowerCase()
-            .includes(term),
+
+  const customers = result.ok
+    ? result.data
+        .filter(
+          (party) =>
+            // Free text covers what the filter cannot: the identifiers and the
+            // contact details somebody has in hand when they come looking.
+            !term ||
+            [
+              party.code,
+              party.name,
+              party.gstin ?? '',
+              party.drugLicenceNumber ?? '',
+              party.email ?? '',
+              party.phone ?? '',
+              party.address ?? '',
+            ]
+              .join(' ')
+              .toLowerCase()
+              .includes(term),
         )
-      : result.ok
-        ? result.data
-        : [];
+        .filter(
+          (party) =>
+            matchesChoice(party.status, filters.status) &&
+            // Licence standing is a computed state, not text — nothing anyone
+            // could type finds "every customer whose licence has lapsed".
+            (!filters.licence ||
+              (filters.licence === 'EXPIRED'
+                ? party.licenceExpired
+                : filters.licence === 'MISSING'
+                  ? !party.drugLicenceNumber || !party.drugLicenceValidTo
+                  : !party.licenceExpired && Boolean(party.drugLicenceValidTo))),
+        )
+    : [];
+
+  // One page of it. The list is already in hand, so paging is a slice.
+  const paged = paginate(customers, filters);
 
   return (
     <>
@@ -69,9 +125,14 @@ export async function CustomersPanel({ search }: { search?: string }) {
         heading="Customers"
         count={result.ok ? customers.length : undefined}
         noun="customer"
-        action={<PanelSearch stepKey="customers" placeholder="Search customers…" />}
-        footer="Customers are part of the shared party register and are added on the Master Data screen, so purchasing, sales and job work all read the same record."
+        action={
+          <>
+            <PanelSearch stepKey="customers" placeholder="Search customers…" />
+            <FilterToggle fields={CUSTOMER_FILTERS} />
+          </>
+        }
       >
+        <FilterPanel fields={CUSTOMER_FILTERS} />
         {!result.ok ? (
           <ErrorState what="customers" message={result.error} />
         ) : customers.length === 0 ? (
@@ -85,11 +146,21 @@ export async function CustomersPanel({ search }: { search?: string }) {
           />
         ) : (
           <Table columns={COLUMNS}>
-            {customers.map((customer) => (
+            {paged.rows.map((customer) => (
               <CustomerRow key={customer.id} customer={customer} />
             ))}
           </Table>
         )}
+
+        <ListPagerBar
+          page={paged.page}
+          pageCount={paged.pageCount}
+          pageSize={paged.pageSize}
+          first={paged.first}
+          last={paged.last}
+          total={paged.total}
+          noun="customers"
+        />
       </Panel>
     </>
   );

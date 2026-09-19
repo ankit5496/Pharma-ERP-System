@@ -1,5 +1,6 @@
 'use client';
 
+import { RowActionMenu, type RowAction } from '@/components/row-action-menu';
 import { useState, useTransition } from 'react';
 import type { AllocationRow } from '@pharma-erp/types';
 
@@ -8,8 +9,8 @@ import {
   releaseAllocationAction,
   updateAllocationAction,
 } from './actions';
-import { EditButton, EditDialog } from './edit-kit';
-import { DANGER_BUTTON, PRIMARY_BUTTON } from './ui';
+import { EditDialog } from './edit-kit';
+import { PRIMARY_BUTTON } from './ui';
 
 /**
  * Commits the FEFO allocation for one order.
@@ -33,7 +34,10 @@ export function AllocateOrderButton({
   const [pending, startTransition] = useTransition();
 
   return (
-    <div className="text-right">
+    // Centred under the Actions heading. It was `text-right` for the stacked
+    // list this button used to sit in, where it hugged the row's right edge —
+    // and that beat the cell's own alignment once the list became a table.
+    <div className="text-center">
       <button
         type="button"
         disabled={pending}
@@ -57,7 +61,7 @@ export function AllocateOrderButton({
       {message && (
         <p
           role={message.kind === 'error' ? 'alert' : 'status'}
-          className={`mt-2 max-w-xs text-xs ${
+          className={`mx-auto mt-2 max-w-xs text-xs ${
             message.kind === 'error' ? 'text-red-700' : 'text-slate-600'
           }`}
         >
@@ -85,40 +89,48 @@ export function AllocationRowActions({ allocation }: { allocation: AllocationRow
   // ALLOCATED only: once any part has shipped the row records a movement.
   const canEdit = allocation.status === 'ALLOCATED';
 
+  const release = () => {
+    if (
+      !window.confirm(
+        `Release batch ${allocation.batchNumber} back to free stock?
+
+` +
+          `Anything already dispatched stays dispatched — only the undispatched ` +
+          `remainder is returned.`,
+      )
+    ) {
+      return;
+    }
+
+    setError(null);
+    startTransition(async () => {
+      const result = await releaseAllocationAction(allocation.id);
+      if (!result.ok) setError(result.error ?? 'That did not work.');
+    });
+  };
+
+  const actions: RowAction[] = [
+    {
+      label: 'Edit',
+      onSelect: () => setEditing(true),
+      disabledReason: canEdit
+        ? null
+        : 'Part of this allocation has shipped, so the row records a movement.',
+    },
+    {
+      label: 'Release',
+      onSelect: release,
+      disabledReason: canRelease ? null : 'Nothing is reserved on this row to release.',
+    },
+  ];
+
   return (
-    <div className="min-w-[9rem]">
-      <div className="flex flex-wrap gap-1.5">
-        {canEdit && <EditButton onClick={() => setEditing(true)} />}
-
-        {canRelease && (
-          <button
-            type="button"
-            disabled={pending}
-            onClick={() => {
-              if (
-                !window.confirm(
-                  `Release batch ${allocation.batchNumber} back to free stock?\n\n` +
-                    `Anything already dispatched stays dispatched — only the undispatched ` +
-                    `remainder is returned.`,
-                )
-              ) {
-                return;
-              }
-
-              setError(null);
-              startTransition(async () => {
-                const result = await releaseAllocationAction(allocation.id);
-                if (!result.ok) setError(result.error ?? 'That did not work.');
-              });
-            }}
-            className={DANGER_BUTTON}
-          >
-            Release
-          </button>
-        )}
-
-        {!canEdit && !canRelease && <span className="text-xs text-slate-400">—</span>}
-      </div>
+    <>
+      <RowActionMenu
+        label={`${allocation.itemCode} on ${allocation.orderNumber}`}
+        actions={actions}
+        busy={pending}
+      />
 
       {editing && (
         <EditDialog
@@ -144,6 +156,6 @@ export function AllocationRowActions({ allocation }: { allocation: AllocationRow
           {error}
         </p>
       )}
-    </div>
+    </>
   );
 }

@@ -1,9 +1,13 @@
+import { DISPATCH_STATUSES, DISPATCH_STATUS_LABELS } from '@pharma-erp/types';
 import type { AllocationRow, DispatchListItem } from '@pharma-erp/types';
 
 import { apiFetch } from '@/lib/api';
 
+import { choicesFrom, matchesChoice, withinDates, paginate, type Filters } from './filtering';
+
 import {
   CreateDialogButton,
+  ListPagerBar,
   FilterPanel,
   FilterToggle,
   PanelSearch,
@@ -27,21 +31,16 @@ const DISPATCH_FILTERS = [
     param: 'status',
     label: 'Status',
     allLabel: 'Any status',
-    choices: [
-      { value: 'DRAFT', label: 'Draft' },
-      { value: 'DISPATCHED', label: 'Dispatched' },
-      { value: 'DELIVERED', label: 'Delivered' },
-      { value: 'CANCELLED', label: 'Cancelled' },
-    ],
+    choices: choicesFrom(DISPATCH_STATUSES, DISPATCH_STATUS_LABELS),
   },
   { param: 'dateFrom', label: 'Date from' },
   { param: 'dateTo', label: 'Date to' },
 ] as const;
 
 const COLUMNS = [
-  'Dispatch #',
-  'Order #',
-  'Invoice #',
+  'Dispatch',
+  'Order',
+  'Invoice',
   'Customer',
   'Dispatch date',
   col.right('Qty'),
@@ -69,14 +68,16 @@ const COLUMNS = [
  */
 export async function DispatchPanel({
   search,
-  status,
+  filters,
 }: {
   search?: string;
   /**
-   * From the panel's Filter button. Applied here rather than on the wire: the
-   * list endpoint takes no status parameter, and the rows are already loaded.
+   * The Filter panel's selections. Applied here rather than on the wire:
+   * the list endpoint takes only a search term, and the rows are already
+   * loaded. What search covers is deliberately not repeated here — see
+   * filtering.ts.
    */
-  status?: string;
+  filters: Filters;
 }) {
   const query = search ? `?search=${encodeURIComponent(search)}` : '';
 
@@ -121,12 +122,16 @@ export async function DispatchPanel({
   const readyToDispatch = [...readyByOrder.values()];
 
   // Filtered after fetching, for the reason in the prop's comment.
-  const visible =
-    dispatches.ok && status
-      ? dispatches.data.filter((row) => row.status === status)
-      : dispatches.ok
-        ? dispatches.data
-        : [];
+  const visible = dispatches.ok
+    ? dispatches.data.filter(
+        (row) =>
+          matchesChoice(row.status, filters.status) &&
+          withinDates(row.dispatchDate, filters.dateFrom, filters.dateTo),
+      )
+    : [];
+
+  // One page of it. The list is already in hand, so paging is a slice.
+  const paged = paginate(visible, filters);
 
   return (
     <>
@@ -141,7 +146,6 @@ export async function DispatchPanel({
             <CreateDialogButton
               label="New dispatch"
               title="New dispatch"
-              description="Ships exactly what is still allocated on the order. Stock is reduced when the dispatch is confirmed."
               disabled={readyToDispatch.length === 0}
               disabledHint="No order currently has stock allocated and waiting to ship."
             >
@@ -153,7 +157,6 @@ export async function DispatchPanel({
             </CreateDialogButton>
           </>
         }
-        footer="A dispatch can never exceed what was allocated."
       >
         <FilterPanel fields={DISPATCH_FILTERS} />
         {!dispatches.ok ? (
@@ -169,11 +172,21 @@ export async function DispatchPanel({
           />
         ) : (
           <Table columns={COLUMNS}>
-            {visible.map((dispatch) => (
+            {paged.rows.map((dispatch) => (
               <DispatchRow key={dispatch.id} dispatch={dispatch} />
             ))}
           </Table>
         )}
+
+        <ListPagerBar
+          page={paged.page}
+          pageCount={paged.pageCount}
+          pageSize={paged.pageSize}
+          first={paged.first}
+          last={paged.last}
+          total={paged.total}
+          noun="dispatchs"
+        />
       </Panel>
     </>
   );

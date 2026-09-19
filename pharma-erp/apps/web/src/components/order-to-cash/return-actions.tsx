@@ -1,5 +1,6 @@
 'use client';
 
+import { RowActionMenu, type RowAction } from '@/components/row-action-menu';
 import { useMemo, useState, useTransition } from 'react';
 import {
   RETURNED_STOCK_DISPOSITIONS,
@@ -11,7 +12,8 @@ import {
 } from '@pharma-erp/types';
 
 import { createSalesReturnAction, updateSalesReturnAction } from './actions';
-import { EditButton, EditDialog } from './edit-kit';
+import { EditDialog } from './edit-kit';
+import { DialogFooter } from './modal';
 import { SearchableSelect } from './searchable-select';
 import { Note, PRIMARY_BUTTON, SECONDARY_BUTTON, formatDate, formatQuantity } from './ui';
 
@@ -139,7 +141,7 @@ export function NewReturnForm({
       )}
 
       <div className="mt-5 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div>
+        <div className="lg:col-span-2">
           <label htmlFor="ret-invoice" className="field-label">
             Invoice <span className="text-red-600">*</span>
           </label>
@@ -154,7 +156,9 @@ export function NewReturnForm({
               placeholder="Search by invoice number or customer…"
               options={invoices.map((candidate) => ({
                 value: candidate.id,
-                label: `${candidate.invoiceNumber} — ${candidate.customerName}`,
+                label: candidate.customerName,
+                hint: candidate.invoiceNumber,
+                keywords: candidate.invoiceNumber,
               }))}
             />
           </div>
@@ -323,7 +327,7 @@ export function NewReturnForm({
         />
       </div>
 
-      <div className="mt-5">
+      <DialogFooter>
         <button
           type="button"
           disabled={pending || !invoiceId}
@@ -368,7 +372,7 @@ export function NewReturnForm({
         >
           {pending ? 'Recording…' : 'Record return & credit'}
         </button>
-      </div>
+      </DialogFooter>
     </div>
   );
 }
@@ -383,13 +387,22 @@ export function NewReturnForm({
 export function SalesReturnRowActions({ salesReturn }: { salesReturn: SalesReturnListItem }) {
   const [editing, setEditing] = useState(false);
 
-  if (salesReturn.status !== 'DRAFT') {
-    return <span className="text-xs text-slate-400">—</span>;
-  }
+  // DRAFT only, so on every other row the trigger is plainly closed rather than
+  // opening on a single greyed entry.
+  const settled =
+    salesReturn.status === 'DRAFT'
+      ? null
+      : 'This return has been received or credited, so it can no longer be changed.';
+
+  const actions: RowAction[] = [{ label: 'Edit', onSelect: () => setEditing(true) }];
 
   return (
-    <div className="min-w-[5rem]">
-      <EditButton onClick={() => setEditing(true)} />
+    <>
+      <RowActionMenu
+        label={salesReturn.returnNumber}
+        actions={actions}
+        disabledReason={settled}
+      />
 
       {editing && (
         <EditDialog
@@ -414,6 +427,6 @@ export function SalesReturnRowActions({ salesReturn }: { salesReturn: SalesRetur
           onSave={(patch) => updateSalesReturnAction(salesReturn.id, patch)}
         />
       )}
-    </div>
+    </>
   );
 }

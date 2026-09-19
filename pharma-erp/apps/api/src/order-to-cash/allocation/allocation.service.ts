@@ -51,6 +51,10 @@ export class AllocationService {
               { salesOrder: { orderNumber: { contains: term, mode: 'insensitive' } } },
               { salesOrder: { customer: { name: { contains: term, mode: 'insensitive' } } } },
               { batch: { batchNumber: { contains: term, mode: 'insensitive' } } },
+              // Reached through the order line: an allocation has no item of
+              // its own, it reserves a batch against a line.
+              { salesOrderItem: { item: { code: { contains: term, mode: 'insensitive' } } } },
+              { salesOrderItem: { item: { name: { contains: term, mode: 'insensitive' } } } },
             ],
           }
         : {},

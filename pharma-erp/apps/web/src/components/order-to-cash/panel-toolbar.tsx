@@ -1,8 +1,19 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, useTransition, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useTransition,
+  type ReactNode,
+} from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 
+import { pageNumbers } from '@/components/procurement/pagination';
+
+import { DEFAULT_PAGE_SIZE, PAGE_SIZES } from './filtering';
 import { Modal } from './modal';
 import { suggestO2cAction, type Suggestion } from './search-actions';
 
@@ -132,7 +143,7 @@ export function PanelSearch({
   };
 
   return (
-    <div ref={boxRef} className="relative">
+    <div ref={boxRef} className="relative w-full min-w-0 sm:w-96">
       <input
         type="search"
         value={draft}
@@ -164,13 +175,13 @@ export function PanelSearch({
             setOpen(false);
           }
         }}
-        className="field-sm h-9 w-56 text-sm"
+        className="field h-9 w-full text-sm"
       />
 
       {open && suggestions.length > 0 && (
         <ul
           role="listbox"
-          className="absolute right-0 top-full z-30 mt-1 w-72 max-h-64 overflow-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg"
+          className="absolute left-0 right-0 top-full z-30 mt-1 max-h-64 overflow-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg"
         >
           {suggestions.map((suggestion, index) => (
             <li key={`${suggestion.value}-${index}`} role="option" aria-selected={index === highlighted}>
@@ -403,5 +414,145 @@ export function CreateDialogButton({
         </Modal>
       )}
     </>
+  );
+}
+
+/**
+ * The pager under an Order-to-Cash list.
+ *
+ * The same control, in the same place, as the one under every Procure-to-Pay
+ * and Master Data list — `pageNumbers` is imported from procurement rather than
+ * rewritten, so the numbers and the gaps are decided in exactly one place.
+ *
+ * WHAT IS DIFFERENT IS WHERE THE PAGE LIVES. `ListPager` holds it in React
+ * state and reports changes through callbacks; these panels are server
+ * components and cannot be given callbacks, so this one takes only numbers and
+ * writes the page to the URL itself. A page is then a link, and Back steps
+ * through pages.
+ *
+ * ALWAYS RENDERED, even when everything fits: hiding it would take the row
+ * count and the page-size control away exactly when someone wants to raise the
+ * size to see more.
+ */
+export function ListPagerBar({
+  page,
+  pageCount,
+  pageSize,
+  first,
+  last,
+  total,
+  noun,
+}: {
+  page: number;
+  pageCount: number;
+  pageSize: number;
+  first: number;
+  last: number;
+  total: number;
+  /** Plural noun for the count line: "orders", "receipts". */
+  noun: string;
+}) {
+  const setUrl = useUrlState();
+  const sizeId = useId();
+
+  const goto = (next: number) => setUrl({ page: next <= 1 ? null : String(next) });
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 border-t border-slate-200 px-5 py-3 text-sm">
+      <p aria-live="polite" className="text-slate-600">
+        {total === 0 ? (
+          <>No {noun}</>
+        ) : (
+          <>
+            Showing <span className="font-medium tabular-nums text-slate-900">{first}</span>–
+            <span className="font-medium tabular-nums text-slate-900">{last}</span> of{' '}
+            <span className="font-medium tabular-nums text-slate-900">{total}</span> {noun}
+          </>
+        )}
+      </p>
+
+      <div className="flex flex-wrap items-center gap-4">
+        <div className="flex items-center gap-2">
+          <label htmlFor={sizeId} className="whitespace-nowrap text-xs text-slate-600">
+            Rows per page
+          </label>
+          <select
+            id={sizeId}
+            value={pageSize}
+            // Back to page one: page 9 of the old size is rarely page 9 of the
+            // new one, and landing somewhere unrelated reads as lost rows.
+            onChange={(event) =>
+              setUrl({
+                rows:
+                  Number(event.target.value) === DEFAULT_PAGE_SIZE ? null : event.target.value,
+                page: null,
+              })
+            }
+            aria-label={`Rows of ${noun} per page`}
+            className="h-8 rounded-md border border-slate-300 bg-white px-2 text-sm tabular-nums text-slate-900 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+          >
+            {PAGE_SIZES.map((size) => (
+              <option key={size} value={size}>
+                {size}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <nav aria-label="Pagination" className="flex items-center gap-1">
+          <PageStep disabled={page <= 1} onClick={() => goto(page - 1)}>
+            Previous
+          </PageStep>
+
+          {pageNumbers(page, pageCount).map((entry, index) =>
+            entry === null ? (
+              // Not a button: the gap stands for pages nobody asked to see.
+              <span key={`gap-${index}`} aria-hidden="true" className="px-1 text-slate-400">
+                …
+              </span>
+            ) : (
+              <button
+                key={entry}
+                type="button"
+                onClick={() => goto(entry)}
+                aria-current={entry === page ? 'page' : undefined}
+                className={`h-8 min-w-8 rounded-md px-2 text-sm font-medium tabular-nums transition ${
+                  entry === page
+                    ? 'bg-slate-900 text-white'
+                    : 'border border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
+                }`}
+              >
+                {entry}
+              </button>
+            ),
+          )}
+
+          <PageStep disabled={page >= pageCount} onClick={() => goto(page + 1)}>
+            Next
+          </PageStep>
+        </nav>
+      </div>
+    </div>
+  );
+}
+
+function PageStep({
+  children,
+  disabled,
+  onClick,
+}: {
+  children: ReactNode;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="h-8 rounded-md border border-slate-300 bg-white px-2.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+    >
+      {children}
+    </button>
   );
 }
