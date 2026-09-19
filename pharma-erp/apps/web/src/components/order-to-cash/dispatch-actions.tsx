@@ -44,9 +44,16 @@ export interface ReadyOrder {
 export function NewDispatchForm({
   orders,
   ordersError,
+  inDialog = false,
 }: {
   orders: readonly ReadyOrder[];
   ordersError: string | null;
+  /**
+   * Rendered inside the panel's create dialog, which already supplies the
+   * title, the description and a way out — so the trigger card and the
+   * internal header are suppressed rather than drawn twice.
+   */
+  inDialog?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [salesOrderId, setSalesOrderId] = useState('');
@@ -56,7 +63,7 @@ export function NewDispatchForm({
 
   const selected = orders.find((order) => order.salesOrderId === salesOrderId) ?? null;
 
-  if (!open) {
+  if (!inDialog && !open) {
     return (
       <div className="flex items-center justify-between gap-4 rounded-lg border border-slate-200 bg-white px-5 py-4 shadow-sm">
         <div>
@@ -73,14 +80,15 @@ export function NewDispatchForm({
           disabled={orders.length === 0}
           className={PRIMARY_BUTTON}
         >
-          + New dispatch
+          New dispatch
         </button>
       </div>
     );
   }
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+    <div className={inDialog ? '' : 'rounded-lg border border-slate-200 bg-white p-6 shadow-sm'}>
+      {!inDialog && (
       <div className="flex items-start justify-between gap-4">
         <div>
           <h3 className="text-base font-semibold text-slate-900">New dispatch</h3>
@@ -100,6 +108,7 @@ export function NewDispatchForm({
           Cancel
         </button>
       </div>
+      )}
 
       {ordersError && (
         <div className="mt-5">
@@ -162,7 +171,7 @@ export function NewDispatchForm({
           });
         }}
       >
-        <div className="lg:col-span-2">
+        <div>
           <label htmlFor="dsp-order" className="field-label">
             Order <span className="text-red-600">*</span>
           </label>
@@ -190,7 +199,7 @@ export function NewDispatchForm({
             type="date"
             value={dispatchDate}
             onChange={(event) => setDispatchDate(event.target.value)}
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           />
         </div>
 
@@ -203,7 +212,7 @@ export function NewDispatchForm({
             name="transporterName"
             maxLength={255}
             autoComplete="off"
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           />
         </div>
 
@@ -216,7 +225,7 @@ export function NewDispatchForm({
             name="vehicleNumber"
             maxLength={32}
             autoComplete="off"
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           />
         </div>
 
@@ -229,7 +238,7 @@ export function NewDispatchForm({
             name="lrNumber"
             maxLength={64}
             autoComplete="off"
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           />
         </div>
 
@@ -242,11 +251,11 @@ export function NewDispatchForm({
             name="ewayBillNumber"
             maxLength={32}
             autoComplete="off"
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           />
         </div>
 
-        <div className="sm:col-span-2">
+        <div>
           <label htmlFor="dsp-notes" className="field-label">
             Notes
           </label>
@@ -255,7 +264,7 @@ export function NewDispatchForm({
             name="notes"
             maxLength={1000}
             autoComplete="off"
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           />
         </div>
 

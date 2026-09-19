@@ -19,9 +19,10 @@ export interface SelectOption {
  * by the middle of their name is impossible. This filters on any substring of
  * the label or the hint.
  *
- * THE LIST FOLLOWS TYPING. Nothing drops down on focus: a menu of every
- * option would cover the fields below before the user has asked anything, and
- * the point of this control is that the list is a reply to a search.
+ * IT OPENS ON CLICK, like the select it replaces. Every option is offered
+ * straight away and typing filters them, so the control can be used either by
+ * browsing or by searching — a list that only appeared after a keystroke hid
+ * the fact that there was anything to choose from.
  *
  * KEPT CLOSE TO THE THING IT REPLACES. It renders the same `field` classes, so
  * it sits in the existing grids without relayout, and it reports its value
@@ -66,17 +67,18 @@ export function SearchableSelect({
   const needle = query.trim().toLowerCase();
 
   const matches = useMemo(() => {
-    if (!needle) return [];
+    if (!needle) return options;
 
     return options.filter((option) =>
       `${option.label} ${option.hint ?? ''}`.toLowerCase().includes(needle),
     );
   }, [options, needle]);
 
-  // The list appears once something has been typed, not on focus. Opening a
-  // dropdown over the fields below it before the user has asked a question
-  // hides the form they are working down.
-  const showList = open && needle !== '';
+  // The list opens on click, before anything is typed: with a handful of
+  // customers or invoices to choose from, being shown them is faster than
+  // having to guess a first character, and it is the only way to discover what
+  // is on offer. Typing then narrows the same list.
+  const showList = open;
 
   // Clicking elsewhere closes the list and restores the chosen label, so a
   // half-typed search is never left sitting in a field that still holds a value.
@@ -147,7 +149,9 @@ export function SearchableSelect({
             setQuery('');
           }
         }}
-        className={`${small ? 'field-sm' : 'field'} w-full`}
+        // h-10 to match the plain inputs and selects it sits beside; `field`
+        // alone sizes from its padding, which is not the same for every control.
+        className={`${small ? 'field-sm h-9' : 'field h-10'} w-full`}
       />
 
       {showList && (

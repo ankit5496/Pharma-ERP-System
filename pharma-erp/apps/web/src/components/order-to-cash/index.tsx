@@ -19,22 +19,31 @@ import { SalesOrdersPanel } from './sales-orders-panel';
  * placeholder, so a step whose `state` is still 'planned' keeps saying so
  * honestly rather than rendering an empty table.
  */
-export function OrderToCashStep({ step, search }: { step: string; search?: string }) {
+export function OrderToCashStep({
+  step,
+  search,
+  status,
+}: {
+  step: string;
+  search?: string;
+  /** The panel's Filter selection, from `?status=`. */
+  status?: string;
+}) {
   switch (step) {
     case 'customers':
       return <Loading label="customers">{<CustomersPanel search={search} />}</Loading>;
     case 'sales-orders':
-      return <Loading label="sales orders">{<SalesOrdersPanel search={search} />}</Loading>;
+      return <Loading label="sales orders">{<SalesOrdersPanel search={search} status={status} />}</Loading>;
     case 'allocation':
       return <Loading label="allocations">{<AllocationPanel />}</Loading>;
     case 'dispatch':
-      return <Loading label="dispatches">{<DispatchPanel search={search} />}</Loading>;
+      return <Loading label="dispatches">{<DispatchPanel search={search} status={status} />}</Loading>;
     case 'invoices':
       return <Loading label="invoices">{<InvoicesPanel search={search} />}</Loading>;
     case 'receipts':
-      return <Loading label="receipts">{<ReceiptsPanel search={search} />}</Loading>;
+      return <Loading label="receipts">{<ReceiptsPanel search={search} status={status} />}</Loading>;
     case 'returns':
-      return <Loading label="returns">{<ReturnsPanel search={search} />}</Loading>;
+      return <Loading label="returns">{<ReturnsPanel search={search} status={status} />}</Loading>;
     default:
       return null;
   }

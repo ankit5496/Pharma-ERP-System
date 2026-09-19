@@ -24,49 +24,38 @@ import {
 // Page section
 // ---------------------------------------------------------------------------
 
-/** A step's heading and one-line description, above its content. */
-export function StepHeader({
-  title,
-  description,
-  action,
-}: {
-  title: string;
-  description: string;
-  action?: ReactNode;
-}) {
-  return (
-    <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-      <div>
-        <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
-        <p className="mt-1 max-w-3xl text-sm text-slate-600">{description}</p>
-      </div>
-      {action}
-    </div>
-  );
-}
 
 /** The card every list sits in, with a count in its header. */
 export function Panel({
   heading,
   count,
   noun,
+  action,
   children,
   footer,
 }: {
   heading: string;
   count?: number;
   noun?: string;
+  /**
+   * The toolbar: search, filter, and whatever creates a record. It sits on the
+   * header row beside the count rather than in a band above the table, so the
+   * list stays the tallest thing on the screen — the same arrangement
+   * Procure-to-Pay uses.
+   */
+  action?: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
 }) {
   return (
     <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
-      <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 border-b border-slate-200 px-5 py-3.5">
         <h3 className="text-base font-semibold text-slate-900">
           {count === undefined
             ? heading
             : `${count} ${noun ?? heading.toLowerCase()}${count === 1 ? '' : 's'}`}
         </h3>
+        {action && <div className="flex flex-wrap items-center gap-2">{action}</div>}
       </div>
       {children}
       {footer && (

@@ -6,6 +6,13 @@ import {
 
 import { apiFetch } from '@/lib/api';
 
+import {
+  CreateDialogButton,
+  FilterPanel,
+  FilterToggle,
+  PanelSearch,
+} from './panel-toolbar';
+
 import { NewReceiptForm, ReceiptRowActions } from './receipt-actions';
 import {
   Cell,
@@ -16,9 +23,24 @@ import {
   Money,
   Panel,
   StatusBadge,
-  StepHeader,
   Table,
 } from './ui';
+
+const RECEIPT_FILTERS = [
+  {
+    param: 'status',
+    label: 'Status',
+    allLabel: 'Any status',
+    choices: [
+      { value: 'RECORDED', label: 'Recorded' },
+      { value: 'CLEARED', label: 'Cleared' },
+      { value: 'BOUNCED', label: 'Bounced' },
+      { value: 'CANCELLED', label: 'Cancelled' },
+    ],
+  },
+  { param: 'dateFrom', label: 'Date from' },
+  { param: 'dateTo', label: 'Date to' },
+] as const;
 
 const COLUMNS = [
   'Receipt #',
@@ -41,17 +63,26 @@ const COLUMNS = [
  * system holds no design for advance payments and offering a field that the API
  * would refuse would be worse than not offering it.
  */
-export async function ReceiptsPanel({ search }: { search?: string }) {
+export async function ReceiptsPanel({
+  search,
+  status,
+}: {
+  search?: string;
+  /**
+   * From the panel's Filter button. Applied here rather than on the wire: the
+   * list endpoint takes no status parameter, and the rows are already loaded.
+   */
+  status?: string;
+}) {
   const query = search ? `?search=${encodeURIComponent(search)}` : '';
 
   const [receipts, invoices] = await Promise.all([
     apiFetch<ReceiptListItem[]>(`/api/v1/order-to-cash/receipts${query}`, {
       authenticated: true,
     }),
-    apiFetch<SalesInvoiceListItem[]>(
-      '/api/v1/order-to-cash/sales-invoices?paymentStatus=UNPAID',
-      { authenticated: true },
-    ),
+    apiFetch<SalesInvoiceListItem[]>('/api/v1/order-to-cash/sales-invoices?paymentStatus=UNPAID', {
+      authenticated: true,
+    }),
   ]);
 
   // Part-paid invoices are also collectable, so they are fetched separately and
@@ -71,27 +102,43 @@ export async function ReceiptsPanel({ search }: { search?: string }) {
     0,
   );
 
+  // Filtered after fetching, for the reason in the prop's comment.
+  const visible =
+    receipts.ok && status
+      ? receipts.data.filter((row) => row.status === status)
+      : receipts.ok
+        ? receipts.data
+        : [];
+
   return (
     <>
-      <StepHeader
-        title="Receipts"
-        description="Payments collected and applied to an invoice. Recording one reduces the customer's outstanding balance and updates the invoice's payment status."
-      />
-
-      <div className="mb-6">
-        <NewReceiptForm
-          invoices={collectable}
-          invoicesError={invoices.ok ? null : invoices.error}
-          totalOutstanding={totalOutstanding.toFixed(2)}
-        />
-      </div>
-
       <Panel
         heading="Receipts"
-        count={receipts.ok ? receipts.data.length : undefined}
+        count={receipts.ok ? visible.length : undefined}
         noun="receipt"
+        action={
+          <>
+            <PanelSearch stepKey="receipts" placeholder="Search receipts…" />
+            <FilterToggle fields={RECEIPT_FILTERS} />
+            <CreateDialogButton
+              label="New receipt"
+              title="New receipt"
+              description="Applied to one invoice. The amount cannot exceed its outstanding balance."
+              disabled={collectable.length === 0}
+              disabledHint="Nothing is currently outstanding."
+            >
+              <NewReceiptForm
+                inDialog
+                invoices={collectable}
+                invoicesError={invoices.ok ? null : invoices.error}
+                totalOutstanding={totalOutstanding.toFixed(2)}
+              />
+            </CreateDialogButton>
+          </>
+        }
         footer="A receipt can never exceed the invoice's outstanding balance — this system holds no payments on account. A bounced cheque is reversed with a visible adjustment, never by deleting the receipt."
       >
+        <FilterPanel fields={RECEIPT_FILTERS} />
         {!receipts.ok ? (
           <ErrorState what="receipts" message={receipts.error} />
         ) : receipts.data.length === 0 ? (
@@ -105,7 +152,7 @@ export async function ReceiptsPanel({ search }: { search?: string }) {
           />
         ) : (
           <Table columns={COLUMNS}>
-            {receipts.data.map((receipt) => (
+            {visible.map((receipt) => (
               <ReceiptRow key={receipt.id} receipt={receipt} />
             ))}
           </Table>
