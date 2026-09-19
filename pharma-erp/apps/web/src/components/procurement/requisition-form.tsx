@@ -113,6 +113,7 @@ export function RequisitionForm({
             <Field
               label="Requested quantity"
               htmlFor="pr-qty"
+              required
               hint="Blank uses the item's configured reorder quantity."
             >
               <input

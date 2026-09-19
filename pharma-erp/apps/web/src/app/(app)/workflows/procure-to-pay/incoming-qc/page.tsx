@@ -5,7 +5,7 @@ import {
   STOCK_LOT_STATUSES,
   STOCK_LOT_STATUS_LABELS,
 } from '@pharma-erp/types';
-import { FilterButton, FilterPanel } from '@/components/procurement/filter-bar';
+import { FilterButton, FilterPanel, SearchBox } from '@/components/procurement/filter-bar';
 import { Pagination } from '@/components/procurement/pagination';
 import { QcDecisionForm } from '@/components/procurement/qc-decision-form';
 import {
@@ -59,7 +59,12 @@ export default async function IncomingQcPage({
             } awaiting a decision on this page, ${queue.data.total} in total`
           : undefined
       }
-      action={<FilterButton />}
+      action={
+          <>
+            <SearchBox placeholder="Search by lot, batch number, item or GRN…" />
+            <FilterButton />
+          </>
+        }
     >
       <FilterPanel
         statuses={STOCK_LOT_STATUSES.filter((status) => status !== 'CONSUMED').map((status) => ({
@@ -68,7 +73,6 @@ export default async function IncomingQcPage({
         }))}
         vendors={vendors.ok ? toOptions(vendors.data) : []}
         items={items.ok ? toOptions(items.data) : []}
-        searchPlaceholder="Search by lot, batch number, item or GRN…"
       />
       {!queue.ok ? (
         <ErrorState message={`Could not load the QC queue: ${queue.error}`} />

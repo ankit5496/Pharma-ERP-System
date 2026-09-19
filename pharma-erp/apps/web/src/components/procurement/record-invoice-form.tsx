@@ -61,8 +61,10 @@ export function RecordInvoiceForm({ orders }: { orders: readonly PurchaseOrderLi
       closeWhen={state.status === 'success'}
       width="60rem"
       // A floor, not a fixed height: a form with more lines still grows, and
-      // 85vh still caps it on a short screen.
-      minHeight="40rem"
+      // 85vh still caps it on a short screen. 36rem rather than 40, with a
+      // step taken back off the row padding below: a tenth shorter overall,
+      // and no field loses room.
+      minHeight="36rem"
     >
       {(close) => (
         <form action={formAction} className="flex grow flex-col gap-5">
@@ -150,22 +152,22 @@ export function RecordInvoiceForm({ orders }: { orders: readonly PurchaseOrderLi
               <table className="w-full min-w-[44rem] text-left text-sm">
                 <thead className="bg-slate-50">
                   <tr className="border-b border-slate-200 text-[11px] uppercase tracking-wide text-slate-500">
-                    <th scope="col" className="px-3 py-3 font-medium">
+                    <th scope="col" className="px-3 py-2.5 font-medium">
                       Item
                     </th>
-                    <th scope="col" className="px-3 py-3 text-right font-medium">
+                    <th scope="col" className="px-3 py-2.5 text-right font-medium">
                       Ordered
                     </th>
-                    <th scope="col" className="px-3 py-3 text-right font-medium">
+                    <th scope="col" className="px-3 py-2.5 text-right font-medium">
                       Received
                     </th>
-                    <th scope="col" className="px-3 py-3 font-medium">
+                    <th scope="col" className="px-3 py-2.5 font-medium">
                       Billed qty
                     </th>
-                    <th scope="col" className="px-3 py-3 font-medium">
+                    <th scope="col" className="px-3 py-2.5 font-medium">
                       Rate
                     </th>
-                    <th scope="col" className="px-3 py-3 font-medium">
+                    <th scope="col" className="px-3 py-2.5 font-medium">
                       GST (from HSN)
                     </th>
                   </tr>
@@ -173,20 +175,20 @@ export function RecordInvoiceForm({ orders }: { orders: readonly PurchaseOrderLi
                 <tbody className="divide-y divide-slate-100">
                   {lines.map((line, index) => (
                     <tr key={line.id}>
-                      <td className="px-3 py-3">
+                      <td className="px-3 py-2.5">
                         <input type="hidden" name="lineItemId" value={line.item.id} />
                         <span className="font-medium text-slate-800">{line.item.name}</span>
                         <span className="ml-2 font-mono text-[11px] text-slate-500">
                           {line.item.code}
                         </span>
                       </td>
-                      <td className="px-3 py-3 text-right tabular-nums text-slate-500">
+                      <td className="px-3 py-2.5 text-right tabular-nums text-slate-500">
                         {line.quantity} {line.item.uom}
                       </td>
-                      <td className="px-3 py-3 text-right tabular-nums text-slate-700">
+                      <td className="px-3 py-2.5 text-right tabular-nums text-slate-700">
                         {line.quantityReceived}
                       </td>
-                      <td className="px-3 py-3">
+                      <td className="px-3 py-2.5">
                         <label className="sr-only" htmlFor={`inv-qty-${index}`}>
                           Billed quantity for {line.item.name}
                         </label>
@@ -198,7 +200,7 @@ export function RecordInvoiceForm({ orders }: { orders: readonly PurchaseOrderLi
                           className="field-sm w-24"
                         />
                       </td>
-                      <td className="px-3 py-3">
+                      <td className="px-3 py-2.5">
                         <label className="sr-only" htmlFor={`inv-rate-${index}`}>
                           Rate for {line.item.name}
                         </label>
@@ -214,7 +216,7 @@ export function RecordInvoiceForm({ orders }: { orders: readonly PurchaseOrderLi
                       from the item master's own gstRate; an input here would be
                       a rate the client chose, which is what the brief and the
                       filing rules both rule out. */}
-                      <td className="px-3 py-3">
+                      <td className="px-3 py-2.5">
                         {line.item.gstRate !== null ? (
                           <span
                             className="text-slate-700"
