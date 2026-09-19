@@ -40,6 +40,7 @@ export class ReceiptsService {
               { referenceNumber: { contains: term, mode: 'insensitive' } },
               { customer: { name: { contains: term, mode: 'insensitive' } } },
               { salesInvoice: { invoiceNumber: { contains: term, mode: 'insensitive' } } },
+              { notes: { contains: term, mode: 'insensitive' } },
             ],
           }
         : {},

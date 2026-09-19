@@ -1,9 +1,13 @@
+import { SALES_ORDER_STATUSES, SALES_ORDER_STATUS_LABELS } from '@pharma-erp/types';
 import type { CustomerListItem, ItemListItem, SalesOrderListItem } from '@pharma-erp/types';
 
 import { apiFetch } from '@/lib/api';
 
+import { choicesFrom, matchesChoice, withinDates, paginate, type Filters } from './filtering';
+
 import {
   CreateDialogButton,
+  ListPagerBar,
   FilterPanel,
   FilterToggle,
   PanelSearch,
@@ -30,15 +34,26 @@ const SALES_ORDER_FILTERS = [
     param: 'status',
     label: 'Status',
     allLabel: 'Any status',
+    choices: choicesFrom(SALES_ORDER_STATUSES, SALES_ORDER_STATUS_LABELS),
+  },
+  {
+    param: 'licenceCheck',
+    label: 'Licence check',
+    allLabel: 'Any licence verdict',
     choices: [
-      { value: 'DRAFT', label: 'Draft' },
-      { value: 'APPROVED', label: 'Approved' },
-      { value: 'BLOCKED', label: 'Blocked' },
-      { value: 'PARTIALLY_ALLOCATED', label: 'Partially allocated' },
-      { value: 'ALLOCATED', label: 'Allocated' },
-      { value: 'DISPATCHED', label: 'Dispatched' },
-      { value: 'COMPLETED', label: 'Completed' },
-      { value: 'CANCELLED', label: 'Cancelled' },
+      { value: 'PASS', label: 'Pass' },
+      { value: 'FAIL', label: 'Fail' },
+      { value: 'NOT_RUN', label: 'Not run' },
+    ],
+  },
+  {
+    param: 'creditCheck',
+    label: 'Credit check',
+    allLabel: 'Any credit verdict',
+    choices: [
+      { value: 'PASS', label: 'Pass' },
+      { value: 'FAIL', label: 'Fail' },
+      { value: 'NOT_RUN', label: 'Not run' },
     ],
   },
   { param: 'dateFrom', label: 'Date from' },
@@ -46,7 +61,7 @@ const SALES_ORDER_FILTERS = [
 ] as const;
 
 const COLUMNS = [
-  'Order #',
+  'Order',
   'Customer',
   'Date',
   col.right('Qty'),
@@ -68,14 +83,16 @@ const COLUMNS = [
  */
 export async function SalesOrdersPanel({
   search,
-  status,
+  filters,
 }: {
   search?: string;
   /**
-   * From the panel's Filter button. Applied here rather than on the wire: the
-   * list endpoint takes no status parameter, and the rows are already loaded.
+   * The Filter panel's selections. Applied here rather than on the wire:
+   * the list endpoint takes only a search term, and the rows are already
+   * loaded. What search covers is deliberately not repeated here — see
+   * filtering.ts.
    */
-  status?: string;
+  filters: Filters;
 }) {
   const query = search ? `?search=${encodeURIComponent(search)}` : '';
 
@@ -94,17 +111,23 @@ export async function SalesOrdersPanel({
   ]);
 
   // Filtered after fetching, for the reason in the prop's comment.
-  const visible =
-    orders.ok && status
-      ? orders.data.filter((row) => row.status === status)
-      : orders.ok
-        ? orders.data
-        : [];
+  const visible = orders.ok
+    ? orders.data.filter(
+        (row) =>
+          matchesChoice(row.status, filters.status) &&
+          matchesChoice(row.licenceCheck, filters.licenceCheck) &&
+          matchesChoice(row.creditCheck, filters.creditCheck) &&
+          withinDates(row.orderDate, filters.dateFrom, filters.dateTo),
+      )
+    : [];
+
+  // One page of it. The list is already in hand, so paging is a slice.
+  const paged = paginate(visible, filters);
 
   return (
     <>
       <Panel
-        heading="Orders"
+        heading="Sales orders"
         count={orders.ok ? visible.length : undefined}
         noun="order"
         action={
@@ -114,7 +137,6 @@ export async function SalesOrdersPanel({
             <CreateDialogButton
               label="New sales order"
               title="New sales order"
-              description="Priced from the item master. Released stock is checked before the order is created."
             >
               <NewSalesOrderForm
                 inDialog
@@ -126,7 +148,6 @@ export async function SalesOrdersPanel({
             </CreateDialogButton>
           </>
         }
-        footer="Both checks are re-run from the database every time. A pass recorded earlier is never reused at allocation, invoicing or dispatch — each of those re-reads it."
       >
         <FilterPanel fields={SALES_ORDER_FILTERS} />
         {!orders.ok ? (
@@ -142,11 +163,21 @@ export async function SalesOrdersPanel({
           />
         ) : (
           <Table columns={COLUMNS}>
-            {visible.map((order) => (
+            {paged.rows.map((order) => (
               <OrderRow key={order.id} order={order} />
             ))}
           </Table>
         )}
+
+        <ListPagerBar
+          page={paged.page}
+          pageCount={paged.pageCount}
+          pageSize={paged.pageSize}
+          first={paged.first}
+          last={paged.last}
+          total={paged.total}
+          noun="orders"
+        />
       </Panel>
     </>
   );

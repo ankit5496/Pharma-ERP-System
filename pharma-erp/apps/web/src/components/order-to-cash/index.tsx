@@ -1,5 +1,7 @@
 import { Suspense } from 'react';
 
+import type { Filters } from './filtering';
+
 import { AllocationPanel } from './allocation-panel';
 import { CustomersPanel } from './customers-panel';
 import { DispatchPanel } from './dispatch-panel';
@@ -22,28 +24,32 @@ import { SalesOrdersPanel } from './sales-orders-panel';
 export function OrderToCashStep({
   step,
   search,
-  status,
+  filters = {},
 }: {
   step: string;
   search?: string;
-  /** The panel's Filter selection, from `?status=`. */
-  status?: string;
+  /**
+   * Every query parameter the Filter panel has written. Each tab reads the
+   * ones it declares and ignores the rest, so a filter can be added to one tab
+   * without touching the page that renders all of them.
+   */
+  filters?: Filters;
 }) {
   switch (step) {
     case 'customers':
-      return <Loading label="customers">{<CustomersPanel search={search} />}</Loading>;
+      return <Loading label="customers">{<CustomersPanel search={search} filters={filters} />}</Loading>;
     case 'sales-orders':
-      return <Loading label="sales orders">{<SalesOrdersPanel search={search} status={status} />}</Loading>;
+      return <Loading label="sales orders">{<SalesOrdersPanel search={search} filters={filters} />}</Loading>;
     case 'allocation':
-      return <Loading label="allocations">{<AllocationPanel />}</Loading>;
+      return <Loading label="allocations">{<AllocationPanel search={search} filters={filters} />}</Loading>;
     case 'dispatch':
-      return <Loading label="dispatches">{<DispatchPanel search={search} status={status} />}</Loading>;
+      return <Loading label="dispatches">{<DispatchPanel search={search} filters={filters} />}</Loading>;
     case 'invoices':
-      return <Loading label="invoices">{<InvoicesPanel search={search} />}</Loading>;
+      return <Loading label="invoices">{<InvoicesPanel search={search} filters={filters} />}</Loading>;
     case 'receipts':
-      return <Loading label="receipts">{<ReceiptsPanel search={search} status={status} />}</Loading>;
+      return <Loading label="receipts">{<ReceiptsPanel search={search} filters={filters} />}</Loading>;
     case 'returns':
-      return <Loading label="returns">{<ReturnsPanel search={search} status={status} />}</Loading>;
+      return <Loading label="returns">{<ReturnsPanel search={search} filters={filters} />}</Loading>;
     default:
       return null;
   }

@@ -1,4 +1,7 @@
 import {
+  RETURN_REASONS,
+  SALES_RETURN_STATUSES,
+  SALES_RETURN_STATUS_LABELS,
   RETURN_REASON_LABELS,
   type SalesInvoiceDetail,
   type SalesInvoiceListItem,
@@ -7,8 +10,11 @@ import {
 
 import { apiFetch } from '@/lib/api';
 
+import { choicesFrom, matchesChoice, withinDates, paginate, type Filters } from './filtering';
+
 import {
   CreateDialogButton,
+  ListPagerBar,
   FilterPanel,
   FilterToggle,
   PanelSearch,
@@ -22,7 +28,6 @@ import {
   ErrorState,
   formatDate,
   Money,
-  Note,
   Panel,
   StatusBadge,
   Table,
@@ -33,22 +38,22 @@ const RETURN_FILTERS = [
     param: 'status',
     label: 'Status',
     allLabel: 'Any status',
-    choices: [
-      { value: 'DRAFT', label: 'Draft' },
-      { value: 'RECEIVED', label: 'Received' },
-      { value: 'QUARANTINED', label: 'Quarantined' },
-      { value: 'CREDITED', label: 'Credited' },
-      { value: 'CANCELLED', label: 'Cancelled' },
-    ],
+    choices: choicesFrom(SALES_RETURN_STATUSES, SALES_RETURN_STATUS_LABELS),
+  },
+  {
+    param: 'reason',
+    label: 'Reason',
+    allLabel: 'Any reason',
+    choices: choicesFrom(RETURN_REASONS, RETURN_REASON_LABELS),
   },
   { param: 'dateFrom', label: 'Date from' },
   { param: 'dateTo', label: 'Date to' },
 ] as const;
 
 const COLUMNS = [
-  'Return #',
+  'Return',
   'Customer',
-  'Invoice #',
+  'Invoice',
   'Date',
   col.right('Amount'),
   'Reason',
@@ -67,14 +72,16 @@ const COLUMNS = [
  */
 export async function ReturnsPanel({
   search,
-  status,
+  filters,
 }: {
   search?: string;
   /**
-   * From the panel's Filter button. Applied here rather than on the wire: the
-   * list endpoint takes no status parameter, and the rows are already loaded.
+   * The Filter panel's selections. Applied here rather than on the wire:
+   * the list endpoint takes only a search term, and the rows are already
+   * loaded. What search covers is deliberately not repeated here — see
+   * filtering.ts.
    */
-  status?: string;
+  filters: Filters;
 }) {
   const query = search ? `?search=${encodeURIComponent(search)}` : '';
 
@@ -114,28 +121,20 @@ export async function ReturnsPanel({
     );
 
   // Filtered after fetching, for the reason in the prop's comment.
-  const visible =
-    returns.ok && status
-      ? returns.data.filter((row) => row.status === status)
-      : returns.ok
-        ? returns.data
-        : [];
+  const visible = returns.ok
+    ? returns.data.filter(
+        (row) =>
+          matchesChoice(row.status, filters.status) &&
+          matchesChoice(row.reason, filters.reason) &&
+          withinDates(row.returnDate, filters.dateFrom, filters.dateTo),
+      )
+    : [];
+
+  // One page of it. The list is already in hand, so paging is a slice.
+  const paged = paginate(visible, filters);
 
   return (
     <>
-      <div className="mb-6">
-        <Note tone="amber">
-          <p className="font-semibold">Returned stock does not go back on sale.</p>
-          <p className="mt-1">
-            It is received into <strong className="font-semibold">quarantine</strong> and is
-            invisible to allocation until someone decides otherwise. Goods that have left the
-            company&rsquo;s custody cannot be assumed to have been stored correctly. The credit to
-            the customer is issued in full either way — whether the stock can be resold is the
-            company&rsquo;s problem, not theirs.
-          </p>
-        </Note>
-      </div>
-
       <Panel
         heading="Returns"
         count={returns.ok ? visible.length : undefined}
@@ -147,7 +146,6 @@ export async function ReturnsPanel({
             <CreateDialogButton
               label="New return"
               title="New return"
-              description="Priced from the invoice, so the credit note mirrors what was charged."
               disabled={returnableInvoices.length === 0}
               disabledHint="No issued invoice currently has anything that could be returned."
             >
@@ -159,7 +157,6 @@ export async function ReturnsPanel({
             </CreateDialogButton>
           </>
         }
-        footer="A return can never exceed what the invoice line actually shipped, less anything already returned. Stock comes back through the same inventory ledger that sent it out, as an IN entry against the quarantined quantity."
       >
         <FilterPanel fields={RETURN_FILTERS} />
         {!returns.ok ? (
@@ -175,11 +172,21 @@ export async function ReturnsPanel({
           />
         ) : (
           <Table columns={COLUMNS}>
-            {visible.map((salesReturn) => (
+            {paged.rows.map((salesReturn) => (
               <ReturnRow key={salesReturn.id} salesReturn={salesReturn} />
             ))}
           </Table>
         )}
+
+        <ListPagerBar
+          page={paged.page}
+          pageCount={paged.pageCount}
+          pageSize={paged.pageSize}
+          first={paged.first}
+          last={paged.last}
+          total={paged.total}
+          noun="returns"
+        />
       </Panel>
     </>
   );

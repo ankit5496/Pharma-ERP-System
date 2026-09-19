@@ -11,6 +11,7 @@ import {
 } from './actions';
 import { EditButton, EditDialog } from './edit-kit';
 import { SearchableSelect } from './searchable-select';
+import { DialogFooter } from './modal';
 import { Note, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 
 /** One allocated batch with stock still to ship. */
@@ -183,8 +184,11 @@ export function NewDispatchForm({
               placeholder="Search by order number or customer…"
               options={orders.map((order) => ({
                 value: order.salesOrderId,
-                label: `${order.orderNumber} — ${order.customerName}`,
-                hint: `${order.lines.length} line${order.lines.length === 1 ? '' : 's'}`,
+                label: order.customerName,
+                hint: `${order.orderNumber} · ${order.lines.length} line${
+                  order.lines.length === 1 ? '' : 's'
+                }`,
+                keywords: order.orderNumber,
               }))}
             />
           </div>
@@ -255,7 +259,7 @@ export function NewDispatchForm({
           />
         </div>
 
-        <div>
+        <div className="sm:col-span-2 lg:col-span-3">
           <label htmlFor="dsp-notes" className="field-label">
             Notes
           </label>
@@ -268,7 +272,7 @@ export function NewDispatchForm({
           />
         </div>
 
-        <div className="sm:col-span-2 lg:col-span-3">
+        <DialogFooter className="sm:col-span-2 lg:col-span-3">
           <button
             type="submit"
             disabled={pending || !salesOrderId}
@@ -276,7 +280,7 @@ export function NewDispatchForm({
           >
             {pending ? 'Recording…' : 'Create dispatch'}
           </button>
-        </div>
+        </DialogFooter>
       </form>
     </div>
   );

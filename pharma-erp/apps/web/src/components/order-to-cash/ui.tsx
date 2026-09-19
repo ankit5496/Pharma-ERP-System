@@ -32,7 +32,6 @@ export function Panel({
   noun,
   action,
   children,
-  footer,
 }: {
   heading: string;
   count?: number;
@@ -45,22 +44,26 @@ export function Panel({
    */
   action?: ReactNode;
   children: ReactNode;
-  footer?: ReactNode;
 }) {
   return (
     <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 border-b border-slate-200 px-5 py-3.5">
-        <h3 className="text-base font-semibold text-slate-900">
-          {count === undefined
-            ? heading
-            : `${count} ${noun ?? heading.toLowerCase()}${count === 1 ? '' : 's'}`}
-        </h3>
+        {/* The name of the list, then how long it is — the arrangement
+            Procure-to-Pay uses. The count alone ("6 orders") left the panel
+            with no title at all, so which list you were looking at had to be
+            inferred from the columns. */}
+        <div>
+          <h3 className="text-base font-semibold text-slate-900">{heading}</h3>
+          {count !== undefined && (
+            <p className="mt-0.5 text-sm text-slate-500">
+              {count} {noun ?? heading.toLowerCase()}
+              {count === 1 ? '' : 's'}
+            </p>
+          )}
+        </div>
         {action && <div className="flex flex-wrap items-center gap-2">{action}</div>}
       </div>
       {children}
-      {footer && (
-        <div className="border-t border-slate-200 px-5 py-3 text-xs text-slate-500">{footer}</div>
-      )}
     </section>
   );
 }
@@ -77,11 +80,13 @@ export function Panel({
  * type exists to make impossible — the heading and the numbers under it are one
  * column and have to be declared once.
  */
-export type TableColumn = string | { label: string; align: 'left' | 'right' };
+export type TableColumn = string | { label: string; align: 'left' | 'right' | 'center' };
 
-/** Right-aligns a column. `col.right('Amount')` reads better at the call site. */
+/** Aligns a column. `col.right('Amount')` reads better at the call site. */
 export const col = {
   right: (label: string): TableColumn => ({ label, align: 'right' }),
+  /** For a column holding a control rather than a value, e.g. one button. */
+  center: (label: string): TableColumn => ({ label, align: 'center' }),
 };
 
 export function Table({
@@ -118,7 +123,7 @@ export function Table({
                   key={label}
                   scope="col"
                   className={`whitespace-nowrap px-5 py-3 font-medium ${
-                    align === 'right' ? 'text-right' : ''
+                    align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : ''
                   }`}
                 >
                   {label}
@@ -139,13 +144,13 @@ export function Cell({
   className = '',
 }: {
   children: ReactNode;
-  align?: 'left' | 'right';
+  align?: 'left' | 'right' | 'center';
   className?: string;
 }) {
   return (
     <td
       className={`px-5 py-3.5 align-top ${
-        align === 'right' ? 'text-right tabular-nums' : ''
+        align === 'right' ? 'text-right tabular-nums' : align === 'center' ? 'text-center' : ''
       } ${className}`}
     >
       {children}

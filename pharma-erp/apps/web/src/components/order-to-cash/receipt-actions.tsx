@@ -1,5 +1,6 @@
 'use client';
 
+import { RowActionMenu, type RowAction } from '@/components/row-action-menu';
 import { useState, useTransition } from 'react';
 import {
   PAYMENT_METHODS,
@@ -9,9 +10,10 @@ import {
 } from '@pharma-erp/types';
 
 import { bounceReceiptAction, createReceiptAction, updateReceiptAction } from './actions';
-import { EditButton, EditDialog } from './edit-kit';
+import { EditDialog } from './edit-kit';
+import { DialogFooter } from './modal';
 import { SearchableSelect } from './searchable-select';
-import { DANGER_BUTTON, Money, Note, PRIMARY_BUTTON, SECONDARY_BUTTON, formatDate } from './ui';
+import { Money, Note, PRIMARY_BUTTON, SECONDARY_BUTTON, formatDate } from './ui';
 
 /**
  * Records a payment against an invoice.
@@ -164,8 +166,9 @@ export function NewReceiptForm({
               placeholder="Search by invoice number or customer…"
               options={invoices.map((invoice) => ({
                 value: invoice.id,
-                label: `${invoice.invoiceNumber} — ${invoice.customerName}`,
-                hint: `${invoice.amountOutstanding} due`,
+                label: invoice.customerName,
+                hint: `${invoice.invoiceNumber} · ${invoice.amountOutstanding} due`,
+                keywords: invoice.invoiceNumber,
               }))}
             />
           </div>
@@ -277,7 +280,7 @@ export function NewReceiptForm({
           <p className="field-hint">UTR, cheque number or UPI reference.</p>
         </div>
 
-        <div>
+        <div className="sm:col-span-2 lg:col-span-3">
           <label htmlFor="rcp-notes" className="field-label">
             Notes
           </label>
@@ -290,11 +293,11 @@ export function NewReceiptForm({
           />
         </div>
 
-        <div className="sm:col-span-2 lg:col-span-3">
+        <DialogFooter className="sm:col-span-2 lg:col-span-3">
           <button type="submit" disabled={pending} className={PRIMARY_BUTTON}>
             {pending ? 'Recording…' : 'Record payment'}
           </button>
-        </div>
+        </DialogFooter>
       </form>
     </div>
   );
@@ -313,46 +316,56 @@ export function ReceiptRowActions({ receipt }: { receipt: ReceiptListItem }) {
   const [editing, setEditing] = useState(false);
   const [pending, startTransition] = useTransition();
 
-  if (receipt.status === 'BOUNCED') {
-    return <span className="text-xs text-slate-400">Reversed</span>;
-  }
+  const bounce = () => {
+    const reason = window.prompt(
+      `Mark receipt ${receipt.receiptNumber} as bounced?
 
-  if (receipt.status === 'CANCELLED') {
-    return <span className="text-xs text-slate-400">—</span>;
-  }
+` +
+        `The amount goes back onto the customer's balance and the invoice reverts to ` +
+        `unpaid or part paid. Reason (optional):`,
+    );
+
+    if (reason === null) return;
+
+    setError(null);
+    startTransition(async () => {
+      const result = await bounceReceiptAction(receipt.id, reason || undefined);
+      if (!result.ok) setError(result.error ?? 'That did not work.');
+    });
+  };
+
+  // A receipt that has already been reversed or cancelled has nothing further
+  // that can be done to it, so the whole menu is closed rather than opening on
+  // two greyed entries.
+  const settled =
+    receipt.status === 'BOUNCED'
+      ? 'This receipt has already been reversed.'
+      : receipt.status === 'CANCELLED'
+        ? 'This receipt was cancelled.'
+        : null;
+
+  const actions: RowAction[] = [
+    {
+      label: 'Edit',
+      onSelect: () => setEditing(true),
+      // RECORDED only: once cleared or bounced the receipt is part of a settled
+      // position. The amount is never editable — see the service.
+      disabledReason:
+        receipt.status === 'RECORDED'
+          ? null
+          : 'Only a recorded receipt can be edited — this one has cleared.',
+    },
+    { label: 'Bounced', onSelect: bounce },
+  ];
 
   return (
-    <div className="min-w-[6rem]">
-      {/* RECORDED only: once cleared or bounced the receipt is part of a
-          settled position. The amount is never editable — see the service. */}
-      {receipt.status === 'RECORDED' && (
-        <div className="mb-1.5">
-          <EditButton onClick={() => setEditing(true)} />
-        </div>
-      )}
-
-      <button
-        type="button"
-        disabled={pending}
-        onClick={() => {
-          const reason = window.prompt(
-            `Mark receipt ${receipt.receiptNumber} as bounced?\n\n` +
-              `The amount goes back onto the customer's balance and the invoice reverts to ` +
-              `unpaid or part paid. Reason (optional):`,
-          );
-
-          if (reason === null) return;
-
-          setError(null);
-          startTransition(async () => {
-            const result = await bounceReceiptAction(receipt.id, reason || undefined);
-            if (!result.ok) setError(result.error ?? 'That did not work.');
-          });
-        }}
-        className={DANGER_BUTTON}
-      >
-        Bounced
-      </button>
+    <>
+      <RowActionMenu
+        label={receipt.receiptNumber}
+        actions={actions}
+        busy={pending}
+        disabledReason={settled}
+      />
 
       {error && (
         <p role="alert" className="mt-2 max-w-xs text-xs text-red-700">
@@ -391,6 +404,6 @@ export function ReceiptRowActions({ receipt }: { receipt: ReceiptListItem }) {
           onSave={(patch) => updateReceiptAction(receipt.id, patch)}
         />
       )}
-    </div>
+    </>
   );
 }

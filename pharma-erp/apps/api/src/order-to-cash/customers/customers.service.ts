@@ -59,6 +59,10 @@ export class CustomersService {
               { code: { contains: term, mode: 'insensitive' } },
               { name: { contains: term, mode: 'insensitive' } },
               { gstin: { contains: term, mode: 'insensitive' } },
+              { contactPerson: { contains: term, mode: 'insensitive' } },
+              { phone: { contains: term, mode: 'insensitive' } },
+              { email: { contains: term, mode: 'insensitive' } },
+              { drugLicenceNumber: { contains: term, mode: 'insensitive' } },
             ],
           }
         : {}),
