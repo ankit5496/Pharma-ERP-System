@@ -2,7 +2,8 @@ import { LICENCE_EXPIRY_WARNING_DAYS, type PartySummary } from '@pharma-erp/type
 
 import { apiFetch } from '@/lib/api';
 
-import { CustomerRowActions } from './customer-forms';
+import { PanelSearch } from './panel-toolbar';
+
 import {
   Badge,
   Cell,
@@ -13,7 +14,6 @@ import {
   Money,
   Panel,
   StatusBadge,
-  StepHeader,
   Table,
 } from './ui';
 
@@ -23,7 +23,6 @@ const COLUMNS = [
   'Licence expiry',
   col.right('Credit limit'),
   'Status',
-  'Actions',
 ] as const;
 
 /**
@@ -66,15 +65,11 @@ export async function CustomersPanel({ search }: { search?: string }) {
 
   return (
     <>
-      <StepHeader
-        title="Customers"
-        description="Distributors and stockists who buy finished product, with the drug licence and credit terms every order is checked against."
-      />
-
       <Panel
         heading="Customers"
         count={result.ok ? customers.length : undefined}
         noun="customer"
+        action={<PanelSearch stepKey="customers" placeholder="Search customers…" />}
         footer="Customers are part of the shared party register and are added on the Master Data screen, so purchasing, sales and job work all read the same record."
       >
         {!result.ok ? (
@@ -134,10 +129,6 @@ function CustomerRow({ customer }: { customer: PartySummary }) {
 
       <Cell>
         <StatusBadge status={customer.status} />
-      </Cell>
-
-      <Cell>
-        <CustomerRowActions customer={customer} />
       </Cell>
     </tr>
   );

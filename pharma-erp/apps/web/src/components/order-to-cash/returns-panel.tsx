@@ -7,6 +7,13 @@ import {
 
 import { apiFetch } from '@/lib/api';
 
+import {
+  CreateDialogButton,
+  FilterPanel,
+  FilterToggle,
+  PanelSearch,
+} from './panel-toolbar';
+
 import { NewReturnForm, SalesReturnRowActions } from './return-actions';
 import {
   Cell,
@@ -18,9 +25,25 @@ import {
   Note,
   Panel,
   StatusBadge,
-  StepHeader,
   Table,
 } from './ui';
+
+const RETURN_FILTERS = [
+  {
+    param: 'status',
+    label: 'Status',
+    allLabel: 'Any status',
+    choices: [
+      { value: 'DRAFT', label: 'Draft' },
+      { value: 'RECEIVED', label: 'Received' },
+      { value: 'QUARANTINED', label: 'Quarantined' },
+      { value: 'CREDITED', label: 'Credited' },
+      { value: 'CANCELLED', label: 'Cancelled' },
+    ],
+  },
+  { param: 'dateFrom', label: 'Date from' },
+  { param: 'dateTo', label: 'Date to' },
+] as const;
 
 const COLUMNS = [
   'Return #',
@@ -42,7 +65,17 @@ const COLUMNS = [
  * afterwards. Saying so where the action is taken beats leaving it to be
  * discovered from the stock figures.
  */
-export async function ReturnsPanel({ search }: { search?: string }) {
+export async function ReturnsPanel({
+  search,
+  status,
+}: {
+  search?: string;
+  /**
+   * From the panel's Filter button. Applied here rather than on the wire: the
+   * list endpoint takes no status parameter, and the rows are already loaded.
+   */
+  status?: string;
+}) {
   const query = search ? `?search=${encodeURIComponent(search)}` : '';
 
   const [returns, invoices] = await Promise.all([
@@ -80,13 +113,16 @@ export async function ReturnsPanel({ search }: { search?: string }) {
       invoice.items.some((line) => Number(line.quantity) > Number(line.quantityReturned)),
     );
 
+  // Filtered after fetching, for the reason in the prop's comment.
+  const visible =
+    returns.ok && status
+      ? returns.data.filter((row) => row.status === status)
+      : returns.ok
+        ? returns.data
+        : [];
+
   return (
     <>
-      <StepHeader
-        title="Returns"
-        description="Goods coming back from a distributor, traced to the batch that shipped, with a credit note against the original invoice."
-      />
-
       <div className="mb-6">
         <Note tone="amber">
           <p className="font-semibold">Returned stock does not go back on sale.</p>
@@ -100,19 +136,32 @@ export async function ReturnsPanel({ search }: { search?: string }) {
         </Note>
       </div>
 
-      <div className="mb-6">
-        <NewReturnForm
-          invoices={returnableInvoices}
-          invoicesError={invoices.ok ? null : invoices.error}
-        />
-      </div>
-
       <Panel
         heading="Returns"
-        count={returns.ok ? returns.data.length : undefined}
+        count={returns.ok ? visible.length : undefined}
         noun="return"
+        action={
+          <>
+            <PanelSearch stepKey="returns" placeholder="Search returns…" />
+            <FilterToggle fields={RETURN_FILTERS} />
+            <CreateDialogButton
+              label="New return"
+              title="New return"
+              description="Priced from the invoice, so the credit note mirrors what was charged."
+              disabled={returnableInvoices.length === 0}
+              disabledHint="No issued invoice currently has anything that could be returned."
+            >
+              <NewReturnForm
+                inDialog
+                invoices={returnableInvoices}
+                invoicesError={invoices.ok ? null : invoices.error}
+              />
+            </CreateDialogButton>
+          </>
+        }
         footer="A return can never exceed what the invoice line actually shipped, less anything already returned. Stock comes back through the same inventory ledger that sent it out, as an IN entry against the quarantined quantity."
       >
+        <FilterPanel fields={RETURN_FILTERS} />
         {!returns.ok ? (
           <ErrorState what="returns" message={returns.error} />
         ) : returns.data.length === 0 ? (
@@ -126,7 +175,7 @@ export async function ReturnsPanel({ search }: { search?: string }) {
           />
         ) : (
           <Table columns={COLUMNS}>
-            {returns.data.map((salesReturn) => (
+            {visible.map((salesReturn) => (
               <ReturnRow key={salesReturn.id} salesReturn={salesReturn} />
             ))}
           </Table>

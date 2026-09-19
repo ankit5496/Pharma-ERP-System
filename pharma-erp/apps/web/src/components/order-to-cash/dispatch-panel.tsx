@@ -2,6 +2,13 @@ import type { AllocationRow, DispatchListItem } from '@pharma-erp/types';
 
 import { apiFetch } from '@/lib/api';
 
+import {
+  CreateDialogButton,
+  FilterPanel,
+  FilterToggle,
+  PanelSearch,
+} from './panel-toolbar';
+
 import { DispatchRowActions, NewDispatchForm, type ReadyOrder } from './dispatch-actions';
 import {
   Cell,
@@ -12,9 +19,24 @@ import {
   Panel,
   Quantity,
   StatusBadge,
-  StepHeader,
   Table,
 } from './ui';
+
+const DISPATCH_FILTERS = [
+  {
+    param: 'status',
+    label: 'Status',
+    allLabel: 'Any status',
+    choices: [
+      { value: 'DRAFT', label: 'Draft' },
+      { value: 'DISPATCHED', label: 'Dispatched' },
+      { value: 'DELIVERED', label: 'Delivered' },
+      { value: 'CANCELLED', label: 'Cancelled' },
+    ],
+  },
+  { param: 'dateFrom', label: 'Date from' },
+  { param: 'dateTo', label: 'Date to' },
+] as const;
 
 const COLUMNS = [
   'Dispatch #',
@@ -45,7 +67,17 @@ const COLUMNS = [
  * Quantities are never typed here: a line ships what remains allocated on that
  * batch. That is both less work and one fewer place for a number to be wrong.
  */
-export async function DispatchPanel({ search }: { search?: string }) {
+export async function DispatchPanel({
+  search,
+  status,
+}: {
+  search?: string;
+  /**
+   * From the panel's Filter button. Applied here rather than on the wire: the
+   * list endpoint takes no status parameter, and the rows are already loaded.
+   */
+  status?: string;
+}) {
   const query = search ? `?search=${encodeURIComponent(search)}` : '';
 
   const [dispatches, allocations] = await Promise.all([
@@ -88,26 +120,42 @@ export async function DispatchPanel({ search }: { search?: string }) {
 
   const readyToDispatch = [...readyByOrder.values()];
 
+  // Filtered after fetching, for the reason in the prop's comment.
+  const visible =
+    dispatches.ok && status
+      ? dispatches.data.filter((row) => row.status === status)
+      : dispatches.ok
+        ? dispatches.data
+        : [];
+
   return (
     <>
-      <StepHeader
-        title="Dispatch"
-        description="Goods leaving the warehouse, recorded down to the batch. Confirming a dispatch reduces finished-goods stock and writes the inventory ledger in the same transaction."
-      />
-
-      <div className="mb-6">
-        <NewDispatchForm
-          orders={readyToDispatch}
-          ordersError={allocations.ok ? null : allocations.error}
-        />
-      </div>
-
       <Panel
         heading="Dispatches"
-        count={dispatches.ok ? dispatches.data.length : undefined}
+        count={dispatches.ok ? visible.length : undefined}
         noun="dispatch"
+        action={
+          <>
+            <PanelSearch stepKey="dispatch" placeholder="Search dispatches…" />
+            <FilterToggle fields={DISPATCH_FILTERS} />
+            <CreateDialogButton
+              label="New dispatch"
+              title="New dispatch"
+              description="Ships exactly what is still allocated on the order. Stock is reduced when the dispatch is confirmed."
+              disabled={readyToDispatch.length === 0}
+              disabledHint="No order currently has stock allocated and waiting to ship."
+            >
+              <NewDispatchForm
+                inDialog
+                orders={readyToDispatch}
+                ordersError={allocations.ok ? null : allocations.error}
+              />
+            </CreateDialogButton>
+          </>
+        }
         footer="A dispatch can never exceed what was allocated."
       >
+        <FilterPanel fields={DISPATCH_FILTERS} />
         {!dispatches.ok ? (
           <ErrorState what="dispatches" message={dispatches.error} />
         ) : dispatches.data.length === 0 ? (
@@ -121,7 +169,7 @@ export async function DispatchPanel({ search }: { search?: string }) {
           />
         ) : (
           <Table columns={COLUMNS}>
-            {dispatches.data.map((dispatch) => (
+            {visible.map((dispatch) => (
               <DispatchRow key={dispatch.id} dispatch={dispatch} />
             ))}
           </Table>

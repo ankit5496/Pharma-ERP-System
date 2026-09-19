@@ -18,6 +18,7 @@ import type {
   CreateCustomerLicenceDto,
   UpdateCustomerDto,
 } from './dto/customer.dto';
+import { licencesOnFile } from './licences-on-file';
 
 /**
  * The Order-to-Cash customer register.
@@ -287,20 +288,26 @@ export class CustomersService {
     return this.get(customerId);
   }
 
-  /** Whether any licence on file is in date AND not withdrawn by the authority. */
+  /**
+   * Whether any licence on file is in date AND not withdrawn by the authority.
+   *
+   * Counts the party's own licence fields when the register holds no row for
+   * them, so this answers the same way the order gate does.
+   */
   private async hasValidLicence(partyId: string): Promise<boolean> {
     const today = startOfUtcDay(new Date());
 
-    const count = await this.prisma.scoped.customerLicence.count({
-      where: {
-        partyId,
-        deletedAt: null,
-        status: 'ACTIVE',
-        expiryDate: { gte: today },
-      },
+    const party = await this.prisma.scoped.party.findFirst({
+      where: { id: partyId, deletedAt: null },
+      include: { customerLicences: { where: { deletedAt: null } } },
     });
 
-    return count > 0;
+    if (!party) return false;
+
+    return licencesOnFile(party, party.customerLicences).some(
+      (licence) =>
+        licence.status === 'ACTIVE' && startOfUtcDay(licence.expiryDate) >= today,
+    );
   }
 
   private async requireCustomer(id: string): Promise<Party> {
@@ -381,37 +388,52 @@ function deriveStateCode(gstin?: string): string | null {
 }
 
 /**
- * Expiry is decided against the API's clock, not the reader's, so every client
- * agrees about which licences are valid today.
+ * The licences to show for a customer, from whichever register holds them.
+ *
+ * A customer added on the Master Data screen has no row in the Order-to-Cash
+ * licence register — their licence is the pair of fields on the party that
+ * US-MD-02 enforces. Showing an empty list for them told the operator there was
+ * no licence while the Customers tab, reading those same fields, showed one.
  */
-function toLicenceView(licence: CustomerLicence): CustomerLicenceView {
+function effectiveLicenceViews(
+  party: Party,
+  licences: readonly CustomerLicence[],
+): CustomerLicenceView[] {
   const today = startOfUtcDay(new Date());
-  const expiry = startOfUtcDay(licence.expiryDate);
-  const daysToExpiry = Math.round((expiry.getTime() - today.getTime()) / 86_400_000);
-  const isExpired = daysToExpiry < 0;
 
-  return {
-    id: licence.id,
-    licenceNumber: licence.licenceNumber,
-    category: licence.category,
-    formNumber: licence.formNumber,
-    issuingAuthority: licence.issuingAuthority,
-    issueDate: toIsoDate(licence.issueDate),
-    expiryDate: toIsoDate(licence.expiryDate),
-    status: licence.status,
-    coversScheduleX: licence.coversScheduleX,
-    isPrimary: licence.isPrimary,
-    isExpired,
-    daysToExpiry,
-    // Both halves have to hold: in date AND not withdrawn by the authority. A
-    // suspended licence inside its validity window is still no licence to sell
-    // against, which is why status and expiry are separate fields.
-    isValid: !isExpired && licence.status === 'ACTIVE',
-  };
+  return licencesOnFile(party, licences).map((licence) => {
+    const registered = licences.find((row) => row.id === licence.id);
+
+    // The dates come from the merged licence, not from the register row: where
+    // both stores hold the same number, the renewal on the party record is the
+    // current expiry and the register row is the stale copy.
+    const expiry = startOfUtcDay(licence.expiryDate);
+    const daysToExpiry = Math.round((expiry.getTime() - today.getTime()) / 86_400_000);
+    const isExpired = daysToExpiry < 0;
+
+    // Descriptive fields come from the register when it has this licence. The
+    // party record carries a number and a date and nothing else, so the rest is
+    // honestly empty rather than invented — OTHER is "nobody has said".
+    return {
+      id: registered?.id ?? `party:${party.id}`,
+      licenceNumber: licence.licenceNumber,
+      category: registered?.category ?? 'OTHER',
+      formNumber: registered?.formNumber ?? null,
+      issuingAuthority: registered?.issuingAuthority ?? null,
+      issueDate: toIsoDate(registered?.issueDate ?? licence.expiryDate),
+      expiryDate: toIsoDate(licence.expiryDate),
+      status: licence.status,
+      coversScheduleX: registered?.coversScheduleX ?? false,
+      isPrimary: licence.isPrimary,
+      isExpired,
+      daysToExpiry,
+      isValid: !isExpired && licence.status === 'ACTIVE',
+    } satisfies CustomerLicenceView;
+  });
 }
 
 function toListItem(party: Party, licences: readonly CustomerLicence[]): CustomerListItem {
-  const views = licences.map(toLicenceView);
+  const views = effectiveLicenceViews(party, licences);
   const primary = views.find((l) => l.isPrimary) ?? views.find((l) => l.isValid) ?? null;
 
   const creditLimit = party.creditLimit?.toFixed(2) ?? '0.00';
@@ -465,7 +487,7 @@ function toDetail(party: Party, licences: readonly CustomerLicence[]): CustomerD
     shippingState: party.shippingState,
     shippingPin: party.shippingPin,
     notes: party.notes,
-    licences: licences.map(toLicenceView),
+    licences: effectiveLicenceViews(party, licences),
   };
 }
 

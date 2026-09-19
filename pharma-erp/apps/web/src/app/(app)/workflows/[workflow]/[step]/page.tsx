@@ -6,7 +6,6 @@ import { findWorkflow, findWorkflowStep } from '@pharma-erp/types';
 // sub-tab change no longer re-runs the session lookup. See ../layout.tsx.
 import { JOB_WORK_STEPS } from '@/components/job-work/panels';
 import { OrderToCashStep } from '@/components/order-to-cash';
-import { StepSearch } from '@/components/order-to-cash/step-search';
 import {
   BatchRecordPanel,
   BatchReleasePanel,
@@ -57,31 +56,46 @@ export default async function WorkflowStepPage({ params, searchParams }: PagePro
 
   const query = await searchParams;
   const search = typeof query.search === 'string' ? query.search : undefined;
+  // Written by the panel's Filter button. Read here so a filtered list is a
+  // URL somebody can share, and so the back button undoes it.
+  const status = typeof query.status === 'string' ? query.status : undefined;
+
+  /**
+   * ORDER-TO-CASH RENDERS NO STEP HEADING.
+   *
+   * Its sub-tab bar already names the step, and each panel's own card carries
+   * a heading and a record count, so a third title above the search box was
+   * saying the same word twice on one screen. Withdrawn at the product owner's
+   * request on 2026-09-19.
+   *
+   * Scoped to this workflow rather than removed outright: Production and the
+   * others still render it, and this page is shared by all four.
+   */
+  const showStepHeading = workflow.key !== 'order-to-cash';
 
   return (
-    <section aria-labelledby="step-heading">
-      <h2 id="step-heading" className="text-lg font-semibold text-slate-900">
-        {step.label}
-      </h2>
-      {step.purpose && <p className="mt-1 max-w-3xl text-sm text-slate-600">{step.purpose}</p>}
+    // Without a visible heading the section still needs a name, so it is given
+    // one directly rather than pointing at an element that is not rendered.
+    <section
+      {...(showStepHeading ? { 'aria-labelledby': 'step-heading' } : { 'aria-label': step.label })}
+    >
+      {showStepHeading && (
+        <>
+          <h2 id="step-heading" className="text-lg font-semibold text-slate-900">
+            {step.label}
+          </h2>
+          {step.purpose && (
+            <p className="mt-1 max-w-3xl text-sm text-slate-600">{step.purpose}</p>
+          )}
+        </>
+      )}
 
-      <div className="mt-5">
+      <div className={showStepHeading ? 'mt-5' : undefined}>
         {/* The extension point promised in WORKFLOWS: a step whose `state` is
             'ready' has a screen registered for it and renders it; anything else
-            still gets the honest placeholder.
-
-            Order-to-Cash takes its own branch because each of its panels
-            renders its own heading — they need the room for a search box and a
-            create button beside the title. Production steps sit under the
-            shared heading above. */}
+            still gets the honest placeholder. */}
         {workflow.key === 'order-to-cash' && step.state === 'ready' ? (
-          <>
-            {/* A fragment, not a <section>: the shared heading above already
-                opens one, and nesting a second would give the step two
-                landmarks for one screen. */}
-            <StepSearch step={step.label} stepKey={step.key} search={search} />
-            <OrderToCashStep step={step.key} search={search} />
-          </>
+          <OrderToCashStep step={step.key} search={search} status={status} />
         ) : step.state === 'ready' ? (
           <BuiltStep workflowKey={workflow.key} stepKey={step.key} />
         ) : (

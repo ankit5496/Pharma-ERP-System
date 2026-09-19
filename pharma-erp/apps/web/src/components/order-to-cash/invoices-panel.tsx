@@ -6,6 +6,8 @@ import type {
 
 import { apiFetch } from '@/lib/api';
 
+import { PanelSearch } from './panel-toolbar';
+
 import { IssueInvoiceButton, InvoiceRowActions } from './invoice-actions';
 import {
   Badge,
@@ -17,7 +19,6 @@ import {
   Money,
   Panel,
   StatusBadge,
-  StepHeader,
   Table,
 } from './ui';
 
@@ -91,11 +92,6 @@ export async function InvoicesPanel({ search }: { search?: string }) {
 
   return (
     <>
-      <StepHeader
-        title="Invoices"
-        description="Tax invoices raised from an order's reserved batches. GST is split from the place of supply, and any DPCO or NLEM ceiling price is checked before the invoice is issued."
-      />
-
       <div className="mb-6">
         <Panel heading="Ready to invoice" count={readyToInvoice.length} noun="order">
           {!orders.ok ? (
@@ -172,6 +168,7 @@ export async function InvoicesPanel({ search }: { search?: string }) {
         heading="Invoices"
         count={invoices.ok ? invoices.data.length : undefined}
         noun="invoice"
+        action={<PanelSearch stepKey="invoices" placeholder="Search invoices…" />}
         footer="Addresses, GSTIN, HSN codes, rates, batch numbers and expiry dates are snapshotted onto each invoice when it is issued, so a later correction to master data never rewrites a filed document."
       >
         {!invoices.ok ? (

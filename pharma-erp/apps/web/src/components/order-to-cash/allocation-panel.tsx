@@ -6,6 +6,8 @@ import {
 
 import { apiFetch } from '@/lib/api';
 
+import { PanelSearch } from './panel-toolbar';
+
 import { AllocateOrderButton, AllocationRowActions } from './allocation-actions';
 import {
   Badge,
@@ -18,9 +20,17 @@ import {
   Panel,
   Quantity,
   StatusBadge,
-  StepHeader,
   Table,
 } from './ui';
+
+const AWAITING_COLUMNS = [
+  'Order #',
+  'Customer',
+  'Date',
+  col.right('Lines'),
+  'Status',
+  'Actions',
+] as const;
 
 const COLUMNS = [
   'Order #',
@@ -64,11 +74,6 @@ export async function AllocationPanel() {
 
   return (
     <>
-      <StepHeader
-        title="Allocation"
-        description="Reserving released batches against an approved order, nearest expiry first. Quarantined, expired and unreleased stock is never a candidate."
-      />
-
       <div className="mb-6">
         <Panel heading="Awaiting stock" count={awaiting.length} noun="order">
           {!orders.ok ? (
@@ -79,26 +84,11 @@ export async function AllocationPanel() {
               hint="An order appears here once it has passed both the licence and the credit check."
             />
           ) : (
-            <ul className="divide-y divide-slate-100">
+            <Table columns={AWAITING_COLUMNS} minWidth="min-w-[48rem]">
               {awaiting.map((order) => (
-                <li
-                  key={order.id}
-                  className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5"
-                >
-                  <div>
-                    <p className="font-mono text-xs font-medium text-slate-900">
-                      {order.orderNumber}
-                    </p>
-                    <p className="mt-0.5 text-sm text-slate-700">{order.customerName}</p>
-                    <p className="mt-0.5 text-[11px] text-slate-500">
-                      {order.itemCount} line{order.itemCount === 1 ? '' : 's'} ·{' '}
-                      {formatDate(order.orderDate)} · <StatusBadgeInline status={order.status} />
-                    </p>
-                  </div>
-                  <AllocateOrderButton salesOrderId={order.id} orderNumber={order.orderNumber} />
-                </li>
+                <AwaitingRow key={order.id} order={order} />
               ))}
-            </ul>
+            </Table>
           )}
         </Panel>
       </div>
@@ -107,6 +97,7 @@ export async function AllocationPanel() {
         heading="Reservations"
         count={allocations.ok ? allocations.data.length : undefined}
         noun="reservation"
+        action={<PanelSearch stepKey="allocation" placeholder="Search allocations…" />}
         footer="Expiry and schedule are shown as they stood WHEN THE STOCK WAS RESERVED, not as they are now. A later correction to the batch or item master does not rewrite what was checked."
       >
         {!allocations.ok ? (
@@ -128,11 +119,43 @@ export async function AllocationPanel() {
   );
 }
 
-function StatusBadgeInline({ status }: { status: string }) {
+/**
+ * One order waiting for stock.
+ *
+ * The same columns as every other list in Order-to-Cash: the order, who it is
+ * for, when it was raised, how big it is and where it stands. It was a stack of
+ * three lines per row, which read differently from the table directly below it
+ * holding the same kind of record.
+ */
+function AwaitingRow({ order }: { order: SalesOrderListItem }) {
   return (
-    <span className="align-middle">
-      <StatusBadge status={status} />
-    </span>
+    <tr>
+      <Cell>
+        <span className="font-mono text-xs font-medium text-slate-900">{order.orderNumber}</span>
+      </Cell>
+
+      <Cell>
+        <span className="text-sm text-slate-800">{order.customerName}</span>
+      </Cell>
+
+      <Cell>
+        <span className="whitespace-nowrap text-xs text-slate-700">
+          {formatDate(order.orderDate)}
+        </span>
+      </Cell>
+
+      <Cell align="right">
+        <span className="text-sm text-slate-800">{order.itemCount}</span>
+      </Cell>
+
+      <Cell>
+        <StatusBadge status={order.status} />
+      </Cell>
+
+      <Cell>
+        <AllocateOrderButton salesOrderId={order.id} orderNumber={order.orderNumber} />
+      </Cell>
+    </tr>
   );
 }
 
