@@ -29,6 +29,8 @@ import {
   TableWrap,
   Td,
   Th,
+  Name,
+  Code,
 } from '@/components/procurement/ui';
 import { apiFetch } from '@/lib/api';
 
@@ -139,8 +141,8 @@ export async function PrincipalsPanel() {
                 return (
                   <tr key={agreement.id}>
                     <Td>
-                      <p className="font-medium text-slate-900">{agreement.principalName}</p>
-                      <p className="font-mono text-xs text-slate-500">{agreement.principalCode}</p>
+                      <p className="font-medium text-slate-900"><Name>{agreement.principalName}</Name></p>
+                      <p className="font-mono text-xs text-slate-500"><Code>{agreement.principalCode}</Code></p>
                     </Td>
 
                     <Td>
@@ -198,7 +200,7 @@ export async function PrincipalsPanel() {
                                 {mapping.principalBrandName}
                               </span>
                               <span className="block text-[11px] text-slate-500">
-                                {mapping.bomLabel} · {mapping.productName}
+                                {mapping.bomLabel} · <Name>{mapping.productName}</Name>
                                 {mapping.packDesignRef ? ` · ${mapping.packDesignRef}` : ''}
                               </span>
                             </li>
@@ -277,7 +279,7 @@ export async function JobWorkOrdersPanel() {
                 <tr key={order.id}>
                   <Td>
                     <p className="font-mono text-xs font-semibold text-slate-900">
-                      {order.orderNumber}
+                      <Code>{order.orderNumber}</Code>
                     </p>
                     <p className="text-[11px] text-slate-500">
                       {order.productionOrderCount} work order
@@ -286,7 +288,7 @@ export async function JobWorkOrdersPanel() {
                   </Td>
 
                   <Td>
-                    <p className="text-slate-800">{order.principalName}</p>
+                    <p className="text-slate-800"><Name>{order.principalName}</Name></p>
                     <p className="font-mono text-[11px] text-slate-500">
                       {order.agreementReference ?? order.principalCode}
                     </p>
@@ -297,7 +299,7 @@ export async function JobWorkOrdersPanel() {
                       {order.product.principalBrandName}
                     </p>
                     <p className="text-[11px] text-slate-500">
-                      {order.product.productName} ({order.product.productCode})
+                      <Name>{order.product.productName}</Name> (<Code>{order.product.productCode}</Code>)
                     </p>
                   </Td>
 
@@ -360,6 +362,13 @@ export async function InwardMaterialsPanel() {
     ? orders.data.filter((order) => order.billingModel === 'PURE_CONVERSION')
     : [];
 
+  // Counted so the empty states can tell "you have no job-work orders" apart
+  // from "your orders are all on the model this screen does not serve" — two
+  // situations that need opposite advice.
+  const ownProcurementOrders = orders.ok
+    ? orders.data.filter((order) => order.billingModel === 'OWN_PROCUREMENT').length
+    : 0;
+
   const inputItems = items.ok
     ? items.data.filter((item) => item.type !== 'FINISHED_GOOD')
     : [];
@@ -370,7 +379,11 @@ export async function InwardMaterialsPanel() {
       subtitle="Material the principal supplied, on their delivery challan. Free of cost — no purchase order and no purchase invoice is created."
       action={
         orders.ok && items.ok ? (
-          <CreateJobWorkReceiptButton orders={conversionOrders} items={inputItems} />
+          <CreateJobWorkReceiptButton
+            orders={conversionOrders}
+            items={inputItems}
+            ownProcurementOrderCount={ownProcurementOrders}
+          />
         ) : undefined
       }
     >
@@ -378,8 +391,16 @@ export async function InwardMaterialsPanel() {
         <ErrorState message={`Could not load material receipts: ${receipts.error}`} />
       ) : receipts.data.length === 0 ? (
         <EmptyState
-          title="No principal material received yet."
-          hint="Under pure conversion the principal ships the raw material on their own delivery challan. Record it here and it enters principal-owned stock."
+          title={
+            conversionOrders.length === 0 && ownProcurementOrders > 0
+              ? 'Nothing is received here on your current agreements.'
+              : 'No principal material received yet.'
+          }
+          hint={
+            conversionOrders.length === 0 && ownProcurementOrders > 0
+              ? 'Every job-work order you hold is on the own-procurement model, where you buy the material yourself through Procure to Pay. This screen records material a principal ships you free of cost under a pure-conversion agreement.'
+              : 'Under pure conversion the principal ships the raw material on their own delivery challan. Record it here and it enters principal-owned stock.'
+          }
         />
       ) : (
         <TableWrap>
@@ -403,16 +424,16 @@ export async function InwardMaterialsPanel() {
                 <tr key={receipt.id}>
                   <Td>
                     <p className="font-mono text-xs font-semibold text-slate-900">
-                      {receipt.receiptNumber}
+                      <Code>{receipt.receiptNumber}</Code>
                     </p>
                     {receipt.lotNumber && (
-                      <p className="font-mono text-[11px] text-slate-500">{receipt.lotNumber}</p>
+                      <p className="font-mono text-[11px] text-slate-500"><Code>{receipt.lotNumber}</Code></p>
                     )}
                   </Td>
 
                   <Td>
                     <p className="font-mono text-xs text-slate-800">{receipt.jobWorkOrderNumber}</p>
-                    <p className="text-[11px] text-slate-500">{receipt.principalName}</p>
+                    <p className="text-[11px] text-slate-500"><Name>{receipt.principalName}</Name></p>
                   </Td>
 
                   <Td>
@@ -427,12 +448,12 @@ export async function InwardMaterialsPanel() {
                   </Td>
 
                   <Td valign="top">
-                    <p className="text-slate-800">{receipt.item.name}</p>
-                    <p className="font-mono text-[11px] text-slate-500">{receipt.item.code}</p>
+                    <p className="text-slate-800"><Name>{receipt.item.name}</Name></p>
+                    <p className="font-mono text-[11px] text-slate-500"><Code>{receipt.item.code}</Code></p>
                   </Td>
 
                   <Td>
-                    <span className="font-mono text-xs">{receipt.batchNumber}</span>
+                    <span className="font-mono text-xs"><Code>{receipt.batchNumber}</Code></span>
                   </Td>
 
                   <Td align="right">
@@ -461,7 +482,7 @@ export async function InwardMaterialsPanel() {
                     <DateTimeText value={receipt.receivedAt} />
                     {receipt.receivedBy && (
                       <span className="block text-[11px] text-slate-500">
-                        {receipt.receivedBy}
+                        <Name>{receipt.receivedBy}</Name>
                       </span>
                     )}
                   </Td>
@@ -529,9 +550,9 @@ export async function JobWorkProductionPanel() {
                   <tr key={order.id}>
                     <Td>
                       <p className="font-mono text-xs font-semibold text-slate-900">
-                        {order.orderNumber}
+                        <Code>{order.orderNumber}</Code>
                       </p>
-                      <p className="text-[11px] text-slate-500">{order.principalName}</p>
+                      <p className="text-[11px] text-slate-500"><Name>{order.principalName}</Name></p>
                     </Td>
 
                     <Td valign="top">
@@ -539,7 +560,7 @@ export async function JobWorkProductionPanel() {
                         {order.product.principalBrandName}
                       </p>
                       <p className="text-[11px] text-slate-500">
-                        {order.product.productName} ({order.product.productCode})
+                        <Name>{order.product.productName}</Name> (<Code>{order.product.productCode}</Code>)
                       </p>
                     </Td>
 
@@ -639,7 +660,7 @@ export async function JobWorkQualityPanel() {
                 <tr key={batch.batchId}>
                   <Td>
                     <p className="font-mono text-xs font-semibold text-slate-900">
-                      {batch.batchNumber}
+                      <Code>{batch.batchNumber}</Code>
                     </p>
                     <p className="font-mono text-[11px] text-slate-500">
                       {batch.productionOrderNumber}
@@ -647,12 +668,12 @@ export async function JobWorkQualityPanel() {
                   </Td>
 
                   <Td>
-                    <p className="font-mono text-xs text-slate-800">{order.orderNumber}</p>
-                    <p className="text-[11px] text-slate-500">{order.principalName}</p>
+                    <p className="font-mono text-xs text-slate-800"><Code>{order.orderNumber}</Code></p>
+                    <p className="text-[11px] text-slate-500"><Name>{order.principalName}</Name></p>
                   </Td>
 
                   <Td valign="top">
-                    <p className="text-slate-800">{batch.item.name}</p>
+                    <p className="text-slate-800"><Name>{batch.item.name}</Name></p>
                     <p className="text-[11px] text-slate-500">
                       sold as {order.product.principalBrandName}
                     </p>
@@ -737,13 +758,13 @@ export async function OutwardDispatchPanel() {
                   <tr key={order.id}>
                     <Td>
                       <p className="font-mono text-xs font-semibold text-slate-900">
-                        {order.orderNumber}
+                        <Code>{order.orderNumber}</Code>
                       </p>
                       <DateText value={order.deliveryDate} />
                     </Td>
 
                     <Td valign="top">
-                      <p className="text-slate-800">{order.principalName}</p>
+                      <p className="text-slate-800"><Name>{order.principalName}</Name></p>
                       <p className="max-w-[14rem] truncate text-[11px] text-slate-500">
                         {order.product.principalBrandName}
                       </p>
@@ -804,15 +825,15 @@ export async function OutwardDispatchPanel() {
                   <tr key={invoice.id}>
                     <Td>
                       <span className="font-mono text-xs font-semibold text-slate-900">
-                        {invoice.invoiceNumber}
+                        <Code>{invoice.invoiceNumber}</Code>
                       </span>
                     </Td>
                     <Td>
                       <span className="font-mono text-xs">{invoice.jobWorkOrderNumber}</span>
                     </Td>
-                    <Td>{invoice.principalName}</Td>
+                    <Td><Name>{invoice.principalName}</Name></Td>
                     <Td>
-                      <span className="font-mono text-xs">{invoice.batchNumber}</span>
+                      <span className="font-mono text-xs"><Code>{invoice.batchNumber}</Code></span>
                     </Td>
                     <Td align="right">
                       <Qty value={invoice.dispatchedQuantity} />
@@ -874,14 +895,14 @@ export async function JobWorkBillingPanel() {
                 <tr key={invoice.id}>
                   <Td>
                     <p className="font-mono text-xs font-semibold text-slate-900">
-                      {invoice.invoiceNumber}
+                      <Code>{invoice.invoiceNumber}</Code>
                     </p>
                     <p className="font-mono text-[11px] text-slate-500">
                       {invoice.jobWorkOrderNumber}
                     </p>
                   </Td>
 
-                  <Td>{invoice.principalName}</Td>
+                  <Td><Name>{invoice.principalName}</Name></Td>
 
                   <Td valign="top">
                     <Pill tone={PATH[invoice.billingModel]?.tone ?? 'neutral'}>
@@ -973,7 +994,7 @@ export async function JobWorkRegisterPanel() {
             <div key={`${group.principalId}:${group.agreementId}`} className="px-5 py-4">
               <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
                 <div>
-                  <h3 className="text-sm font-semibold text-slate-900">{group.principalName}</h3>
+                  <h3 className="text-sm font-semibold text-slate-900"><Name>{group.principalName}</Name></h3>
                   <p className="font-mono text-[11px] text-slate-500">
                     {group.agreementReference ?? 'No agreement reference'} ·{' '}
                     {BILLING_MODEL_LABELS[group.billingModel]}
@@ -1021,7 +1042,7 @@ export async function JobWorkRegisterPanel() {
                           <p className="max-w-[14rem] truncate text-slate-800">
                             {row.principalBrandName}
                           </p>
-                          <p className="text-[11px] text-slate-500">{row.productName}</p>
+                          <p className="text-[11px] text-slate-500"><Name>{row.productName}</Name></p>
                         </Td>
                         <Td align="right">
                           <Qty value={row.orderedQuantity} />

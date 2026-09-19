@@ -164,7 +164,6 @@ export class StockService {
         expiryDate: true,
         quantityReceived: true,
         quantityAvailable: true,
-        storageLocation: true,
         goodsReceiptLine: {
           select: {
             goodsReceipt: {
@@ -202,7 +201,6 @@ export class StockService {
         expiryDate: lot.expiryDate ? lot.expiryDate.toISOString().slice(0, 10) : null,
         quantityReceived: qty(lot.quantityReceived),
         quantityAvailable: qty(lot.quantityAvailable),
-        storageLocation: lot.storageLocation,
         status: (isExpired ? 'EXPIRED' : 'USABLE') as InventoryStatus,
         daysToExpiry,
         goodsReceiptNumber: receipt?.number ?? null,

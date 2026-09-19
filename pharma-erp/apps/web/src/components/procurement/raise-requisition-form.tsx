@@ -1,6 +1,6 @@
 'use client';
 
-import { type ItemSummary, type PartySummary } from '@pharma-erp/types';
+import { type ItemSummary } from '@pharma-erp/types';
 
 import { createRequisitionAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
@@ -26,12 +26,10 @@ import { Pill } from './ui';
 export function RaiseRequisitionForm({
   item,
   suggestedQuantity,
-  vendors,
   hasOpenRequisition,
 }: {
   item: ItemSummary;
   suggestedQuantity: string;
-  vendors: readonly PartySummary[];
   /** True when a draft, pending or approved requisition already covers this item. */
   hasOpenRequisition: boolean;
 }) {
@@ -77,22 +75,6 @@ export function RaiseRequisitionForm({
                 defaultValue={state.values?.requiredQuantity ?? suggestedQuantity}
                 className="field-sm w-full"
               />
-            </Field>
-
-            <Field label="Preferred vendor" htmlFor={`vendor-${item.id}`}>
-              <select
-                id={`vendor-${item.id}`}
-                name="preferredVendorId"
-                className="field-sm w-full"
-                defaultValue=""
-              >
-                <option value="">Not specified</option>
-                {vendors.map((vendor) => (
-                  <option key={vendor.id} value={vendor.id}>
-                    {vendor.name}
-                  </option>
-                ))}
-              </select>
             </Field>
 
             <Field label="Required by" htmlFor={`by-${item.id}`}>

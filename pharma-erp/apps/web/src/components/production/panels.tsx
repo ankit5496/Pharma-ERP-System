@@ -326,7 +326,15 @@ export async function BatchReleasePanel() {
 
   for (const batch of pending) {
     releaseForms[batch.id] = (
+      // KEYED, even though each of these is rendered as a single child rather
+      // than from an array. They are CREATED in a loop here and consumed by a
+      // client component across the server/client boundary, and React warns
+      // about the collection either way — "Check the render method of
+      // PendingReleaseList. It was passed a child from BatchReleasePanel."
+      // A key costs nothing and is correct regardless of which side attributes
+      // the list.
       <ReleaseDecisionForm
+        key={batch.id}
         batchId={batch.id}
         batchNumber={batch.batchNumber}
         packedQuantity={batch.packedQuantity}

@@ -242,9 +242,19 @@ export function CreateJobWorkOrderButton({
 export function CreateJobWorkReceiptButton({
   orders,
   items,
+  ownProcurementOrderCount = 0,
 }: {
   orders: readonly JobWorkOrderSummary[];
   items: readonly ItemSummary[];
+  /**
+   * How many job-work orders exist on the OTHER billing model.
+   *
+   * Only used to tell two empty states apart: a company with no job-work orders
+   * at all needs to raise one, whereas a company whose orders are all
+   * own-procurement is not missing anything — this screen simply does not apply
+   * to them, and saying so stops them hunting for a fault.
+   */
+  ownProcurementOrderCount?: number;
 }) {
   const [state, formAction] = useAction(createJobWorkReceiptAction);
 
@@ -259,11 +269,38 @@ export function CreateJobWorkReceiptButton({
       {() => (
         <form action={formAction} className="grid gap-4 sm:grid-cols-2">
           {orders.length === 0 ? (
-            <p className="sm:col-span-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-              There are no pure-conversion job-work orders open. Material is only received free of
-              cost on that billing model — on own-procurement orders it is bought through the normal
-              purchase flow.
-            </p>
+            <div className="sm:col-span-2 space-y-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+              {ownProcurementOrderCount > 0 ? (
+                <>
+                  <p>
+                    <strong>Nothing to record here.</strong>{' '}
+                    {ownProcurementOrderCount === 1
+                      ? 'Your only job-work order is'
+                      : `All ${ownProcurementOrderCount} of your job-work orders are`}{' '}
+                    on the <strong>own-procurement</strong> billing model, where you buy the
+                    material yourself — so the principal ships you nothing to receive.
+                  </p>
+                  <p>
+                    Buy it through <strong>Procure to Pay</strong> instead: requisition, purchase
+                    order, goods receipt and incoming QC. It becomes your own stock, which is what
+                    an own-procurement order must consume.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p>
+                    <strong>No pure-conversion job-work order to receive against.</strong> Material
+                    arrives free of cost only on that billing model.
+                  </p>
+                  <p>
+                    Set one up first: a <strong>pure-conversion agreement</strong> with the
+                    principal under <strong>Principals &amp; agreements</strong>, then a{' '}
+                    <strong>job-work order</strong> under it. The billing model is inherited from
+                    the agreement, so it has to be right there.
+                  </p>
+                </>
+              )}
+            </div>
           ) : (
             <>
               <Field label="Job-work order" htmlFor="jw-jobWorkOrderId">

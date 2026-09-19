@@ -1,7 +1,11 @@
 'use client';
 
-import { PROCUREMENT_ROUTES, type PurchaseOrderListItem } from '@pharma-erp/types';
-import { useState } from 'react';
+import {
+  PROCUREMENT_ROUTES,
+  type PartySummary,
+  type PurchaseOrderListItem,
+} from '@pharma-erp/types';
+import { startTransition, useState } from 'react';
 
 import { submitDraftPurchaseOrderAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 import { RowActionMenu, type RowAction } from '@/components/row-action-menu';
@@ -34,8 +38,15 @@ import { ActionMessage, useAction } from './form-kit';
  * An action that cannot be taken is listed with the reason rather than hidden,
  * so the menu is the same shape on every row and nothing appears to be missing.
  */
-export function PurchaseOrderActions({ order }: { order: PurchaseOrderListItem }) {
-  const [submitState, submitAction] = useAction(submitDraftPurchaseOrderAction);
+export function PurchaseOrderActions({
+  order,
+  vendors = [],
+}: {
+  order: PurchaseOrderListItem;
+  /** Offered on the edit form while the order is still draft or open. */
+  vendors?: readonly PartySummary[];
+}) {
+  const [submitState, submitAction, submitting] = useAction(submitDraftPurchaseOrderAction);
   const [editing, setEditing] = useState(false);
 
   const isDraft = order.status === 'DRAFT';
@@ -66,19 +77,27 @@ export function PurchaseOrderActions({ order }: { order: PurchaseOrderListItem }
         const form = new FormData();
 
         form.set('id', order.id);
-        submitAction(form);
+
+        // In a transition for the same reason as the draft menu: a dispatch
+        // outside one leaves isPending stuck false.
+        startTransition(() => submitAction(form));
       },
     });
   }
 
   return (
-    <div className="flex flex-col items-start gap-1.5">
+    <div className="flex flex-col items-center gap-1.5">
       <ActionMessage state={submitState} />
 
-      <RowActionMenu label={order.number} actions={actions} />
+      <RowActionMenu label={order.number} actions={actions} busy={submitting} />
 
       {/* No trigger of its own: the menu entry above opens it. */}
-      <EditPurchaseOrderButton order={order} isOpen={editing} onOpenChange={setEditing} />
+      <EditPurchaseOrderButton
+        order={order}
+        vendors={vendors}
+        isOpen={editing}
+        onOpenChange={setEditing}
+      />
     </div>
   );
 }

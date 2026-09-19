@@ -1,6 +1,8 @@
 'use client';
 
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useRouter, usePathname, useSearchParams } from 'next/navigation';
+
+import { SearchableSelect } from './searchable-select';
 import {
   useCallback,
   useEffect,
@@ -166,10 +168,20 @@ export function FilterButton() {
  * need separate work otherwise: a filtered view is a shareable link, the back
  * button behaves, and a summary card can deep-link into a filtered list.
  *
- * TYPING AND CHOOSING BUILD A DRAFT; APPLY COMMITS IT. Each committed change is
- * a server round trip, so applying on every keystroke and every select meant
- * four round trips to set four filters, with the list rearranging under the
- * reader between each one. Apply sends one.
+ * CHANGING A CONTROL FILTERS IMMEDIATELY. There is no Apply button: every
+ * select, date and clear commits as soon as it changes, and the table refreshes
+ * under it.
+ *
+ * THE TEXT BOX IS DEBOUNCED, and that is not a detail. Each commit is a server
+ * round trip, so committing per keystroke would fire one request per letter and
+ * leave the list rearranging while somebody is still typing the word. The
+ * selects commit at once because a select changes once per decision; the search
+ * box waits for a pause.
+ *
+ * THE LAST CHANGE ALWAYS WINS. Each commit is built from a ref holding the
+ * latest draft rather than from the state React has rendered, so two changes in
+ * quick succession cannot race: the second reads what the first wrote, and a
+ * pending debounce is cancelled by any immediate commit that overtakes it.
  *
  * FOUR CONTROLS PER ROW, ALL THE SAME SIZE. They share one grid cell width and
  * one field class, so no control can be wider than its neighbour and the rows
@@ -178,6 +190,18 @@ export function FilterButton() {
  * Which controls appear is decided by the caller passing options: a screen with
  * no vendor on its records is given no vendor filter rather than an empty one.
  */
+/**
+ * How long the text box waits after the last keystroke.
+ *
+ * Long enough that typing a word is one request, short enough that it does not
+ * feel like the filter is ignoring you. Only the free-text controls use it;
+ * a select commits the moment it changes.
+ */
+const SEARCH_DEBOUNCE_MS = 350;
+
+/** The controls somebody types into, rather than picks from. */
+const DEBOUNCED_KEYS = new Set<FilterKey>(['search']);
+
 export function FilterPanel({
   statuses,
   vendors,
@@ -187,6 +211,7 @@ export function FilterPanel({
   requisitions,
   searchPlaceholder = 'Search…',
   showDates = true,
+  searchableLookups = false,
 }: {
   statuses?: readonly FilterOption[];
   vendors?: readonly FilterOption[];
@@ -196,6 +221,8 @@ export function FilterPanel({
   requisitions?: readonly FilterOption[];
   searchPlaceholder?: string;
   showDates?: boolean;
+  /** Renders the record lookups — vendor, item, requisition — as typeable. */
+  searchableLookups?: boolean;
 }) {
   const open = useFilterPanelOpen();
   const router = useRouter();
@@ -216,8 +243,30 @@ export function FilterPanel({
     setDraft(Object.fromEntries(FILTER_KEYS.map((key) => [key, params.get(key) ?? ''])));
   }, [params]);
 
-  const set = (key: FilterKey, value: string) =>
-    setDraft((current) => ({ ...current, [key]: value }));
+  /**
+   * The latest draft, readable synchronously.
+   *
+   * `draft` is state and is one render behind inside an event handler, so
+   * committing from it would send the value BEFORE the one just typed. Two
+   * quick changes would then commit the first twice and lose the second, which
+   * is exactly the race the brief asks to avoid.
+   */
+  const draftRef = useRef(draft);
+
+  /** Pending text-box commit, cancelled whenever something overtakes it. */
+  const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
+
+  // A timer outliving the panel would navigate after the user left it.
+  useEffect(
+    () => () => {
+      if (debounce.current) clearTimeout(debounce.current);
+    },
+    [],
+  );
 
   const navigate = useCallback(
     (next: URLSearchParams) => {
@@ -236,18 +285,53 @@ export function FilterPanel({
     [pathname, router],
   );
 
-  function apply() {
-    const next = new URLSearchParams(params.toString());
+  /** Puts a draft into the URL, which is what actually filters the list. */
+  const commit = useCallback(
+    (source: Record<string, string>) => {
+      const next = new URLSearchParams(params.toString());
 
-    for (const key of FILTER_KEYS) {
-      const value = (draft[key] ?? '').trim();
+      for (const key of FILTER_KEYS) {
+        const value = (source[key] ?? '').trim();
 
-      if (value) next.set(key, value);
-      else next.delete(key);
+        if (value) next.set(key, value);
+        else next.delete(key);
+      }
+
+      navigate(next);
+    },
+    [params, navigate],
+  );
+
+  /**
+   * Records a change and filters on it.
+   *
+   * Free text waits for a pause; everything else commits at once. Any
+   * immediate commit cancels a pending text commit, so choosing a status
+   * mid-word sends ONE request carrying both — rather than the status now and
+   * the half-typed word a moment later.
+   */
+  const set = (key: FilterKey, value: string) => {
+    const next = { ...draftRef.current, [key]: value };
+
+    draftRef.current = next;
+    setDraft(next);
+
+    if (debounce.current) {
+      clearTimeout(debounce.current);
+      debounce.current = null;
     }
 
-    navigate(next);
-  }
+    if (DEBOUNCED_KEYS.has(key)) {
+      debounce.current = setTimeout(() => {
+        debounce.current = null;
+        commit(draftRef.current);
+      }, SEARCH_DEBOUNCE_MS);
+
+      return;
+    }
+
+    commit(next);
+  };
 
   /**
    * Clears only the keys these controls own.
@@ -262,11 +346,20 @@ export function FilterPanel({
 
     for (const key of FILTER_KEYS) next.delete(key);
 
-    setDraft(Object.fromEntries(FILTER_KEYS.map((key) => [key, ''])));
+    // A queued text commit would otherwise fire after this and put the cleared
+    // term straight back.
+    if (debounce.current) {
+      clearTimeout(debounce.current);
+      debounce.current = null;
+    }
+
+    const empty = Object.fromEntries(FILTER_KEYS.map((key) => [key, '']));
+
+    draftRef.current = empty;
+    setDraft(empty);
     navigate(next);
   }
 
-  const dirty = FILTER_KEYS.some((key) => (draft[key] ?? '') !== committed(key));
   const anyCommitted = FILTER_KEYS.some((key) => committed(key));
 
   return (
@@ -279,11 +372,20 @@ export function FilterPanel({
       // the class is what actually hides it.
       className={`${open ? 'block' : 'hidden'} border-b border-slate-200 bg-slate-50/60 px-5 py-4`}
     >
-      {/* A form, so Enter anywhere in the panel applies. */}
+      {/* Still a form, so Enter in the text box is meaningful — it commits the
+          typed term at once rather than waiting out the debounce. There is no
+          Apply button for it to press; the submit exists only to short-circuit
+          that wait. */}
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          apply();
+
+          if (debounce.current) {
+            clearTimeout(debounce.current);
+            debounce.current = null;
+          }
+
+          commit(draftRef.current);
         }}
       >
         <div
@@ -324,6 +426,7 @@ export function FilterPanel({
           {requisitions && requisitions.length > 0 && (
             <Select
               label="Requisition"
+              searchable={searchableLookups}
               value={draft.requisitionId ?? ''}
               options={requisitions}
               allLabel="Any requisition"
@@ -334,6 +437,7 @@ export function FilterPanel({
           {vendors && vendors.length > 0 && (
             <Select
               label="Vendor"
+              searchable={searchableLookups}
               value={draft.vendorId ?? ''}
               options={vendors}
               allLabel="Any vendor"
@@ -344,6 +448,7 @@ export function FilterPanel({
           {items && items.length > 0 && (
             <Select
               label="Item / product"
+              searchable={searchableLookups}
               value={draft.itemId ?? ''}
               options={items}
               allLabel="Any item"
@@ -354,6 +459,7 @@ export function FilterPanel({
           {raisedBy && raisedBy.length > 0 && (
             <Select
               label="Raised by"
+              searchable={searchableLookups}
               value={draft.raisedById ?? ''}
               options={raisedBy}
               allLabel="Anyone"
@@ -385,29 +491,21 @@ export function FilterPanel({
         </div>
 
         <div className="mt-4 flex items-center justify-end gap-2">
-          {isPending ? (
-            <span aria-live="polite" className="mr-auto text-xs text-slate-500">
-              Filtering…
-            </span>
-          ) : (
-            dirty && <span className="mr-auto text-xs text-slate-500">Not applied yet.</span>
-          )}
+          {/* No "not applied yet" any more: there is no gap between changing a
+              control and the change taking effect. What is worth saying is that
+              a request is in flight, because the table below has not caught up
+              yet and the reader can see that it has not. */}
+          <span aria-live="polite" className="mr-auto text-xs text-slate-500">
+            {isPending ? 'Filtering…' : 'Filters apply as you change them.'}
+          </span>
 
           <button
             type="button"
             onClick={clearAll}
-            disabled={!anyCommitted && !dirty}
+            disabled={!anyCommitted}
             className="h-9 rounded-md border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
           >
             Clear
-          </button>
-
-          <button
-            type="submit"
-            disabled={isPending}
-            className="h-9 rounded-md bg-slate-900 px-4 text-sm font-medium text-white transition hover:bg-slate-800 disabled:bg-slate-400"
-          >
-            Apply
           </button>
         </div>
       </form>
@@ -444,23 +542,41 @@ function Select({
   options,
   allLabel,
   onChange,
+  searchable = false,
 }: {
   label: string;
   value: string;
   options: readonly FilterOption[];
   allLabel: string;
   onChange: (value: string) => void;
+  /** Renders a typeable lookup instead of a plain select. */
+  searchable?: boolean;
 }) {
   return (
     <Control label={label}>
-      <select value={value} onChange={(event) => onChange(event.target.value)} className="field h-10">
-        <option value="">{allLabel}</option>
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
+      {searchable ? (
+        <SearchableSelect
+          id={`filter-${label.replace(/W+/g, '-').toLowerCase()}`}
+          options={options}
+          value={value}
+          onChange={onChange}
+          emptyLabel={allLabel}
+          className="field h-10"
+        />
+      ) : (
+        <select
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          className="field h-10"
+        >
+          <option value="">{allLabel}</option>
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      )}
     </Control>
   );
 }

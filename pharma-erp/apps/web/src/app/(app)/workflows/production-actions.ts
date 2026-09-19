@@ -246,12 +246,17 @@ export async function releaseBatchAction(
   const decision = String(formData.get('decision') ?? '');
   const notes = String(formData.get('notes') ?? '').trim();
 
-  if (!batchId || (decision !== 'RELEASED' && decision !== 'BLOCKED')) {
-    return { ok: false, message: 'Choose whether to release or block the batch.' };
+  const DECISIONS = ['RELEASED', 'ON_HOLD', 'REJECTED'];
+
+  if (!batchId || !DECISIONS.includes(decision)) {
+    return { ok: false, message: 'Choose whether to release, hold or reject the batch.' };
   }
 
-  if (decision === 'BLOCKED' && !notes) {
-    return { ok: false, message: 'Give a reason before blocking a batch.' };
+  if (decision !== 'RELEASED' && !notes) {
+    return {
+      ok: false,
+      message: `Give a reason before ${decision === 'ON_HOLD' ? 'holding' : 'rejecting'} a batch.`,
+    };
   }
 
   const result = await apiFetch<BatchView>(`/api/v1/production/batches/${batchId}/release`, {
@@ -270,7 +275,9 @@ export async function releaseBatchAction(
     message:
       decision === 'RELEASED'
         ? `${result.data.batchNumber} released. ${result.data.packedQuantity} units are now sellable stock.`
-        : `${result.data.batchNumber} blocked. It cannot be sold through any channel.`,
+        : decision === 'ON_HOLD'
+          ? `${result.data.batchNumber} held. It cannot be dispatched until the hold is resolved.`
+          : `${result.data.batchNumber} rejected. It cannot be sold or dispatched through any channel.`,
   };
 }
 

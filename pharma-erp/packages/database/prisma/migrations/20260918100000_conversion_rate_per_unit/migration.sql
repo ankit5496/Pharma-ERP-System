@@ -1,0 +1,15 @@
+-- A conversion charge quoted PER UNIT.
+--
+-- The existing bases could not express "Rs 0.15 per tablet" honestly.
+-- PER_1000_UNITS forces the contract's own figure to be re-quoted as 150, and
+-- PER_PACK multiplies correctly but names the wrong thing -- a pack is not a
+-- tablet, and the basis is what tells a reader later what the rate meant.
+--
+-- Added after PER_BATCH so the enum reads smallest-unit-first. Postgres allows
+-- ADD VALUE ... BEFORE/AFTER only outside a transaction block in older
+-- versions; Prisma runs each migration file in one transaction, so the plain
+-- form is used and the ordering is left to the application's own label map.
+--
+-- Guarded: IF NOT EXISTS makes the migration replayable against a database that
+-- already has the value.
+ALTER TYPE "ConversionRateBasis" ADD VALUE IF NOT EXISTS 'PER_UNIT';

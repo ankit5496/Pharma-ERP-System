@@ -2,7 +2,10 @@ import { AGEING_BUCKETS, AGEING_BUCKET_LABELS, type PayablesReport } from '@phar
 
 import type { ApiResult } from '@/lib/api';
 
-import { EmptyState, ErrorState, Money, Panel, Pill, TableWrap, Td, Th } from './ui';
+import { EmptyState, ErrorState, Money, Panel, Pill, TableWrap, Td, Th,
+  Name,
+  Code,
+} from './ui';
 
 /**
  * The outstanding payables report, one row per vendor, aged by days past due.
@@ -58,8 +61,8 @@ export function PayablesReportPanel({ result }: { result: ApiResult<PayablesRepo
               {result.data.rows.map((row) => (
                 <tr key={row.vendor.id}>
                   <Td>
-                    <p className="font-medium text-slate-900">{row.vendor.name}</p>
-                    <p className="font-mono text-xs text-slate-500">{row.vendor.code}</p>
+                    <p className="font-medium text-slate-900"><Name>{row.vendor.name}</Name></p>
+                    <p className="font-mono text-xs text-slate-500"><Code>{row.vendor.code}</Code></p>
                   </Td>
 
                   <Td align="right">

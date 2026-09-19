@@ -151,7 +151,7 @@ export function ToastHost() {
       // open.
       popover="manual"
       id="toast-host"
-      className="pointer-events-none fixed inset-0 z-[100] flex flex-col items-center justify-center gap-2 border-0 bg-transparent p-0"
+      className="pointer-events-none fixed inset-0 z-[100] flex flex-col items-center justify-start gap-2 border-0 bg-transparent p-0 pt-6 sm:pt-8"
     >
       {items.map((toast) => (
         <ToastCard key={toast.id} toast={toast} />

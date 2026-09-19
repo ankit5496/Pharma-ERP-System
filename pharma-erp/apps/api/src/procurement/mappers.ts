@@ -162,7 +162,6 @@ export const LOT_SELECT = {
   quantityReceived: true,
   quantityAvailable: true,
   status: true,
-  storageLocation: true,
 } as const;
 
 type PartyRow = {
@@ -220,7 +219,6 @@ type LotRow = {
   quantityReceived: unknown;
   quantityAvailable: unknown;
   status: string;
-  storageLocation: string | null;
 };
 
 export function toStockLotSummary(row: LotRow): StockLotSummary {
@@ -235,7 +233,6 @@ export function toStockLotSummary(row: LotRow): StockLotSummary {
     quantityReceived: qty(row.quantityReceived as never),
     quantityAvailable: qty(row.quantityAvailable as never),
     status: row.status as StockLotSummary['status'],
-    storageLocation: row.storageLocation,
   };
 }
 

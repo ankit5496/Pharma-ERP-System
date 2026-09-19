@@ -86,12 +86,18 @@ export class InvoicesService {
     if (query.search) {
       const search = query.search.trim();
 
+      // EVERY LOOKUP ON THE RECORD IS SEARCHABLE, by the identifiers a person
+      // actually remembers: both invoice numbers, the vendor by name or code,
+      // the order and the receipt by number, and the items by name or code.
       where.OR = [
         { number: { contains: search, mode: 'insensitive' } },
         { vendorInvoiceNumber: { contains: search, mode: 'insensitive' } },
         { vendor: { name: { contains: search, mode: 'insensitive' } } },
+        { vendor: { code: { contains: search, mode: 'insensitive' } } },
         { purchaseOrder: { number: { contains: search, mode: 'insensitive' } } },
         { goodsReceipt: { number: { contains: search, mode: 'insensitive' } } },
+        { lines: { some: { item: { name: { contains: search, mode: 'insensitive' } } } } },
+        { lines: { some: { item: { code: { contains: search, mode: 'insensitive' } } } } },
       ];
     }
 
@@ -249,7 +255,6 @@ export class InvoicesService {
           select: {
             itemId: true,
             quantityReceived: true,
-            quantityRejected: true,
             item: { select: { id: true, code: true, gstRate: true } },
           },
         },
@@ -260,18 +265,20 @@ export class InvoicesService {
 
     const order = receipt.purchaseOrder;
 
-    // What this receipt actually accepted, per item — the figure the vendor is
-    // entitled to bill for. Summed because one receipt may carry the same item
-    // on more than one line.
+    // What this receipt took in, per item — the figure the vendor is entitled
+    // to bill for. Summed because one receipt may carry the same item on more
+    // than one line.
+    //
+    // THE RECEIVED QUANTITY IS THE BILLABLE ONE. There is no gate rejection to
+    // subtract any more: everything that arrives enters quarantine, and material
+    // that incoming QC then refuses is settled by a credit note against the
+    // vendor rather than by shrinking the invoice this receipt supports.
     const receivedByItem = new Map<string, Prisma.Decimal>();
 
     for (const line of receipt.lines) {
-      const accepted = positiveDifference(
-        new Prisma.Decimal(line.quantityReceived),
-        new Prisma.Decimal(line.quantityRejected),
-      );
+      const received = new Prisma.Decimal(line.quantityReceived);
 
-      receivedByItem.set(line.itemId, (receivedByItem.get(line.itemId) ?? ZERO).plus(accepted));
+      receivedByItem.set(line.itemId, (receivedByItem.get(line.itemId) ?? ZERO).plus(received));
     }
 
     const orderedRateByItem = new Map(

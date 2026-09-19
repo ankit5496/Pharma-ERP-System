@@ -1,5 +1,6 @@
 export * from './auth';
 export * from './dashboard';
+export * from './display';
 export * from './datasets';
 export * from './health';
 export * from './job-work';

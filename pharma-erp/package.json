@@ -26,6 +26,8 @@
     "db:studio": "pnpm --filter @pharma-erp/database db:studio",
     "db:reset": "pnpm --filter @pharma-erp/database db:reset",
     "verify:rls": "dotenv -e .env -- node scripts/verify-rls.mjs",
+    "verify:job-work": "node scripts/verify-job-work-pure-conversion.mjs",
+    "verify:job-work:own": "node scripts/verify-job-work-own-procurement.mjs",
     "create-tenant": "dotenv -e .env -- node scripts/create-tenant.mjs",
     "seed:production": "dotenv -e .env -- node scripts/seed-production-demo.mjs",
     "dev:db": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/dev-db.ps1",

@@ -1,5 +1,6 @@
 'use client';
 
+import { UOM_LABELS } from '@pharma-erp/types';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 import { SearchableSelect } from '@/components/searchable-select';
@@ -732,16 +733,7 @@ export function LineList({ children }: { children: ReactNode }) {
  * Shared so a BOM line and the item it points at cannot end up with different
  * spellings of the same unit.
  */
-export const UOM_OPTIONS = [
-  { value: 'KG', label: 'kg' },
-  { value: 'G', label: 'g' },
-  { value: 'MG', label: 'mg' },
-  { value: 'L', label: 'L' },
-  { value: 'ML', label: 'mL' },
-  { value: 'NOS', label: 'nos' },
-  { value: 'TABLET', label: 'tablets' },
-  { value: 'CAPSULE', label: 'capsules' },
-  { value: 'VIAL', label: 'vials' },
-  { value: 'STRIP', label: 'strips' },
-  { value: 'BOTTLE', label: 'bottles' },
-] as const;
+export const UOM_OPTIONS = Object.entries(UOM_LABELS).map(([value, label]) => ({
+  value,
+  label,
+}));

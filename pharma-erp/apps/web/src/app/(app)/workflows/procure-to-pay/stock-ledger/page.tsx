@@ -22,6 +22,8 @@ import {
   TableWrap,
   Td,
   Th,
+  Name,
+  Code,
 } from '@/components/procurement/ui';
 import { Pagination } from '@/components/procurement/pagination';
 import {
@@ -235,11 +237,8 @@ function StockByItem({ position }: { position: ItemStockPosition }) {
                 <th scope="col" className="py-2 pr-4 text-right font-medium">
                   Available
                 </th>
-                <th scope="col" className="py-2 pr-4 text-right font-medium">
+                <th scope="col" className="py-2 text-right font-medium">
                   Received
-                </th>
-                <th scope="col" className="py-2 font-medium">
-                  Location
                 </th>
               </tr>
             </thead>
@@ -262,7 +261,7 @@ function StockByItem({ position }: { position: ItemStockPosition }) {
                     </span>
                     {lot.vendorBatchNumber && (
                       <span className="ml-2 font-mono text-[11px] text-slate-400">
-                        {lot.lotNumber}
+                        <Code>{lot.lotNumber}</Code>
                       </span>
                     )}
                   </td>
@@ -272,10 +271,9 @@ function StockByItem({ position }: { position: ItemStockPosition }) {
                   <td className="py-2 pr-4 text-right font-semibold tabular-nums text-slate-900">
                     {lot.quantityAvailable} {item.uom}
                   </td>
-                  <td className="py-2 pr-4 text-right tabular-nums text-slate-500">
+                  <td className="py-2 text-right tabular-nums text-slate-500">
                     {lot.quantityReceived} {item.uom}
                   </td>
-                  <td className="py-2 text-slate-600">{lot.storageLocation ?? <Blank />}</td>
                 </tr>
               ))}
             </tbody>
@@ -306,12 +304,12 @@ function LedgerRow({ entry }: { entry: StockLedgerRow }) {
         <span className="text-xs text-slate-600">
           <DateTimeText value={entry.createdAt} />
         </span>
-        {entry.createdBy && <p className="text-[11px] text-slate-400">{entry.createdBy}</p>}
+        {entry.createdBy && <p className="text-[11px] text-slate-400"><Name>{entry.createdBy}</Name></p>}
       </Td>
 
       <Td>
-        <p className="text-sm text-slate-800">{entry.itemName}</p>
-        <p className="font-mono text-[11px] text-slate-500">{entry.itemCode}</p>
+        <p className="text-sm text-slate-800"><Name>{entry.itemName}</Name></p>
+        <p className="font-mono text-[11px] text-slate-500"><Code>{entry.itemCode}</Code></p>
       </Td>
 
       <Td>
@@ -319,7 +317,7 @@ function LedgerRow({ entry }: { entry: StockLedgerRow }) {
             drum and in a recall notice. Our own lot number sits behind it. */}
         <p className="font-medium text-slate-800">{entry.vendorBatchNumber ?? <Blank />}</p>
         {entry.lotNumber && (
-          <p className="font-mono text-[11px] text-slate-400">{entry.lotNumber}</p>
+          <p className="font-mono text-[11px] text-slate-400"><Code>{entry.lotNumber}</Code></p>
         )}
       </Td>
 

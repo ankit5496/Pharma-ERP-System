@@ -24,6 +24,8 @@ import {
   TableWrap,
   Td,
   Th,
+  Name,
+  Code,
 } from '@/components/procurement/ui';
 import {
   fetchInvoiceableOrders,
@@ -116,7 +118,8 @@ export default async function InvoicesPage({
         <FilterPanel
           statuses={statusOptions}
           vendors={vendors.ok ? toOptions(vendors.data) : []}
-          searchPlaceholder="Search by invoice number, vendor, PO or GRN…"
+          searchableLookups
+          searchPlaceholder="Search invoice no., vendor invoice no., vendor, PO, GRN or item…"
         />
 
         {!invoices.ok ? (
@@ -150,7 +153,7 @@ export default async function InvoicesPage({
                     <tr key={invoice.id}>
                       <Td>
                         <p className="font-mono text-xs font-semibold text-slate-900">
-                          {invoice.number}
+                          <Code>{invoice.number}</Code>
                         </p>
                         <p className="mt-0.5 text-xs text-slate-600">
                           vendor ref {invoice.vendorInvoiceNumber}
@@ -166,7 +169,7 @@ export default async function InvoicesPage({
                       </Td>
 
                       <Td>
-                        <p className="text-sm text-slate-800">{invoice.vendor.name}</p>
+                        <p className="text-sm text-slate-800"><Name>{invoice.vendor.name}</Name></p>
                         {invoice.vendor.gstin && (
                           <p className="font-mono text-[11px] text-slate-500">
                             {invoice.vendor.gstin}
@@ -179,13 +182,13 @@ export default async function InvoicesPage({
                           <RecordLink
                             href={`${PROCUREMENT_ROUTES.purchaseOrders}?search=${invoice.purchaseOrder.number}`}
                           >
-                            {invoice.purchaseOrder.number}
+                            <Code>{invoice.purchaseOrder.number}</Code>
                           </RecordLink>
                           {invoice.goodsReceipt ? (
                             <RecordLink
                               href={`${PROCUREMENT_ROUTES.goodsReceipts}?search=${invoice.goodsReceipt.number}`}
                             >
-                              {invoice.goodsReceipt.number}
+                              <Code>{invoice.goodsReceipt.number}</Code>
                             </RecordLink>
                           ) : (
                             <span className="text-[11px] text-amber-800">No GRN matched</span>

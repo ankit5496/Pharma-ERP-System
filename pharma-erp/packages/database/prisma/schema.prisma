@@ -149,11 +149,11 @@ model Tenant {
   customerDocuments CustomerDocument[]
 
   // Job-work: manufacturing under a principal's brand.
-  jobWorkAgreements      JobWorkAgreement[]
-  jobWorkProductMappings JobWorkProductMapping[]
-  jobWorkOrders          JobWorkOrder[]
+  jobWorkAgreements       JobWorkAgreement[]
+  jobWorkProductMappings  JobWorkProductMapping[]
+  jobWorkOrders           JobWorkOrder[]
   jobWorkMaterialReceipts JobWorkMaterialReceipt[]
-  jobWorkInvoices        JobWorkInvoice[]
+  jobWorkInvoices         JobWorkInvoice[]
 
   // Packaging: what each pack presentation consumes.
   packagingRequirements     PackagingRequirement[]
@@ -182,25 +182,25 @@ model Tenant {
   // Production & Quality Gate. `boms` and `bomLines` are not repeated here:
   // formulations are master data, shared with Procure-to-Pay, and declared
   // once in the block above.
-  productionOrders   ProductionOrder[]
-  materialIssues     MaterialIssue[]
-  materialIssueLines MaterialIssueLine[]
-  batches            Batch[]
-  packingRecords     BatchPackingRecord[]
+  productionOrders      ProductionOrder[]
+  materialIssues        MaterialIssue[]
+  materialIssueLines    MaterialIssueLine[]
+  batches               Batch[]
+  packingRecords        BatchPackingRecord[]
   packagingConsumptions BatchPackagingConsumption[]
-  finishedGoodsLots  FinishedGoodsLot[]
-  customerLicences   CustomerLicence[]
-  salesOrders        SalesOrder[]
-  salesOrderItems    SalesOrderItem[]
-  batchAllocations   BatchAllocation[]
-  dispatches         Dispatch[]
-  dispatchItems      DispatchItem[]
-  salesInvoices      SalesInvoice[]
-  salesInvoiceItems  SalesInvoiceItem[]
-  receipts           Receipt[]
-  salesReturns       SalesReturn[]
-  salesReturnItems   SalesReturnItem[]
-  receivableEntries  ReceivableLedgerEntry[]
+  finishedGoodsLots     FinishedGoodsLot[]
+  customerLicences      CustomerLicence[]
+  salesOrders           SalesOrder[]
+  salesOrderItems       SalesOrderItem[]
+  batchAllocations      BatchAllocation[]
+  dispatches            Dispatch[]
+  dispatchItems         DispatchItem[]
+  salesInvoices         SalesInvoice[]
+  salesInvoiceItems     SalesInvoiceItem[]
+  receipts              Receipt[]
+  salesReturns          SalesReturn[]
+  salesReturnItems      SalesReturnItem[]
+  receivableEntries     ReceivableLedgerEntry[]
 
   @@index([deletedAt])
   @@map("tenants")
@@ -278,17 +278,17 @@ model User {
   batchReleaseDecisions   Batch[]              @relation("BatchReleaseDecidedBy")
 
   // Job work
-  jobWorkOrdersCreated    JobWorkOrder[]           @relation("JobWorkOrderCreatedBy")
-  jobWorkReceiptsMade     JobWorkMaterialReceipt[] @relation("JobWorkReceiptReceivedBy")
-  jobWorkInvoicesCreated  JobWorkInvoice[]         @relation("JobWorkInvoiceCreatedBy")
-  salesOrdersCreated      SalesOrder[]
-  allocationsMade         BatchAllocation[]    @relation("AllocationAllocatedBy")
-  allocationChecksMade    BatchAllocation[]    @relation("AllocationComplianceCheckedBy")
-  dispatchesCreated       Dispatch[]           @relation("DispatchCreatedBy")
-  invoicesCreated         SalesInvoice[]       @relation("InvoiceCreatedBy")
-  receiptsCreated         Receipt[]            @relation("ReceiptCreatedBy")
-  salesReturnsCreated     SalesReturn[]        @relation("ReturnCreatedBy")
-  ledgerEntriesCreated    ReceivableLedgerEntry[] @relation("LedgerCreatedBy")
+  jobWorkOrdersCreated   JobWorkOrder[]           @relation("JobWorkOrderCreatedBy")
+  jobWorkReceiptsMade    JobWorkMaterialReceipt[] @relation("JobWorkReceiptReceivedBy")
+  jobWorkInvoicesCreated JobWorkInvoice[]         @relation("JobWorkInvoiceCreatedBy")
+  salesOrdersCreated     SalesOrder[]
+  allocationsMade        BatchAllocation[]        @relation("AllocationAllocatedBy")
+  allocationChecksMade   BatchAllocation[]        @relation("AllocationComplianceCheckedBy")
+  dispatchesCreated      Dispatch[]               @relation("DispatchCreatedBy")
+  invoicesCreated        SalesInvoice[]           @relation("InvoiceCreatedBy")
+  receiptsCreated        Receipt[]                @relation("ReceiptCreatedBy")
+  salesReturnsCreated    SalesReturn[]            @relation("ReturnCreatedBy")
+  ledgerEntriesCreated   ReceivableLedgerEntry[]  @relation("LedgerCreatedBy")
 
   /// Retained alongside the global unique on `email` so a tenant's user list
   /// can be scanned by address without touching the global index.
@@ -430,6 +430,13 @@ enum ProductionOrderStatus {
 enum BatchReleaseStatus {
   PENDING
   RELEASED
+  /// Held pending further testing. May still be released later.
+  ON_HOLD
+  /// Refused outright. Terminal.
+  REJECTED
+  /// LEGACY. The single "not released" outcome before ON_HOLD and REJECTED
+  /// separated it. No new decision is recorded under it; existing rows keep it,
+  /// because a quality decision already taken must not be rewritten.
   BLOCKED
 }
 
@@ -460,7 +467,6 @@ enum BatchReleaseStatus {
 // incoming QC releases it, and no request path ever wrote the other one. FEFO
 // allocates from StockLot — the lot a batch consumed is the lot a vendor
 // delivered, which is what makes a recall answerable in both directions.
-
 
 // -----------------------------------------------------------------------------
 // Bom — the formulation
@@ -605,7 +611,7 @@ model MaterialIssueLine {
   /// receipt had produced — and was dropped by
   /// 20260914120000_drop_material_lots. One table, and it is the one the
   /// warehouse actually puts things in.
-  lotId           String @map("lot_id") @db.Uuid
+  lotId String @map("lot_id") @db.Uuid
 
   quantityIssued Decimal @map("quantity_issued") @db.Decimal(14, 3)
 
@@ -704,7 +710,7 @@ model BatchPackingRecord {
 
   /// Saleable units packed. This — not the manufactured yield — is what becomes
   /// finished-goods stock on release.
-  packedQuantity Decimal  @map("packed_quantity") @db.Decimal(14, 3)
+  packedQuantity Decimal @map("packed_quantity") @db.Decimal(14, 3)
 
   /// Units damaged or discarded on the packing line (US-PROD-04).
   ///
@@ -721,7 +727,7 @@ model BatchPackingRecord {
   /// pack specification existed still has a record.
   packVariant String? @map("pack_variant") @db.VarChar(128)
 
-  packedOn       DateTime @map("packed_on") @db.Date
+  packedOn DateTime @map("packed_on") @db.Date
 
   recordedById String? @map("recorded_by_id") @db.Uuid
   notes        String? @db.VarChar(500)
@@ -992,6 +998,7 @@ enum BillingModel {
 /// that is per pack or per thousand units.
 enum ConversionRateBasis {
   PER_BATCH
+  PER_UNIT
   PER_1000_UNITS
   PER_PACK
   PER_KG
@@ -1260,8 +1267,8 @@ model Item {
 
   /// As the finished good being packed, and as a component consumed by a pack.
   /// Two relations to one model, so both need names.
-  packagingRequirements     PackagingRequirement[]     @relation("PackagingRequirementProduct")
-  packagingRequirementLines PackagingRequirementLine[] @relation("PackagingRequirementComponent")
+  packagingRequirements     PackagingRequirement[]      @relation("PackagingRequirementProduct")
+  packagingRequirementLines PackagingRequirementLine[]  @relation("PackagingRequirementComponent")
   packagingConsumptions     BatchPackagingConsumption[] @relation("BatchPackagingComponent")
 
   requisitions                PurchaseRequisition[] @relation("RequisitionItem")
@@ -1424,7 +1431,7 @@ model Party {
   purchaseInvoices         PurchaseInvoice[]
   /// Set only on a JOB_WORK_PRINCIPAL; see JobWorkAgreement.principalId.
   jobWorkAgreements        JobWorkAgreement[]
-  jobWorkOrders            JobWorkOrder[]        @relation("JobWorkOrderPrincipal")
+  jobWorkOrders            JobWorkOrder[]          @relation("JobWorkOrderPrincipal")
   documents                CustomerDocument[]
   /// Set only on a CUSTOMER; see CustomerLicence.
   customerLicences         CustomerLicence[]
@@ -1700,13 +1707,13 @@ model JobWorkProductMapping {
   agreement JobWorkAgreement @relation(fields: [agreementId], references: [id], onDelete: Cascade)
   bom       Bom              @relation(fields: [bomId], references: [id], onDelete: Restrict)
 
+  jobWorkOrders JobWorkOrder[]
+
   /// One line per formulation per agreement. The same recipe billed two ways
   /// in one contract is a contradiction, not a case to support.
   @@unique([agreementId, bomId])
   @@index([tenantId, bomId])
   @@map("job_work_product_mappings")
-
-  jobWorkOrders JobWorkOrder[]
 }
 
 // -----------------------------------------------------------------------------
@@ -1891,8 +1898,8 @@ model JobWorkInvoice {
   /// What one unit was charged at, and the basis it came from, snapshotted.
   /// Under PURE_CONVERSION these come from the agreement's conversion charge;
   /// under OWN_PROCUREMENT the full product value was used.
-  rateApplied     Decimal              @map("rate_applied") @db.Decimal(14, 4)
-  rateBasis       ConversionRateBasis? @map("rate_basis")
+  rateApplied Decimal              @map("rate_applied") @db.Decimal(14, 4)
+  rateBasis   ConversionRateBasis? @map("rate_basis")
 
   taxableValue   Decimal @map("taxable_value") @db.Decimal(14, 2)
   gstRatePercent Decimal @map("gst_rate_percent") @db.Decimal(5, 2)
@@ -2314,16 +2321,9 @@ model GoodsReceiptLine {
   manufacturingDate DateTime? @map("manufacturing_date") @db.Date
   expiryDate        DateTime? @map("expiry_date") @db.Date
 
-  quantityReceived Decimal @map("quantity_received") @db.Decimal(18, 4)
-  /// Visibly damaged or short-shipped at the gate, refused before QC ever sees
-  /// it. QC's own accept/reject decision happens later, on the lot.
-  quantityRejected Decimal @default(0) @map("quantity_rejected") @db.Decimal(18, 4)
-
-  storageLocation String? @map("storage_location") @db.VarChar(128)
-  remarks         String? @db.VarChar(1000)
-
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  quantityReceived Decimal  @map("quantity_received") @db.Decimal(18, 4)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   tenant            Tenant            @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   goodsReceipt      GoodsReceipt      @relation(fields: [goodsReceiptId], references: [id], onDelete: Cascade)
@@ -2389,8 +2389,6 @@ model StockLot {
   /// material usable, incoming QC does.
   status StockLotStatus @default(QUARANTINE)
 
-  storageLocation String? @map("storage_location") @db.VarChar(128)
-
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -2400,11 +2398,11 @@ model StockLot {
 
   jobWorkMaterialReceipt JobWorkMaterialReceipt? @relation(fields: [jobWorkMaterialReceiptId], references: [id], onDelete: Restrict)
 
-  qcResults     QcResult[]
-  ledgerEntries StockLedgerEntry[]
+  qcResults             QcResult[]
+  ledgerEntries         StockLedgerEntry[]
   /// Production consumes the same stock Procure-to-Pay received; see the note
   /// on MaterialIssueLine.lot.
-  issueLines    MaterialIssueLine[]
+  issueLines            MaterialIssueLine[]
   packagingConsumptions BatchPackagingConsumption[]
 
   @@unique([tenantId, lotNumber])

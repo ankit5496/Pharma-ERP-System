@@ -11,12 +11,13 @@ import {
   EmptyState,
   ErrorState,
   Panel,
-  Pill,
   Qty,
   RecordLink,
   TableWrap,
   Td,
   Th,
+  Name,
+  Code,
 } from '@/components/procurement/ui';
 import {
   fetchGoodsReceipts,
@@ -127,7 +128,6 @@ export default async function GoodsReceiptsPage({
                     <Th>Vendor</Th>
                     <Th>Item / batch</Th>
                     <Th align="right">Received</Th>
-                    <Th>QC</Th>
                     <Th>Received by</Th>
                     <Th>Invoice</Th>
                     <Th>Actions</Th>
@@ -138,7 +138,7 @@ export default async function GoodsReceiptsPage({
                     <tr key={receipt.id}>
                       <Td>
                         <span className="font-mono text-xs font-semibold text-slate-900">
-                          {receipt.number}
+                          <Code>{receipt.number}</Code>
                         </span>
                         {receipt.vendorDocumentNumber && (
                           <span
@@ -158,7 +158,7 @@ export default async function GoodsReceiptsPage({
                         <RecordLink
                           href={`${PROCUREMENT_ROUTES.purchaseOrders}?search=${receipt.purchaseOrder.number}`}
                         >
-                          <span className="font-mono text-xs">{receipt.purchaseOrder.number}</span>
+                          <span className="font-mono text-xs"><Code>{receipt.purchaseOrder.number}</Code></span>
                         </RecordLink>
                       </Td>
 
@@ -168,7 +168,7 @@ export default async function GoodsReceiptsPage({
                             would otherwise set the width of the whole
                             column. */}
                         <span className="block max-w-[12rem] truncate" title={receipt.vendor.name}>
-                          {receipt.vendor.name}
+                          <Name>{receipt.vendor.name}</Name>
                         </span>
                       </Td>
 
@@ -186,11 +186,13 @@ export default async function GoodsReceiptsPage({
                                 className="block max-w-[16rem] truncate text-xs font-medium text-slate-800"
                                 title={`${line.item.name} (${line.item.code})`}
                               >
-                                {line.item.name}
+                                <Name>{line.item.name}</Name>
                               </span>
                               <span className="block text-[11px] text-slate-500">
-                                {line.lot?.lotNumber ? (
-                                  <span className="font-mono">{line.lot.lotNumber}</span>
+                                {line.vendorBatchNumber ? (
+                                  <span className="font-mono">
+                                    <Code>{line.vendorBatchNumber}</Code>
+                                  </span>
                                 ) : (
                                   <Blank />
                                 )}
@@ -210,40 +212,14 @@ export default async function GoodsReceiptsPage({
                           {receipt.lines.map((line) => (
                             <li key={line.id} className="leading-snug">
                               <Qty value={line.quantityReceived} uom={line.item.uom} />
-                              {line.quantityRejected !== '0' && (
-                                <span className="block text-[11px] text-red-700">
-                                  {line.quantityRejected} rejected
-                                </span>
-                              )}
                             </li>
                           ))}
                         </ul>
                       </Td>
 
                       <Td>
-                        <div className="flex flex-wrap gap-1">
-                          {receipt.qcPendingCount > 0 && (
-                            <Pill tone="warn">{receipt.qcPendingCount} pending</Pill>
-                          )}
-                          {receipt.qcAcceptedCount > 0 && (
-                            <Pill tone="ok">{receipt.qcAcceptedCount} accepted</Pill>
-                          )}
-                          {receipt.qcRejectedCount > 0 && (
-                            <Pill tone="danger">{receipt.qcRejectedCount} rejected</Pill>
-                          )}
-                        </div>
-                        {receipt.qcPendingCount > 0 && (
-                          <p className="mt-1 text-[11px]">
-                            <RecordLink href={`${PROCUREMENT_ROUTES.incomingQc}?status=QUARANTINE`}>
-                              Go to QC →
-                            </RecordLink>
-                          </p>
-                        )}
-                      </Td>
-
-                      <Td>
                         {receipt.receivedBy ? (
-                          <span className="text-xs text-slate-600">{receipt.receivedBy}</span>
+                          <span className="text-xs text-slate-600"><Name>{receipt.receivedBy}</Name></span>
                         ) : (
                           <Blank />
                         )}
@@ -259,7 +235,7 @@ export default async function GoodsReceiptsPage({
                                 <RecordLink
                                   href={`${PROCUREMENT_ROUTES.invoices}?search=${invoice.number}`}
                                 >
-                                  <span className="font-mono text-xs">{invoice.number}</span>
+                                  <span className="font-mono text-xs"><Code>{invoice.number}</Code></span>
                                 </RecordLink>
                               </li>
                             ))}

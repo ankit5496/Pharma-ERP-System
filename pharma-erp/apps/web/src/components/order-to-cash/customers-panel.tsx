@@ -6,6 +6,7 @@ import { CustomerRowActions } from './customer-forms';
 import {
   Badge,
   Cell,
+  col,
   EmptyState,
   ErrorState,
   formatDate,
@@ -20,7 +21,7 @@ const COLUMNS = [
   'Customer',
   'Licence',
   'Licence expiry',
-  'Credit limit',
+  col.right('Credit limit'),
   'Status',
   'Actions',
 ] as const;

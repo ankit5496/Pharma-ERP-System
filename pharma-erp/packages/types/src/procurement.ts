@@ -561,13 +561,6 @@ export interface GoodsReceiptLineItem {
   expiryDate: string | null;
   quantityOrdered: string;
   quantityReceived: string;
-  quantityRejected: string;
-  /** What went into quarantine: received minus rejected-at-gate. */
-  quantityAccepted: string;
-  storageLocation: string | null;
-  remarks: string | null;
-  /** The batch this line created, and where QC has got to with it. */
-  lot: StockLotSummary | null;
 }
 
 export interface GoodsReceiptListItem {
@@ -580,10 +573,6 @@ export interface GoodsReceiptListItem {
   receivedBy: string | null;
   remarks: string | null;
   lines: GoodsReceiptLineItem[];
-  /** Rolled up from the lots, so a list row can show QC progress. */
-  qcPendingCount: number;
-  qcAcceptedCount: number;
-  qcRejectedCount: number;
   invoices: { id: string; number: string; vendorInvoiceNumber: string }[];
   createdAt: string;
 }
@@ -591,12 +580,26 @@ export interface GoodsReceiptListItem {
 export interface CreateGoodsReceiptLineRequest {
   purchaseOrderLineId: string;
   quantityReceived: string;
-  quantityRejected?: string;
   vendorBatchNumber?: string;
   manufacturingDate?: string;
   expiryDate?: string;
-  storageLocation?: string;
-  remarks?: string;
+}
+
+/**
+ * A batch-identity correction on a booked receipt.
+ *
+ * THE QUANTITY IS NOT HERE. It created the lot and the ledger entry that go
+ * with it, and the ledger is append-only -- a re-typed quantity would leave the
+ * stock record describing a delivery that never happened. What can be corrected
+ * is what a person transcribed from the delivery note: the batch number and the
+ * two dates. The correction is applied to the lot the line created as well, so
+ * FEFO and recall keep reading the same batch identity as the receipt.
+ */
+export interface UpdateGoodsReceiptLineRequest {
+  id: string;
+  vendorBatchNumber?: string;
+  manufacturingDate?: string;
+  expiryDate?: string;
 }
 
 export interface CreateGoodsReceiptRequest {
@@ -644,7 +647,6 @@ export interface InventoryLot {
   expiryDate: string | null;
   quantityReceived: string;
   quantityAvailable: string;
-  storageLocation: string | null;
   /** Derived from `expiryDate` against today; see INVENTORY_STATUSES. */
   status: InventoryStatus;
   /** Whole days until expiry. Negative once past it, null when there is none. */
@@ -674,7 +676,6 @@ export interface StockLotSummary {
   quantityReceived: string;
   quantityAvailable: string;
   status: StockLotStatus;
-  storageLocation: string | null;
 }
 
 export interface QcResultItem {
@@ -1014,3 +1015,51 @@ export const PROCUREMENT_ROUTES = {
   payments: '/workflows/procure-to-pay/payments',
   productionPlans: '/workflows/procure-to-pay/requisitions?view=plans',
 } as const;
+
+// ---------------------------------------------------------------------------
+// Units of measure — stored code vs displayed unit
+// ---------------------------------------------------------------------------
+
+/**
+ * How each stored UOM code is written when a person reads it.
+ *
+ * THE STORED VALUE IS A CODE, NOT A UNIT. Items hold "KG"; a kilogram is
+ * written "kg". Printing the code raw put "Enter quantity in KG" on the
+ * purchase-order form, which is not how the unit is spelled — and the same
+ * would be true of "ML" for a millilitre.
+ *
+ * Note that this is NOT a lowercasing rule, which is why it is a table rather
+ * than a call to toLowerCase(): a litre is "L", a millilitre is "mL", and
+ * lowercasing either would be as wrong as leaving "KG" alone.
+ *
+ * Lives here rather than beside the master-data form because that module is
+ * 'use client' — every export of one becomes a client reference, so a server
+ * component importing this map would get a proxy instead of the object.
+ */
+export const UOM_LABELS: Record<string, string> = {
+  KG: 'kg',
+  G: 'g',
+  MG: 'mg',
+  L: 'L',
+  ML: 'mL',
+  NOS: 'nos',
+  TABLET: 'tablets',
+  CAPSULE: 'capsules',
+  VIAL: 'vials',
+  STRIP: 'strips',
+  BOTTLE: 'bottles',
+};
+
+/**
+ * The unit as it should be read, for any stored code.
+ *
+ * Falls back to the stored value untouched. Free-text units exist in the item
+ * master — the column is a VARCHAR, not an enum — and a unit somebody typed as
+ * "sachet" is already how they want to read it. Guessing at it would be worse
+ * than leaving it.
+ */
+export function formatUom(stored: string | null | undefined): string {
+  if (!stored) return '';
+
+  return UOM_LABELS[stored.trim().toUpperCase()] ?? stored;
+}

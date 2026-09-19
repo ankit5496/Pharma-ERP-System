@@ -2,11 +2,11 @@
 
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef } from 'react';
-import type { PartySummary, RequisitionListItem } from '@pharma-erp/types';
+import { formatUom, type PartySummary, type RequisitionListItem } from '@pharma-erp/types';
 
 import { createPurchaseOrderAction } from '@/app/(app)/workflows/procure-to-pay/actions';
 
-import { ActionMessage, Field, SubmitButton, useAction } from './form-kit';
+import { ActionMessage, Field, FormFooter, SubmitButton, useAction } from './form-kit';
 import { noWheelChange } from '@/lib/number-input';
 
 /**
@@ -81,22 +81,11 @@ export function CreatePoDialog({
       className="w-[min(46rem,92vw)] rounded-lg border border-slate-200 p-0 shadow-xl backdrop:bg-slate-900/40"
     >
       <form action={formAction} className="space-y-4 p-5">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h2 className="text-base font-semibold text-slate-900">Create purchase order</h2>
-            <p className="mt-0.5 text-sm text-slate-600">
-              From requisition{' '}
-              <span className="font-mono text-slate-800">{requisition.number}</span>
-            </p>
-          </div>
-
-          <button
-            type="button"
-            onClick={close}
-            className="rounded px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
-          >
-            Cancel
-          </button>
+        <div>
+          <h2 className="text-base font-semibold text-slate-900">Create purchase order</h2>
+          <p className="mt-0.5 text-sm text-slate-600">
+            From requisition <span className="font-mono text-slate-800">{requisition.number}</span>
+          </p>
         </div>
 
         <ActionMessage state={state} />
@@ -150,7 +139,7 @@ export function CreatePoDialog({
             label="Quantity"
             htmlFor="po-quantity"
             required
-            hint={`Requisition asked for ${requisition.requiredQuantity} ${requisition.item.uom}.`}
+            hint={`Requisition asked for ${requisition.requiredQuantity} ${formatUom(requisition.item.uom)}.`}
           >
             <input
               id="po-quantity"
@@ -226,15 +215,10 @@ export function CreatePoDialog({
           <input id="po-notes" name="notes" maxLength={1000} className="field-sm w-full" />
         </Field>
 
-        <div className="flex flex-wrap items-center justify-end gap-2 border-t border-slate-200 pt-4">
-          <button
-            type="button"
-            onClick={close}
-            className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
-          >
-            Cancel
-          </button>
-
+        {/* Cancel, then the two ways to save. All three at the bottom and
+            left-aligned, so the choice between them is made in one place
+            instead of diagonally across the dialog. */}
+        <FormFooter onCancel={close}>
           {/* Two submits on one form. `formAction` is not used — both post to
               the same action and the pressed button's own name/value tells the
               server which was chosen, which is what a plain form submission
@@ -256,7 +240,7 @@ export function CreatePoDialog({
           <SubmitButton variant="primary" pendingLabel="Creating…" name="saveAsDraft" value="false">
             Create purchase order
           </SubmitButton>
-        </div>
+        </FormFooter>
       </form>
     </dialog>
   );

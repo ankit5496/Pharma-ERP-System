@@ -17,7 +17,8 @@ import {
   ValidateNested,
 } from 'class-validator';
 
-import type { ItemType, ScheduleClassification } from '@pharma-erp/types';
+import { BATCH_RELEASE_DECISIONS } from '@pharma-erp/types';
+import type { BatchReleaseDecision, ItemType, ScheduleClassification } from '@pharma-erp/types';
 
 /**
  * Accepted enum values, as arrays because `@IsIn` needs a runtime list.
@@ -456,13 +457,20 @@ export class RecordPackingDto {
 
 export class ReleaseDecisionDto {
   /**
-   * PENDING is not accepted. This endpoint decides; it cannot un-decide, and
-   * offering a value that reverses a quality verdict would imply otherwise.
+   * THREE OUTCOMES, and neither PENDING nor BLOCKED among them.
+   *
+   * PENDING is not accepted because this endpoint decides; it cannot un-decide,
+   * and offering a value that reverses a quality verdict would imply otherwise.
+   *
+   * BLOCKED is not accepted because it is what ON_HOLD and REJECTED were called
+   * before they were separated. Rows decided under it keep it — a quality
+   * decision already taken is not rewritten — but nothing new is recorded that
+   * way, because "blocked" cannot answer whether the batch may ever ship.
    */
-  @IsIn(['RELEASED', 'BLOCKED'])
-  decision!: 'RELEASED' | 'BLOCKED';
+  @IsIn(BATCH_RELEASE_DECISIONS)
+  decision!: BatchReleaseDecision;
 
-  /** Required when blocking — see the service, which enforces that. */
+  /** Required for ON_HOLD and REJECTED — see the service, which enforces it. */
   @IsOptional()
   @IsString()
   @MaxLength(4000)

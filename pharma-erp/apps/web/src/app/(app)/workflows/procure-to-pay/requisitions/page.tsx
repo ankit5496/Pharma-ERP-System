@@ -28,6 +28,8 @@ import {
   TableWrap,
   Td,
   Th,
+  Name,
+  Code,
 } from '@/components/procurement/ui';
 import {
   fetchItems,
@@ -114,7 +116,6 @@ export default async function RequisitionsPage({
           <FilterButton />
           <RequisitionForm
             items={items.ok ? items.data : []}
-            vendors={vendors.ok ? vendors.data : []}
             plans={plans.ok ? plans.data : []}
             raisedBy={user.fullName}
           />
@@ -158,7 +159,6 @@ export default async function RequisitionsPage({
                   <Th>Raised by</Th>
                   <Th>Why</Th>
                   <Th>For</Th>
-                  <Th>Preferred vendor</Th>
                   <Th>Linked PO</Th>
                   <Th>Status</Th>
                   <Th>Actions</Th>
@@ -169,7 +169,7 @@ export default async function RequisitionsPage({
                   <tr key={requisition.id}>
                     <Td>
                       <span className="font-mono text-xs font-medium text-slate-900">
-                        {requisition.number}
+                        <Code>{requisition.number}</Code>
                       </span>
                     </Td>
 
@@ -183,8 +183,8 @@ export default async function RequisitionsPage({
                     </Td>
 
                     <Td>
-                      <p className="font-medium text-slate-900">{requisition.item.name}</p>
-                      <p className="font-mono text-xs text-slate-500">{requisition.item.code}</p>
+                      <p className="font-medium text-slate-900"><Name>{requisition.item.name}</Name></p>
+                      <p className="font-mono text-xs text-slate-500"><Code>{requisition.item.code}</Code></p>
                     </Td>
 
                     <Td align="right">
@@ -225,7 +225,6 @@ export default async function RequisitionsPage({
                       <PurposeCell requisition={requisition} />
                     </Td>
 
-                    <Td>{requisition.preferredVendor?.name ?? <Blank />}</Td>
 
                     <Td valign="top">
                       {requisition.linkedPurchaseOrders.length === 0 ? (
@@ -238,7 +237,7 @@ export default async function RequisitionsPage({
                                 href={`${PROCUREMENT_ROUTES.purchaseOrders}?search=${order.number}`}
                                 className="font-mono text-xs text-sky-800 underline decoration-sky-300 underline-offset-2"
                               >
-                                {order.number}
+                                <Code>{order.number}</Code>
                               </a>
                             </li>
                           ))}
@@ -252,10 +251,7 @@ export default async function RequisitionsPage({
                     </Td>
 
                     <Td>
-                      <RequisitionActions
-                        requisition={requisition}
-                        vendors={vendors.ok ? vendors.data : []}
-                      />
+                      <RequisitionActions requisition={requisition} />
                     </Td>
                   </tr>
                 ))}
@@ -319,7 +315,7 @@ function PurposeCell({ requisition }: { requisition: RequisitionListItem }) {
 
   return (
     <div className="space-y-0.5 text-[11px] leading-snug">
-      {plan && <p className="font-mono text-slate-700">{plan.number}</p>}
+      {plan && <p className="font-mono text-slate-700"><Code>{plan.number}</Code></p>}
       {product && <p className="text-slate-700">{product.name}</p>}
       {packVariant && <p className="text-slate-500">{packVariant}</p>}
 

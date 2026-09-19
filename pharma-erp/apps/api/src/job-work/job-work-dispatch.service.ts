@@ -336,6 +336,9 @@ export class JobWorkDispatchService {
  *
  *   PER_BATCH       one dispatch of one batch is one charge, so the rate stands
  *                   on its own and quantity does not scale it.
+ *   PER_UNIT        rate x quantity, quantity being units -- a tablet, a vial,
+ *                   a capsule. This is the basis the brief's "Rs 0.15 per
+ *                   tablet" is quoted on.
  *   PER_1000_UNITS  rate x quantity / 1000.
  *   PER_PACK        rate x quantity, quantity being packs.
  *   PER_KG          rate x quantity, quantity being kilograms.
@@ -353,6 +356,7 @@ function conversionCharge(
       return rate;
     case 'PER_1000_UNITS':
       return rate.mul(quantity).div(THOUSAND);
+    case 'PER_UNIT':
     case 'PER_PACK':
     case 'PER_KG':
       return rate.mul(quantity);

@@ -170,6 +170,7 @@ export function Field({
   htmlFor,
   hint,
   required,
+  error,
   children,
   className = '',
 }: {
@@ -177,6 +178,18 @@ export function Field({
   htmlFor: string;
   hint?: string;
   required?: boolean;
+  /**
+   * What is wrong with this field, shown IN PLACE OF the hint.
+   *
+   * In place of, not beside: once a field is wrong the correction is the only
+   * thing worth reading there, and stacking a second line under every control
+   * shifts the whole form down as errors appear and clear.
+   *
+   * Tied to the control with `aria-describedby` by the caller where it
+   * matters, and marked `role="alert"` so it is announced when it appears
+   * rather than sitting silently in the page.
+   */
+  error?: string;
   children: ReactNode;
   className?: string;
 }) {
@@ -187,7 +200,13 @@ export function Field({
         {required && <span className="ml-0.5 text-red-600">*</span>}
       </label>
       <div className="mt-1">{children}</div>
-      {hint && <p className="field-hint">{hint}</p>}
+      {error ? (
+        <p id={`${htmlFor}-error`} role="alert" className="mt-1 text-xs font-medium text-red-700">
+          {error}
+        </p>
+      ) : (
+        hint && <p className="field-hint">{hint}</p>
+      )}
     </div>
   );
 }
@@ -221,6 +240,7 @@ export function Disclosure({
   closeWhen = false,
   defaultOpen = false,
   width = '48rem',
+  headerCancel = true,
   isOpen,
   onOpenChange,
 }: {
@@ -233,6 +253,14 @@ export function Disclosure({
   /** Opens on mount — for arriving from another screen ready to fill it in. */
   defaultOpen?: boolean;
   width?: string;
+  /**
+   * Whether the title line carries its own Cancel.
+   *
+   * Set false by a form that ends in a <FormFooter>, which puts Cancel next to
+   * the button that saves. Offering both would be two controls for one action,
+   * in two different places, on the same dialog.
+   */
+  headerCancel?: boolean;
   /**
    * CONTROLLED MODE, for a dialog opened from a row's Actions menu.
    *
@@ -327,13 +355,15 @@ export function Disclosure({
                 {subtitle && <p className="mt-0.5 text-sm text-slate-600">{subtitle}</p>}
               </div>
 
-              <button
-                type="button"
-                onClick={close}
-                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
-              >
-                Cancel
-              </button>
+              {headerCancel && (
+                <button
+                  type="button"
+                  onClick={close}
+                  className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-50"
+                >
+                  Cancel
+                </button>
+              )}
             </div>
 
             {children(close)}
@@ -398,5 +428,41 @@ export function useAction(action: (state: ActionState, form: FormData) => Promis
   // them without editing each form.
   useActionToast(isPending, state.status === 'error' ? 'error' : 'success', state.message);
 
-  return [state, formAction] as const;
+  // `isPending` is returned as a third element so a caller with no <form> — a
+  // row menu dispatching straight from a menu entry — can show that something
+  // is happening. A form gets this for free from useFormStatus; a menu does
+  // not, and on a database a round trip away, an action with no feedback reads
+  // as one that did nothing.
+  return [state, formAction, isPending] as const;
+}
+
+/**
+ * The bottom of a form: Cancel, then the button that saves.
+ *
+ * LEFT-ALIGNED, AND BOTH AT THE BOTTOM. Cancel used to sit on the title line,
+ * diagonally opposite the control it is the alternative to — so deciding
+ * between them meant looking in two places, and the button that discards work
+ * was the one nearest the top of the dialog.
+ *
+ * CANCEL FIRST, and it is a plain button rather than a submit: it must never
+ * post the form it closes. It is rendered before the children so that reading
+ * order and tab order both reach it before the destructive-to-undo save,
+ * matching the visual order rather than fighting it.
+ */
+export function FormFooter({ onCancel, children }: { onCancel: () => void; children: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-t border-slate-200 pt-4">
+      <button
+        type="button"
+        onClick={onCancel}
+        // SubmitButton's secondary styling, character for character. A
+        // hand-written approximation drifts the moment either one is touched.
+        className="whitespace-nowrap rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+      >
+        Cancel
+      </button>
+
+      {children}
+    </div>
+  );
 }

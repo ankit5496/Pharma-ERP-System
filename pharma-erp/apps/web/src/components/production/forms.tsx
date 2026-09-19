@@ -1374,15 +1374,31 @@ export function ReleaseDecisionForm({
           {pending ? 'Saving…' : 'Release'}
         </button>
 
+        {/* HOLD AND REJECT ARE DIFFERENT DECISIONS. A batch held for a
+            repeat assay may still be released next week; a rejected one never
+            will. One button called "Block" could not record which had been
+            meant, so neither could be reported on afterwards. Both refuse
+            dispatch, and both need a reason. */}
         <button
           type="submit"
           name="decision"
-          value="BLOCKED"
+          value="ON_HOLD"
           disabled={pending || !canBlock}
-          title={canBlock ? undefined : 'Give a reason above before blocking this batch.'}
+          title={canBlock ? undefined : 'Give a reason above before holding this batch.'}
+          className="rounded-md bg-amber-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-amber-700 disabled:cursor-not-allowed disabled:bg-slate-400"
+        >
+          {pending ? 'Saving…' : 'Hold'}
+        </button>
+
+        <button
+          type="submit"
+          name="decision"
+          value="REJECTED"
+          disabled={pending || !canBlock}
+          title={canBlock ? undefined : 'Give a reason above before rejecting this batch.'}
           className="rounded-md bg-red-700 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-red-800 disabled:cursor-not-allowed disabled:bg-slate-400"
         >
-          {pending ? 'Saving…' : 'Block'}
+          {pending ? 'Saving…' : 'Reject'}
         </button>
 
         <p className="text-xs text-slate-600">
@@ -1391,14 +1407,15 @@ export function ReleaseDecisionForm({
           ) : (
             <>
               Releasing adds <strong>{packedQuantity}</strong> {uom} of {batchNumber} to sellable
-              stock. Blocking withholds it permanently. Neither can be undone here.
+              stock. Holding withholds it pending further testing; rejecting withholds it for
+              good. None of the three can be undone here.
             </>
           )}
           {!canBlock && (
             <>
               {' '}
-              A blocked batch with no recorded reason is the first thing an inspector asks about, so
-              blocking needs the box above filled in.
+              A batch that did not pass, with no recorded reason, is the first thing an inspector
+              asks about — so holding and rejecting both need the box above filled in.
             </>
           )}
         </p>
