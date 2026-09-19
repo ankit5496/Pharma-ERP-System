@@ -100,13 +100,21 @@ export function useActionToast(isPending: boolean, tone: ToastTone, message?: st
   }, [isPending, tone, message]);
 }
 
-/** How long a message stays up. */
+/**
+ * How long a message stays up, INCLUDING its fade in and out.
+ *
+ * The same number drives the CSS: `--toast-life` is set from it, and
+ * `toast-life` in globals.css fades in over the first 12% and out over the
+ * last 18%. Passing it through rather than hard-coding a duration in the
+ * stylesheet is what keeps the card from vanishing mid-fade, or holding at
+ * full opacity after the animation has finished.
+ */
 const DISMISS_AFTER: Record<ToastTone, number> = {
-  // Long enough to read and register, short enough not to sit over the row it
-  // is describing.
-  success: 4000,
+  // Three seconds: long enough to read a confirmation naming what was saved,
+  // short enough not to sit over the row it is describing.
+  success: 3000,
   // Errors say what went wrong and often what to do about it, and the user has
-  // a half-filled form open behind this one. Twice the reading time.
+  // a half-filled form open behind this one. Well over twice the reading time.
   error: 8000,
 };
 
@@ -168,7 +176,10 @@ function ToastCard({ toast }: { toast: Toast }) {
       // `alert` interrupts a screen reader for a failure; `status` waits for a
       // pause, which is right for a confirmation.
       role={isError ? 'alert' : 'status'}
-      className={`pointer-events-auto flex max-w-md items-start gap-3 rounded-lg border px-4 py-3 text-sm shadow-lg ${
+      // The card's whole life as one animation — see `toast-life` in
+      // globals.css for why the fade-out cannot be a transition.
+      style={{ '--toast-life': `${DISMISS_AFTER[toast.tone]}ms` } as React.CSSProperties}
+      className={`toast-card pointer-events-auto flex max-w-md items-start gap-3 rounded-xl border px-4 py-3 text-sm shadow-xl ${
         isError
           ? 'border-red-300 bg-red-50 text-red-900'
           : 'border-green-300 bg-green-50 text-green-900'

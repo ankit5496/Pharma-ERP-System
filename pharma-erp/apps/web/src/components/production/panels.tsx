@@ -109,7 +109,6 @@ export async function ProductionOrdersPanel() {
 
   return (
     <ProductionRegister
-      title={`${orders.length} work order${orders.length === 1 ? '' : 's'}`}
       newLabel="New work order"
       newTitle="New — Work order"
       form={<CreateProductionOrderForm products={products} />}
@@ -169,7 +168,6 @@ export async function MaterialIssuePanel() {
           badge: String(issues.length),
           panel: (
             <ProductionRegister
-              title={`${issues.length} dispensing record${issues.length === 1 ? '' : 's'}`}
               newLabel={awaiting.length > 0 ? 'Dispense material' : undefined}
               newTitle="Dispense material"
               // The plan is a table of every material with its lots; at the
@@ -275,7 +273,6 @@ export async function BatchRecordPanel() {
 
   return (
     <ProductionRegister
-      title={`${batches.length} batch${batches.length === 1 ? '' : 'es'}`}
       newLabel={awaitingBatch.length > 0 ? 'New batch' : undefined}
       newTitle="New — Batch record"
       form={awaitingBatch.length > 0 ? <RecordBatchForm orders={awaitingBatch} /> : undefined}
@@ -338,21 +335,26 @@ export async function BatchReleasePanel() {
     );
   }
 
+  // WHO MAY DECIDE, and therefore who sees this step at all. Anyone else is
+  // shown the sentence and nothing else — not the pending batches, not the
+  // sellable stock, not the decisions already made.
+  //
+  // This is a DISCLOSURE, not the enforcement: RolesGuard on the release
+  // endpoint is what actually refuses the decision, and it names the same two
+  // roles. Hiding the tabs here only saves somebody from reading a register
+  // they can take no action on.
+  const canDecide = role === 'QUALITY_OFFICER' || role === 'ADMIN';
+
+  if (!canDecide) {
+    return (
+      <p className="rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+        Batch should be released by Admin and Quality Officer.
+      </p>
+    );
+  }
+
   return (
     <div className="space-y-4">
-      {/* OUTSIDE the tabs, deliberately. It is about the buttons on the first
-          tab, and a warning that hides when you look at the stock is one
-          somebody meets only by pressing the button it was about.
-
-          The enforcement is RolesGuard on the API, not this line: an Admin is
-          refused the release endpoint too, which is why the note does not
-          offer to find someone with a higher role. */}
-      {role !== 'QUALITY_OFFICER' && (
-        <p className="rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-          Only a Quality Officer can decide a release.
-        </p>
-      )}
-
       <ProductionTabs
         tabs={[
           {

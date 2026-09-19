@@ -201,6 +201,12 @@ export interface ItemSummary {
   id: string;
   code: string;
   name: string;
+  /**
+   * When the record was created, so a picklist can offer the newest few before
+   * anything is typed. The registers themselves stay sorted by name — this is
+   * for the forms, which are where somebody reaches for what they just added.
+   */
+  createdAt: string;
   type: ItemType;
   /** Free text on the shared schema. */
   uom: string;
@@ -256,6 +262,8 @@ export interface PartySummary {
   id: string;
   code: string;
   name: string;
+  /** See ItemSummary.createdAt — the newest few, for the forms' picklists. */
+  createdAt: string;
   partyType: PartyType;
   gstin: string | null;
   drugLicenceNumber: string | null;

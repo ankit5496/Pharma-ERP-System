@@ -259,6 +259,7 @@ export function toPartySummary(party: Party, documentCount = 0): PartySummary {
 
   return {
     id: party.id,
+    createdAt: party.createdAt.toISOString(),
     code: party.code,
     name: party.name,
     partyType: party.partyType,

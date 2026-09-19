@@ -78,7 +78,8 @@ export function PackagingRequirementMasterForm({
 }: {
   requirement?: PackagingRequirementView;
   items: readonly ItemSummary[];
-  onSaved?: () => void;
+  /** Called with the confirmation line, so the workspace can show it. */
+  onSaved?: (message?: string) => void;
 }) {
   const [state, formAction, isPending] = useActionState(
     savePackagingAction.bind(null, requirement?.id ?? null),
@@ -86,7 +87,10 @@ export function PackagingRequirementMasterForm({
   );
   const router = useRouter();
 
-  const components = useLineRows(Math.max(requirement?.lines.length ?? 0, 2));
+  // ONE empty line on a new record, not two — "+ Add packaging component" is
+  // right there, and an unwanted second line has to be removed by hand. Editing
+  // still opens with a row per existing component.
+  const components = useLineRows(Math.max(requirement?.lines.length ?? 0, 1));
 
   // Dropdowns are CONTROLLED. React 19 resets an uncontrolled form once its
   // action resolves, and a <select> does not pick up a changed defaultValue on
@@ -112,8 +116,8 @@ export function PackagingRequirementMasterForm({
     if (!state.ok) return;
 
     router.refresh();
-    onSaved?.();
-  }, [state.ok, router, onSaved]);
+    onSaved?.(state.message);
+  }, [state.ok, state.message, router, onSaved]);
 
   // Re-seed from what was submitted whenever a save comes back refused.
   useEffect(() => {
@@ -144,12 +148,16 @@ export function PackagingRequirementMasterForm({
   const products = items.filter((item) => item.type === 'FINISHED_GOOD');
   const packingMaterials = items.filter((item) => item.type === 'PACKING_MATERIAL');
 
-  const productOptions = products.map((item) => ({
+  // Newest first: the closed picklist offers the most recent few, and the
+  // record somebody is reaching for is usually the one just added.
+  const byNewest = (a: ItemSummary, b: ItemSummary) => b.createdAt.localeCompare(a.createdAt);
+
+  const productOptions = [...products].sort(byNewest).map((item) => ({
     value: item.id,
     label: `${item.code} — ${item.name}`,
   }));
 
-  const componentOptions = packingMaterials.map((item) => ({
+  const componentOptions = [...packingMaterials].sort(byNewest).map((item) => ({
     value: item.id,
     label: `${item.code} — ${item.name} (${item.uom})`,
   }));
@@ -193,6 +201,7 @@ export function PackagingRequirementMasterForm({
               label="Finished product"
               required
               options={productOptions}
+              searchable
               value={productId}
               onChange={setProductId}
               hint="Only finished goods appear here."
@@ -250,6 +259,7 @@ export function PackagingRequirementMasterForm({
                   compact
                   required
                   options={componentOptions}
+                  searchable
                   value={cell(id, 'itemId', existing?.item.id)}
                   onChange={(value) =>
                     setRows((current) => ({

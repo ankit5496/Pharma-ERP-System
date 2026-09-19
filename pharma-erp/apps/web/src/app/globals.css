@@ -223,3 +223,152 @@ td {
   margin: 0;
   overflow: visible;
 }
+
+/*
+ * A confirmation eases in, holds, and eases out on its own.
+ *
+ * ONE animation rather than two states in JavaScript. The card is removed from
+ * the DOM when its timer fires, so an exit transition has nothing left to
+ * animate — the element is simply gone. Running the whole life of the message
+ * as a single keyframe sequence means the fade-out happens BEFORE the removal,
+ * with the percentages below matched to the tone's dismiss delay.
+ *
+ * `forwards` holds the final frame, so there is no flash back to full opacity
+ * in the gap between the animation ending and React unmounting the card.
+ */
+@keyframes toast-life {
+  0% {
+    opacity: 0;
+    transform: translateY(0.75rem) scale(0.96);
+  }
+  /* In by 12%: ~360ms of a 3s message. Fast enough to feel like a response to
+     the click rather than something arriving separately. */
+  12% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  82% {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-0.5rem) scale(0.98);
+  }
+}
+
+.toast-card {
+  animation: toast-life var(--toast-life, 3000ms) ease-in-out forwards;
+}
+
+/*
+ * The save confirmation, which is dismissed rather than timed out.
+ *
+ * TWO animations, not the toast's one. A toast knows when it will leave, so its
+ * whole life fits in a single keyframe sequence. This card leaves when somebody
+ * presses Done, so the exit has to be a separate animation the component plays
+ * BEFORE it unmounts — see SavedDialog, which holds an `isLeaving` flag for
+ * exactly the length of `saved-dialog-out`.
+ *
+ * The backdrop fades on its own track: it is a sibling, not a parent, and
+ * animating the two together made the dim wash appear to lag the card.
+ */
+@keyframes saved-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.75rem) scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes saved-dialog-out {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(0.35rem) scale(0.97);
+  }
+}
+
+@keyframes saved-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes saved-backdrop-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+/* Slightly longer in than out: an arrival is worth watching, a dismissal the
+   person just asked for should get out of the way. */
+.saved-dialog-card {
+  animation: saved-dialog-in 260ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.saved-dialog-card[data-leaving='true'] {
+  animation: saved-dialog-out 180ms ease-in forwards;
+}
+
+.saved-dialog-backdrop {
+  animation: saved-backdrop-in 260ms ease-out forwards;
+}
+
+.saved-dialog-backdrop[data-leaving='true'] {
+  animation: saved-backdrop-out 180ms ease-in forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @keyframes saved-dialog-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes saved-dialog-out {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
+    }
+  }
+}
+
+/*
+ * Motion is a preference, not a decoration. Respecting it here rather than
+ * dropping the animation entirely: the message still fades, which is what
+ * makes its arrival and departure legible, but nothing slides or scales.
+ */
+@media (prefers-reduced-motion: reduce) {
+  @keyframes toast-life {
+    0% {
+      opacity: 0;
+    }
+    12% {
+      opacity: 1;
+    }
+    82% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+    }
+  }
+}

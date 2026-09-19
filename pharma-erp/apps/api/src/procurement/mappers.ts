@@ -21,6 +21,7 @@ import { money, percent, qty } from './decimal.util';
 /** Fields every caller selects for an item. Mirrors the shared items table. */
 export const ITEM_SELECT = {
   id: true,
+  createdAt: true,
   code: true,
   name: true,
   type: true,
@@ -55,6 +56,7 @@ export const ITEM_SELECT = {
 
 type ItemRow = {
   id: string;
+  createdAt: Date;
   code: string;
   name: string;
   type: string;
@@ -77,6 +79,7 @@ type ItemRow = {
 export function toItemSummary(row: ItemRow): ItemSummary {
   return {
     id: row.id,
+    createdAt: row.createdAt.toISOString(),
     code: row.code,
     name: row.name,
     type: row.type as ItemSummary['type'],
@@ -134,6 +137,7 @@ export function toBomSummary(row: {
 
 export const PARTY_SELECT = {
   id: true,
+  createdAt: true,
   code: true,
   name: true,
   partyType: true,
@@ -163,6 +167,7 @@ export const LOT_SELECT = {
 
 type PartyRow = {
   id: string;
+  createdAt: Date;
   code: string;
   name: string;
   partyType: string;
@@ -184,6 +189,7 @@ export function toPartySummary(row: PartyRow): PartySummary {
     // are a customer's paperwork. The master-data listing is what counts them.
     documentCount: 0,
     id: row.id,
+    createdAt: row.createdAt.toISOString(),
     code: row.code,
     name: row.name,
     partyType: row.partyType as PartySummary['partyType'],

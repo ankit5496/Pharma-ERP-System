@@ -92,10 +92,10 @@ export function FormulationTable({ boms }: { boms: BomView[] }) {
       />
 
       {view.filtered.length > 0 && (
-        <div className="overflow-x-auto">
+        <div className="table-scroll overflow-x-auto">
           <table className="w-full min-w-[56rem] text-left text-sm">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
+              <tr className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
                 <Th className="w-8" />
                 <Th>Formulation</Th>
                 <Th align="right">Version</Th>

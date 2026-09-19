@@ -56,7 +56,8 @@ export function BomMasterForm({
   items: readonly ItemSummary[];
   /** Given to edit that formulation in place; absent to write a new one. */
   bom?: BomView;
-  onSaved?: () => void;
+  /** Called with the confirmation line, so the workspace can show it. */
+  onSaved?: (message?: string) => void;
 }) {
   const [state, formAction, isPending] = useActionState(
     saveBomAction.bind(null, bom?.id ?? null),
@@ -66,7 +67,10 @@ export function BomMasterForm({
   // The result is announced by the application-wide centred toast rather than
   // by a banner inside this form, which on a form this long sat above the fold
   // while the submit button being watched was below it.
-  useActionToast(isPending, state.ok ? 'success' : 'error', state.message);
+  // ERRORS ONLY. A success is confirmed by the workspace's SavedDialog, and a
+  // toast as well would be the same news twice — once in a box to dismiss and
+  // once in a strip that fades.
+  useActionToast(isPending, 'error', state.ok ? undefined : state.message);
   const router = useRouter();
 
   // Split the formulation's existing lines by what the item actually is, so
@@ -74,7 +78,11 @@ export function BomMasterForm({
   const existingRaw = bom?.lines.filter((line) => line.item.type !== 'PACKING_MATERIAL') ?? [];
   const existingPack = bom?.lines.filter((line) => line.item.type === 'PACKING_MATERIAL') ?? [];
 
-  const rawMaterials = useLineRows(bom ? existingRaw.length : 2);
+  // ONE empty line, not two. A second was offered on the assumption that a
+  // formulation always has at least an active and an excipient — but "+ Add raw
+  // material" is right there, and an unwanted second line has to be removed by
+  // hand, which is worse than adding one that is wanted.
+  const rawMaterials = useLineRows(bom ? existingRaw.length : 1);
   const packingMaterials = useLineRows(bom ? existingPack.length : 1);
 
   // Which item each line points at, so the unit beside its quantity is the
@@ -127,8 +135,8 @@ export function BomMasterForm({
     if (!state.ok) return;
 
     router.refresh();
-    onSaved?.();
-  }, [state.ok, router, onSaved]);
+    onSaved?.(state.message);
+  }, [state.ok, state.message, router, onSaved]);
 
   const byId = new Map(items.map((item) => [item.id, item]));
   const uomOf = (key: string) => byId.get(lineItems[key] ?? '')?.uom;
@@ -185,6 +193,7 @@ export function BomMasterForm({
               label="Finished product"
               required
               options={toOptions(products)}
+              searchable
               value={productId}
               onChange={setProductId}
               wide
@@ -247,6 +256,7 @@ export function BomMasterForm({
                 compact
                 required
                 options={rawOptions}
+                searchable
                 value={lineItems[`raw.${id}`] ?? ''}
                 onChange={(value) => setLineItems((map) => ({ ...map, [`raw.${id}`]: value }))}
               />
@@ -295,6 +305,7 @@ export function BomMasterForm({
                     label="Material"
                     compact
                     options={packOptions}
+                    searchable
                     value={lineItems[`pack.${id}`] ?? ''}
                     onChange={(value) => setLineItems((map) => ({ ...map, [`pack.${id}`]: value }))}
                   />
@@ -325,9 +336,20 @@ export function BomMasterForm({
 }
 
 /** Code first, because that is what people search and compare on. */
+/**
+ * Options for a searchable picklist, NEWEST FIRST.
+ *
+ * The registers list alphabetically, which is right for reading. A form is the
+ * other case: the product somebody is writing a formulation for is very often
+ * the one they added minutes ago, and it is what the closed dropdown offers
+ * before anything is typed. Sorted here rather than asking the API for a second
+ * ordering — the whole list is already in the browser.
+ */
 function toOptions(items: readonly ItemSummary[]) {
-  return items.map((item) => ({
-    value: item.id,
-    label: `${item.code} — ${item.name} (${ITEM_TYPE_LABELS[item.type]})`,
-  }));
+  return [...items]
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map((item) => ({
+      value: item.id,
+      label: `${item.code} — ${item.name} (${ITEM_TYPE_LABELS[item.type]})`,
+    }));
 }

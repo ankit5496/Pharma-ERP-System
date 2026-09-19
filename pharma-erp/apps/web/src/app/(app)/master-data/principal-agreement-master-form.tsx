@@ -69,7 +69,8 @@ export function PrincipalAgreementMasterForm({
   agreement?: JobWorkAgreementSummary;
   parties: readonly PartySummary[];
   boms: readonly BomView[];
-  onSaved?: () => void;
+  /** Called with the confirmation line, so the workspace can show it. */
+  onSaved?: (message?: string) => void;
 }) {
   const [state, formAction, isPending] = useActionState(
     saveAgreementAction.bind(null, agreement?.id ?? null),
@@ -115,8 +116,8 @@ export function PrincipalAgreementMasterForm({
     if (!state.ok) return;
 
     router.refresh();
-    onSaved?.();
-  }, [state.ok, router, onSaved]);
+    onSaved?.(state.message);
+  }, [state.ok, state.message, router, onSaved]);
 
   // Re-seed the dropdowns from what was submitted, whenever a save comes back
   // refused. Keyed on `state` rather than on its fields: a new result object is
@@ -147,19 +148,29 @@ export function PrincipalAgreementMasterForm({
   // else; offering it here would be offering a choice that cannot be saved.
   const principals = parties.filter((party) => party.partyType === 'JOB_WORK_PRINCIPAL');
 
-  const principalOptions = principals.map((party) => ({
-    value: party.id,
-    label: `${party.code} — ${party.name}`,
-  }));
+  // Newest first: the closed picklist offers the most recent few, and a new
+  // agreement is usually with a principal somebody has just added.
+  const principalOptions = [...principals]
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map((party) => ({
+      value: party.id,
+      label: `${party.code} — ${party.name}`,
+    }));
 
   // A formulation is identified the way the rest of the app identifies one:
   // product code, version, and whether it is the live version.
-  const bomOptions = boms.map((bom) => ({
-    value: bom.id,
-    label: `${bom.product.code} v${bom.version}${bom.isActive ? '' : ' (superseded)'} — ${
-      bom.product.name
-    }`,
-  }));
+  // Active versions first, then by version descending. BomView carries no
+  // createdAt, but a formulation's version IS its age — v4 was written after
+  // v3 — and the live version is what an agreement should normally cover, so
+  // that ordering puts the right few at the top of a closed picklist.
+  const bomOptions = [...boms]
+    .sort((a, b) => Number(b.isActive) - Number(a.isActive) || b.version - a.version)
+    .map((bom) => ({
+      value: bom.id,
+      label: `${bom.product.code} v${bom.version}${bom.isActive ? '' : ' (superseded)'} — ${
+        bom.product.name
+      }`,
+    }));
 
   const noPrincipals = principals.length === 0;
   const noBoms = bomOptions.length === 0;
@@ -188,6 +199,7 @@ export function PrincipalAgreementMasterForm({
             label="Principal"
             required
             options={principalOptions}
+            searchable
             value={principalId}
             onChange={setPrincipalId}
             hint="The brand owner, from the Party register. Only parties recorded as job-work principals appear here."
@@ -284,6 +296,7 @@ export function PrincipalAgreementMasterForm({
                   compact
                   required
                   options={bomOptions}
+                  searchable
                   value={mappingBoms[id] ?? existing?.bomId ?? ''}
                   onChange={(value) => setMappingBoms((rows) => ({ ...rows, [id]: value }))}
                 />
