@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, type ReactNode } from 'react';
 
 import { SECONDARY_BUTTON } from './ui';
 
@@ -63,12 +63,72 @@ export function Modal({
           <h3 className="text-base font-semibold text-slate-900">{title}</h3>
           {description && <p className="mt-1 text-sm text-slate-600">{description}</p>}
         </div>
-        <button type="button" onClick={onClose} className={SECONDARY_BUTTON}>
-          Close
+        {/* An icon, not a labelled button: the dialog's real exits are the
+            Cancel and the submit in its footer, and a second full-sized button
+            up here competed with them. */}
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="-mr-1.5 -mt-1.5 rounded-md p-1.5 text-slate-400 transition hover:bg-slate-100 hover:text-slate-700"
+        >
+          <svg aria-hidden="true" viewBox="0 0 20 20" className="h-5 w-5" fill="currentColor">
+            <path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z" />
+          </svg>
         </button>
       </div>
 
-      <div className="px-6 py-5">{children}</div>
+      <div className="px-6 py-5">
+        <DialogCloseContext.Provider value={onClose}>{children}</DialogCloseContext.Provider>
+      </div>
     </dialog>
+  );
+}
+
+/**
+ * How a form inside the dialog closes it.
+ *
+ * The form is built by the panel — a server component — and handed to the
+ * dialog as an element, so the dialog cannot pass it a callback: props are
+ * fixed by then, and a function could not cross that boundary anyway. Context
+ * travels down the rendered tree instead, where both ends are client
+ * components.
+ *
+ * Null outside a dialog. The same forms are also used inline, where there is
+ * nothing to close.
+ */
+const DialogCloseContext = createContext<(() => void) | null>(null);
+
+export function useDialogClose(): (() => void) | null {
+  return useContext(DialogCloseContext);
+}
+
+/**
+ * The dialog's footer: Cancel on the left, the action on the right.
+ *
+ * Pulled out to the dialog's own edges with negative margins so the rule above
+ * it spans the full width, the way it does under the header.
+ */
+export function DialogFooter({
+  children,
+  className = '',
+}: {
+  children: ReactNode;
+  /** Lets the footer keep its place in a form laid out as a grid. */
+  className?: string;
+}) {
+  const close = useDialogClose();
+
+  if (!close) return <div className={`mt-5 ${className}`}>{children}</div>;
+
+  return (
+    <div
+      className={`-mx-6 -mb-5 mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-slate-50/60 px-6 py-4 ${className}`}
+    >
+      <button type="button" onClick={close} className={SECONDARY_BUTTON}>
+        Cancel
+      </button>
+      {children}
+    </div>
   );
 }

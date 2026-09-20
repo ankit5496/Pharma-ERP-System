@@ -1,10 +1,16 @@
 import {
+  ALLOCATION_STATUSES,
+  ALLOCATION_STATUS_LABELS,
+  SCHEDULE_CATEGORIES,
   SCHEDULE_CATEGORY_LABELS,
   type AllocationRow,
   type SalesOrderListItem,
 } from '@pharma-erp/types';
 
 import { apiFetch } from '@/lib/api';
+
+import { choicesFrom, matchesChoice, withinDates, paginate, type Filters } from './filtering';
+import { FilterPanel, FilterToggle, ListPagerBar, PanelSearch } from './panel-toolbar';
 
 import { AllocateOrderButton, AllocationRowActions } from './allocation-actions';
 import {
@@ -18,12 +24,39 @@ import {
   Panel,
   Quantity,
   StatusBadge,
-  StepHeader,
   Table,
 } from './ui';
 
+const ALLOCATION_FILTERS = [
+  {
+    param: 'status',
+    label: 'Status',
+    allLabel: 'Any status',
+    choices: choicesFrom(ALLOCATION_STATUSES, ALLOCATION_STATUS_LABELS),
+  },
+  {
+    param: 'schedule',
+    label: 'Schedule',
+    allLabel: 'Any schedule',
+    choices: choicesFrom(SCHEDULE_CATEGORIES, SCHEDULE_CATEGORY_LABELS),
+  },
+  // Which reservations are running out — the question FEFO exists to answer,
+  // and one no search term can express.
+  { param: 'expiryFrom', label: 'Expires on or after' },
+  { param: 'expiryTo', label: 'Expires on or before' },
+] as const;
+
+const AWAITING_COLUMNS = [
+  'Order',
+  'Customer',
+  'Date',
+  col.right('Lines'),
+  'Status',
+  'Actions',
+] as const;
+
 const COLUMNS = [
-  'Order #',
+  'Order',
   'Product',
   'Batch',
   'Expiry',
@@ -44,9 +77,17 @@ const COLUMNS = [
  * decision is legible: the batch at the top is the one that was closest to
  * expiring, which is why it was picked.
  */
-export async function AllocationPanel() {
+export async function AllocationPanel({
+  search,
+  filters,
+}: {
+  search?: string;
+  filters: Filters;
+}) {
+  const query = search ? `?search=${encodeURIComponent(search)}` : '';
+
   const [allocations, orders] = await Promise.all([
-    apiFetch<AllocationRow[]>('/api/v1/order-to-cash/allocation', { authenticated: true }),
+    apiFetch<AllocationRow[]>(`/api/v1/order-to-cash/allocation${query}`, { authenticated: true }),
     apiFetch<SalesOrderListItem[]>('/api/v1/order-to-cash/sales-orders', { authenticated: true }),
   ]);
 
@@ -62,13 +103,22 @@ export async function AllocationPanel() {
       )
     : [];
 
+  // The reservations, narrowed by the Filter panel. Status and schedule are
+  // closed sets and expiry is a date — none of them is something to type.
+  const reservations = allocations.ok
+    ? allocations.data.filter(
+        (row) =>
+          matchesChoice(row.status, filters.status) &&
+          matchesChoice(row.scheduleCategory, filters.schedule) &&
+          withinDates(row.expiryDate, filters.expiryFrom, filters.expiryTo),
+      )
+    : [];
+
+  // One page of it. The list is already in hand, so paging is a slice.
+  const paged = paginate(reservations, filters);
+
   return (
     <>
-      <StepHeader
-        title="Allocation"
-        description="Reserving released batches against an approved order, nearest expiry first. Quarantined, expired and unreleased stock is never a candidate."
-      />
-
       <div className="mb-6">
         <Panel heading="Awaiting stock" count={awaiting.length} noun="order">
           {!orders.ok ? (
@@ -79,60 +129,93 @@ export async function AllocationPanel() {
               hint="An order appears here once it has passed both the licence and the credit check."
             />
           ) : (
-            <ul className="divide-y divide-slate-100">
+            <Table columns={AWAITING_COLUMNS} minWidth="min-w-[48rem]">
               {awaiting.map((order) => (
-                <li
-                  key={order.id}
-                  className="flex flex-wrap items-center justify-between gap-3 px-5 py-3.5"
-                >
-                  <div>
-                    <p className="font-mono text-xs font-medium text-slate-900">
-                      {order.orderNumber}
-                    </p>
-                    <p className="mt-0.5 text-sm text-slate-700">{order.customerName}</p>
-                    <p className="mt-0.5 text-[11px] text-slate-500">
-                      {order.itemCount} line{order.itemCount === 1 ? '' : 's'} ·{' '}
-                      {formatDate(order.orderDate)} · <StatusBadgeInline status={order.status} />
-                    </p>
-                  </div>
-                  <AllocateOrderButton salesOrderId={order.id} orderNumber={order.orderNumber} />
-                </li>
+                <AwaitingRow key={order.id} order={order} />
               ))}
-            </ul>
+            </Table>
           )}
         </Panel>
       </div>
 
       <Panel
         heading="Reservations"
-        count={allocations.ok ? allocations.data.length : undefined}
+        count={allocations.ok ? reservations.length : undefined}
         noun="reservation"
-        footer="Expiry and schedule are shown as they stood WHEN THE STOCK WAS RESERVED, not as they are now. A later correction to the batch or item master does not rewrite what was checked."
+        action={
+          <>
+            <PanelSearch stepKey="allocation" placeholder="Search allocations…" />
+            <FilterToggle fields={ALLOCATION_FILTERS} />
+          </>
+        }
       >
+        <FilterPanel fields={ALLOCATION_FILTERS} />
         {!allocations.ok ? (
           <ErrorState what="allocations" message={allocations.error} />
-        ) : allocations.data.length === 0 ? (
+        ) : reservations.length === 0 ? (
           <EmptyState
             title="No stock has been reserved yet."
             hint="Allocate an approved order above. Only RELEASED, unexpired batches with available quantity are eligible."
           />
         ) : (
           <Table columns={COLUMNS}>
-            {allocations.data.map((allocation) => (
+            {paged.rows.map((allocation) => (
               <AllocationTableRow key={allocation.id} allocation={allocation} />
             ))}
           </Table>
         )}
+
+        <ListPagerBar
+          page={paged.page}
+          pageCount={paged.pageCount}
+          pageSize={paged.pageSize}
+          first={paged.first}
+          last={paged.last}
+          total={paged.total}
+          noun="reservations"
+        />
       </Panel>
     </>
   );
 }
 
-function StatusBadgeInline({ status }: { status: string }) {
+/**
+ * One order waiting for stock.
+ *
+ * The same columns as every other list in Order-to-Cash: the order, who it is
+ * for, when it was raised, how big it is and where it stands. It was a stack of
+ * three lines per row, which read differently from the table directly below it
+ * holding the same kind of record.
+ */
+function AwaitingRow({ order }: { order: SalesOrderListItem }) {
   return (
-    <span className="align-middle">
-      <StatusBadge status={status} />
-    </span>
+    <tr>
+      <Cell>
+        <span className="font-mono text-xs font-medium text-slate-900">{order.orderNumber}</span>
+      </Cell>
+
+      <Cell>
+        <span className="text-sm text-slate-800">{order.customerName}</span>
+      </Cell>
+
+      <Cell>
+        <span className="whitespace-nowrap text-xs text-slate-700">
+          {formatDate(order.orderDate)}
+        </span>
+      </Cell>
+
+      <Cell align="right">
+        <span className="text-sm text-slate-800">{order.itemCount}</span>
+      </Cell>
+
+      <Cell>
+        <StatusBadge status={order.status} />
+      </Cell>
+
+      <Cell align="center">
+        <AllocateOrderButton salesOrderId={order.id} orderNumber={order.orderNumber} />
+      </Cell>
+    </tr>
   );
 }
 

@@ -198,9 +198,16 @@ export const WORKFLOWS: readonly Workflow[] = [
     ],
   },
   {
+    // NO `purpose`, like Production & Quality Gate above. The tab already says
+    // Order-to-Cash and each panel's card names what it holds, so the subtitle
+    // was a third restatement on the same screen. Withdrawn at the product
+    // owner's request on 2026-09-19.
+    //
+    // The field stays optional rather than being deleted: Procure-to-Pay and
+    // Job Work still carry one, and `layout.tsx` already renders it only when
+    // present.
     key: 'order-to-cash',
     label: 'Order-to-Cash',
-    purpose: 'Selling finished product to distributors and collecting payment.',
     steps: [
       {
         key: 'customers',

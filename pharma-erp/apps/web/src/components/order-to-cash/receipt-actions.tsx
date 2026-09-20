@@ -1,5 +1,6 @@
 'use client';
 
+import { RowActionMenu, type RowAction } from '@/components/row-action-menu';
 import { useState, useTransition } from 'react';
 import {
   PAYMENT_METHODS,
@@ -9,9 +10,10 @@ import {
 } from '@pharma-erp/types';
 
 import { bounceReceiptAction, createReceiptAction, updateReceiptAction } from './actions';
-import { EditButton, EditDialog } from './edit-kit';
+import { EditDialog } from './edit-kit';
+import { DialogFooter } from './modal';
 import { SearchableSelect } from './searchable-select';
-import { DANGER_BUTTON, Money, Note, PRIMARY_BUTTON, SECONDARY_BUTTON, formatDate } from './ui';
+import { Money, Note, PRIMARY_BUTTON, SECONDARY_BUTTON, formatDate } from './ui';
 
 /**
  * Records a payment against an invoice.
@@ -27,10 +29,17 @@ export function NewReceiptForm({
   invoices,
   invoicesError,
   totalOutstanding,
+  inDialog = false,
 }: {
   invoices: readonly SalesInvoiceListItem[];
   invoicesError: string | null;
   totalOutstanding: string;
+  /**
+   * Rendered inside the panel's create dialog, which already supplies the
+   * title, the description and a way out — so the trigger card and the
+   * internal header are suppressed rather than drawn twice.
+   */
+  inDialog?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [selectedId, setSelectedId] = useState('');
@@ -47,7 +56,7 @@ export function NewReceiptForm({
     amount.trim() !== '' &&
     Number(amount) > Number(selected.amountOutstanding);
 
-  if (!open) {
+  if (!inDialog && !open) {
     return (
       <div className="flex items-center justify-between gap-4 rounded-lg border border-slate-200 bg-white px-5 py-4 shadow-sm">
         <div>
@@ -69,14 +78,15 @@ export function NewReceiptForm({
           disabled={invoices.length === 0}
           className={PRIMARY_BUTTON}
         >
-          + New receipt
+          New receipt
         </button>
       </div>
     );
   }
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+    <div className={inDialog ? '' : 'rounded-lg border border-slate-200 bg-white p-6 shadow-sm'}>
+      {!inDialog && (
       <div className="flex items-start justify-between gap-4">
         <div>
           <h3 className="text-base font-semibold text-slate-900">New receipt</h3>
@@ -95,6 +105,7 @@ export function NewReceiptForm({
           Cancel
         </button>
       </div>
+      )}
 
       {invoicesError && (
         <div className="mt-5">
@@ -135,7 +146,7 @@ export function NewReceiptForm({
           });
         }}
       >
-        <div className="lg:col-span-2">
+        <div>
           <label htmlFor="rcp-invoice" className="field-label">
             Invoice <span className="text-red-600">*</span>
           </label>
@@ -155,8 +166,9 @@ export function NewReceiptForm({
               placeholder="Search by invoice number or customer…"
               options={invoices.map((invoice) => ({
                 value: invoice.id,
-                label: `${invoice.invoiceNumber} — ${invoice.customerName}`,
-                hint: `${invoice.amountOutstanding} due`,
+                label: invoice.customerName,
+                hint: `${invoice.invoiceNumber} · ${invoice.amountOutstanding} due`,
+                keywords: invoice.invoiceNumber,
               }))}
             />
           </div>
@@ -182,7 +194,7 @@ export function NewReceiptForm({
             type="date"
             required
             defaultValue={new Date().toISOString().slice(0, 10)}
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           />
         </div>
 
@@ -197,7 +209,7 @@ export function NewReceiptForm({
             inputMode="decimal"
             value={amount}
             onChange={(event) => setAmount(event.target.value)}
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           />
         </div>
 
@@ -206,31 +218,33 @@ export function NewReceiptForm({
             seeing it beside the field is what stops the refusal happening. */}
         <div>
           <p className="field-label">Outstanding balance</p>
-          <div className="mt-1.5 rounded-md border border-slate-200 bg-slate-50 px-3 py-2.5">
+          <div className="mt-1.5 flex h-10 items-center rounded-md border border-slate-200 bg-slate-50 px-3">
             {selected ? (
-              <>
-                <p className="text-sm font-semibold text-slate-900">
-                  <Money value={selected.amountOutstanding} />
-                </p>
-                <p className="mt-0.5 text-[11px] text-slate-500">
-                  {selected.invoiceNumber} · total <Money value={selected.grandTotal} />, paid{' '}
-                  <Money value={selected.amountPaid} />
-                  {selected.amountCredited !== '0.00' && (
-                    <>
-                      , credited <Money value={selected.amountCredited} />
-                    </>
-                  )}
-                </p>
-                {over && (
-                  <p className="mt-1 text-[11px] font-semibold text-red-700">
-                    This receipt is more than is outstanding.
-                  </p>
-                )}
-              </>
+              <p className="text-sm font-semibold text-slate-900">
+                <Money value={selected.amountOutstanding} />
+              </p>
             ) : (
               <p className="text-sm text-slate-400">Choose an invoice first.</p>
             )}
           </div>
+          {selected && (
+            <>
+              <p className="field-hint">
+                {selected.invoiceNumber} · total <Money value={selected.grandTotal} />, paid{' '}
+                <Money value={selected.amountPaid} />
+                {selected.amountCredited !== '0.00' && (
+                  <>
+                    , credited <Money value={selected.amountCredited} />
+                  </>
+                )}
+              </p>
+              {over && (
+                <p className="mt-1 text-[11px] font-semibold text-red-700">
+                  This receipt is more than is outstanding.
+                </p>
+              )}
+            </>
+          )}
         </div>
 
         <div>
@@ -242,7 +256,7 @@ export function NewReceiptForm({
             name="paymentMethod"
             required
             defaultValue="BANK_TRANSFER"
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           >
             {PAYMENT_METHODS.map((method) => (
               <option key={method} value={method}>
@@ -261,7 +275,7 @@ export function NewReceiptForm({
             name="referenceNumber"
             maxLength={64}
             autoComplete="off"
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           />
           <p className="field-hint">UTR, cheque number or UPI reference.</p>
         </div>
@@ -275,15 +289,15 @@ export function NewReceiptForm({
             name="notes"
             maxLength={2000}
             autoComplete="off"
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           />
         </div>
 
-        <div className="sm:col-span-2 lg:col-span-3">
+        <DialogFooter className="sm:col-span-2 lg:col-span-3">
           <button type="submit" disabled={pending} className={PRIMARY_BUTTON}>
             {pending ? 'Recording…' : 'Record payment'}
           </button>
-        </div>
+        </DialogFooter>
       </form>
     </div>
   );
@@ -302,46 +316,56 @@ export function ReceiptRowActions({ receipt }: { receipt: ReceiptListItem }) {
   const [editing, setEditing] = useState(false);
   const [pending, startTransition] = useTransition();
 
-  if (receipt.status === 'BOUNCED') {
-    return <span className="text-xs text-slate-400">Reversed</span>;
-  }
+  const bounce = () => {
+    const reason = window.prompt(
+      `Mark receipt ${receipt.receiptNumber} as bounced?
 
-  if (receipt.status === 'CANCELLED') {
-    return <span className="text-xs text-slate-400">—</span>;
-  }
+` +
+        `The amount goes back onto the customer's balance and the invoice reverts to ` +
+        `unpaid or part paid. Reason (optional):`,
+    );
+
+    if (reason === null) return;
+
+    setError(null);
+    startTransition(async () => {
+      const result = await bounceReceiptAction(receipt.id, reason || undefined);
+      if (!result.ok) setError(result.error ?? 'That did not work.');
+    });
+  };
+
+  // A receipt that has already been reversed or cancelled has nothing further
+  // that can be done to it, so the whole menu is closed rather than opening on
+  // two greyed entries.
+  const settled =
+    receipt.status === 'BOUNCED'
+      ? 'This receipt has already been reversed.'
+      : receipt.status === 'CANCELLED'
+        ? 'This receipt was cancelled.'
+        : null;
+
+  const actions: RowAction[] = [
+    {
+      label: 'Edit',
+      onSelect: () => setEditing(true),
+      // RECORDED only: once cleared or bounced the receipt is part of a settled
+      // position. The amount is never editable — see the service.
+      disabledReason:
+        receipt.status === 'RECORDED'
+          ? null
+          : 'Only a recorded receipt can be edited — this one has cleared.',
+    },
+    { label: 'Bounced', onSelect: bounce },
+  ];
 
   return (
-    <div className="min-w-[6rem]">
-      {/* RECORDED only: once cleared or bounced the receipt is part of a
-          settled position. The amount is never editable — see the service. */}
-      {receipt.status === 'RECORDED' && (
-        <div className="mb-1.5">
-          <EditButton onClick={() => setEditing(true)} />
-        </div>
-      )}
-
-      <button
-        type="button"
-        disabled={pending}
-        onClick={() => {
-          const reason = window.prompt(
-            `Mark receipt ${receipt.receiptNumber} as bounced?\n\n` +
-              `The amount goes back onto the customer's balance and the invoice reverts to ` +
-              `unpaid or part paid. Reason (optional):`,
-          );
-
-          if (reason === null) return;
-
-          setError(null);
-          startTransition(async () => {
-            const result = await bounceReceiptAction(receipt.id, reason || undefined);
-            if (!result.ok) setError(result.error ?? 'That did not work.');
-          });
-        }}
-        className={DANGER_BUTTON}
-      >
-        Bounced
-      </button>
+    <>
+      <RowActionMenu
+        label={receipt.receiptNumber}
+        actions={actions}
+        busy={pending}
+        disabledReason={settled}
+      />
 
       {error && (
         <p role="alert" className="mt-2 max-w-xs text-xs text-red-700">
@@ -380,6 +404,6 @@ export function ReceiptRowActions({ receipt }: { receipt: ReceiptListItem }) {
           onSave={(patch) => updateReceiptAction(receipt.id, patch)}
         />
       )}
-    </div>
+    </>
   );
 }

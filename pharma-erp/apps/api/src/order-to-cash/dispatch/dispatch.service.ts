@@ -36,6 +36,13 @@ export class DispatchService {
                 { dispatchNumber: { contains: term, mode: 'insensitive' } },
                 { salesOrder: { orderNumber: { contains: term, mode: 'insensitive' } } },
                 { customer: { name: { contains: term, mode: 'insensitive' } } },
+                // The consignment details, which appear on no filter: these
+                // are what someone has in hand when a transporter calls.
+                { transporterName: { contains: term, mode: 'insensitive' } },
+                { vehicleNumber: { contains: term, mode: 'insensitive' } },
+                { lrNumber: { contains: term, mode: 'insensitive' } },
+                { ewayBillNumber: { contains: term, mode: 'insensitive' } },
+                { salesInvoice: { invoiceNumber: { contains: term, mode: 'insensitive' } } },
               ],
             }
           : {}),

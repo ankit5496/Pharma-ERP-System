@@ -1,11 +1,12 @@
 'use client';
 
+import { RowActionMenu, type RowAction } from '@/components/row-action-menu';
 import { useState, useTransition } from 'react';
 import type { SalesInvoiceListItem } from '@pharma-erp/types';
 
 import { cancelInvoiceAction, issueInvoiceAction, updateInvoiceAction } from './actions';
-import { EditButton, EditDialog } from './edit-kit';
-import { DANGER_BUTTON, Note, PRIMARY_BUTTON } from './ui';
+import { EditDialog } from './edit-kit';
+import { Note, PRIMARY_BUTTON } from './ui';
 
 /**
  * Issues the tax invoice for a confirmed dispatch.
@@ -136,49 +137,40 @@ export function InvoiceRowActions({ invoice }: { invoice: SalesInvoiceListItem }
     />
   ) : null;
 
-  if (!canCancel) {
-    return (
-      <div className="min-w-[8rem]">
-        <EditButton onClick={() => setEditing(true)} />
-        <p
-          className="mt-1 text-[11px] text-slate-400"
-          title="Raise a sales return against this invoice"
-        >
-          Return only
-        </p>
-        {editDialog}
-      </div>
+  const cancel = () => {
+    const reason = window.prompt(
+      `Cancel invoice ${invoice.invoiceNumber}?
+
+` +
+        `The number stays used and the receivable is reversed with a visible ` +
+        `adjustment — nothing is deleted. Reason (optional):`,
     );
-  }
+
+    if (reason === null) return;
+
+    setError(null);
+    startTransition(async () => {
+      const result = await cancelInvoiceAction(invoice.id, reason || undefined);
+      if (!result.ok) setError(result.error ?? 'That did not work.');
+    });
+  };
+
+  const actions: RowAction[] = [
+    { label: 'Edit', onSelect: () => setEditing(true) },
+    {
+      label: 'Cancel',
+      onSelect: cancel,
+      // An invoice with money or a return against it is corrected by raising a
+      // sales return, not by cancelling what has already been acted on.
+      disabledReason: canCancel
+        ? null
+        : 'This invoice can only be corrected by raising a sales return against it.',
+    },
+  ];
 
   return (
-    <div className="min-w-[7rem]">
-      <div className="mb-1.5">
-        <EditButton onClick={() => setEditing(true)} />
-      </div>
-
-      <button
-        type="button"
-        disabled={pending}
-        onClick={() => {
-          const reason = window.prompt(
-            `Cancel invoice ${invoice.invoiceNumber}?\n\n` +
-              `The number stays used and the receivable is reversed with a visible ` +
-              `adjustment — nothing is deleted. Reason (optional):`,
-          );
-
-          if (reason === null) return;
-
-          setError(null);
-          startTransition(async () => {
-            const result = await cancelInvoiceAction(invoice.id, reason || undefined);
-            if (!result.ok) setError(result.error ?? 'That did not work.');
-          });
-        }}
-        className={DANGER_BUTTON}
-      >
-        Cancel
-      </button>
+    <>
+      <RowActionMenu label={invoice.invoiceNumber} actions={actions} busy={pending} />
 
       {error && (
         <p role="alert" className="mt-2 max-w-xs text-xs text-red-700">
@@ -187,6 +179,6 @@ export function InvoiceRowActions({ invoice }: { invoice: SalesInvoiceListItem }
       )}
 
       {editDialog}
-    </div>
+    </>
   );
 }

@@ -8,17 +8,19 @@ import {
   type SalesOrderListItem,
 } from '@pharma-erp/types';
 
+import { RowActionMenu, type RowAction } from '@/components/row-action-menu';
+
 import {
   cancelSalesOrderAction,
   createSalesOrderAction,
   updateSalesOrderAction,
   type NewOrderLine,
 } from './actions';
-import { EditButton, EditDialog } from './edit-kit';
+import { EditDialog } from './edit-kit';
 import { SearchableSelect } from './searchable-select';
+import { DialogFooter } from './modal';
 import {
   Badge,
-  DANGER_BUTTON,
   Note,
   PRIMARY_BUTTON,
   SECONDARY_BUTTON,
@@ -68,11 +70,18 @@ export function NewSalesOrderForm({
   items,
   customersError,
   itemsError,
+  inDialog = false,
 }: {
   customers: readonly CustomerListItem[];
   items: readonly ItemListItem[];
   customersError: string | null;
   itemsError: string | null;
+  /**
+   * Rendered inside the panel's create dialog, which already supplies the
+   * title, the description and a way out — so the trigger card and the
+   * internal header are suppressed rather than drawn twice.
+   */
+  inDialog?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [customerId, setCustomerId] = useState('');
@@ -121,7 +130,7 @@ export function NewSalesOrderForm({
     setRequestedDeliveryDate('');
   };
 
-  if (!open) {
+  if (!inDialog && !open) {
     return (
       <div className="flex items-center justify-between gap-4 rounded-lg border border-slate-200 bg-white px-5 py-4 shadow-sm">
         <div>
@@ -132,7 +141,7 @@ export function NewSalesOrderForm({
           </p>
         </div>
         <button type="button" onClick={() => setOpen(true)} className={PRIMARY_BUTTON}>
-          + New sales order
+          New sales order
         </button>
       </div>
     );
@@ -145,7 +154,8 @@ export function NewSalesOrderForm({
   }
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+    <div className={inDialog ? '' : 'rounded-lg border border-slate-200 bg-white p-6 shadow-sm'}>
+      {!inDialog && (
       <div className="flex items-start justify-between gap-4">
         <div>
           <h3 className="text-base font-semibold text-slate-900">New sales order</h3>
@@ -164,6 +174,7 @@ export function NewSalesOrderForm({
           Cancel
         </button>
       </div>
+      )}
 
       {(customersError || itemsError) && (
         <div className="mt-5">
@@ -197,8 +208,9 @@ export function NewSalesOrderForm({
               placeholder="Search by code or name…"
               options={customers.map((candidate) => ({
                 value: candidate.id,
-                label: `${candidate.code} — ${candidate.name}`,
+                label: candidate.name,
                 hint: candidate.hasValidLicence ? undefined : 'no valid licence',
+                keywords: candidate.code,
               }))}
             />
           </div>
@@ -245,7 +257,7 @@ export function NewSalesOrderForm({
             type="date"
             value={orderDate}
             onChange={(event) => setOrderDate(event.target.value)}
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           />
         </div>
 
@@ -258,7 +270,7 @@ export function NewSalesOrderForm({
             type="date"
             value={requestedDeliveryDate}
             onChange={(event) => setRequestedDeliveryDate(event.target.value)}
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           />
         </div>
       </div>
@@ -283,9 +295,9 @@ export function NewSalesOrderForm({
               return (
                 <div
                   key={line.key}
-                  className="grid gap-2.5 rounded-md border border-slate-200 bg-slate-50 p-3 sm:grid-cols-12"
+                  className="grid gap-2.5 rounded-md border border-slate-200 bg-slate-50 p-3 sm:grid-cols-[2.5fr_1fr_1fr_1fr_auto]"
                 >
-                  <div className="sm:col-span-5">
+                  <div>
                     <SearchableSelect
                       small
                       ariaLabel="Product"
@@ -349,7 +361,7 @@ export function NewSalesOrderForm({
                     )}
                   </div>
 
-                  <div className="sm:col-span-2">
+                  <div>
                     <input
                       aria-label="Quantity"
                       inputMode="decimal"
@@ -364,11 +376,11 @@ export function NewSalesOrderForm({
                           ),
                         )
                       }
-                      className="field-sm w-full"
+                      className="field-sm h-9 w-full"
                     />
                   </div>
 
-                  <div className="sm:col-span-2">
+                  <div>
                     <input
                       aria-label="Unit price"
                       inputMode="decimal"
@@ -383,11 +395,11 @@ export function NewSalesOrderForm({
                           ),
                         )
                       }
-                      className="field-sm w-full"
+                      className="field-sm h-9 w-full"
                     />
                   </div>
 
-                  <div className="sm:col-span-2">
+                  <div>
                     <input
                       aria-label="Discount percent"
                       inputMode="decimal"
@@ -402,11 +414,11 @@ export function NewSalesOrderForm({
                           ),
                         )
                       }
-                      className="field-sm w-full"
+                      className="field-sm h-9 w-full"
                     />
                   </div>
 
-                  <div className="flex items-start sm:col-span-1">
+                  <div className="flex items-start">
                     {lines.length > 1 && (
                       <button
                         type="button"
@@ -458,7 +470,7 @@ export function NewSalesOrderForm({
         </div>
       )}
 
-      <div className="mt-5 flex gap-2">
+      <DialogFooter className="flex gap-2">
         <button
           type="button"
           disabled={pending || !customerId || lines.length === 0}
@@ -525,7 +537,7 @@ export function NewSalesOrderForm({
         >
           {pending ? 'Checking stock…' : 'Create order'}
         </button>
-      </div>
+      </DialogFooter>
 
       {/* The ONLY message this form shows, and only on failure. It sits beside
           the button because a stock refusal names a quantity the user must now
@@ -560,36 +572,41 @@ export function SalesOrderRowActions({ order }: { order: SalesOrderListItem }) {
 
   const canCancel = !['COMPLETED', 'CANCELLED'].includes(order.status);
 
+  const cancel = () => {
+    const reason = window.prompt(`Cancel ${order.orderNumber}? Reason (optional):`);
+
+    // `prompt` returns null when dismissed and '' when submitted empty. Only
+    // null means "changed my mind".
+    if (reason === null) return;
+
+    setError(null);
+    startTransition(async () => {
+      const result = await cancelSalesOrderAction(order.id, reason || undefined);
+      if (!result.ok) setError(result.error ?? 'That did not work.');
+    });
+  };
+
+  const actions: RowAction[] = [
+    {
+      label: 'Edit',
+      onSelect: () => setEditing(true),
+      // DRAFT only: once the gate has run the order carries a verdict, and once
+      // allocated it has stock reserved. The API refuses either.
+      disabledReason:
+        order.status === 'DRAFT'
+          ? null
+          : 'Only a draft order can be edited. This one has been checked or has stock allocated.',
+    },
+    {
+      label: 'Cancel',
+      onSelect: cancel,
+      disabledReason: canCancel ? null : 'This order is already completed or cancelled.',
+    },
+  ];
+
   return (
-    <div className="min-w-[10rem]">
-      <div className="flex flex-wrap gap-1.5">
-        {/* DRAFT only: once the gate has run the order carries a verdict, and
-            once allocated it has stock reserved. The API refuses either. */}
-        {order.status === 'DRAFT' && <EditButton onClick={() => setEditing(true)} />}
-
-        {canCancel && (
-          <button
-            type="button"
-            disabled={pending}
-            onClick={() => {
-              const reason = window.prompt(`Cancel ${order.orderNumber}? Reason (optional):`);
-
-              // `prompt` returns null when dismissed and '' when submitted
-              // empty. Only null means "changed my mind".
-              if (reason === null) return;
-
-              setError(null);
-              startTransition(async () => {
-                const result = await cancelSalesOrderAction(order.id, reason || undefined);
-                if (!result.ok) setError(result.error ?? 'That did not work.');
-              });
-            }}
-            className={DANGER_BUTTON}
-          >
-            Cancel
-          </button>
-        )}
-      </div>
+    <>
+      <RowActionMenu label={order.orderNumber} actions={actions} busy={pending} />
 
       {editing && (
         <EditDialog
@@ -616,7 +633,6 @@ export function SalesOrderRowActions({ order }: { order: SalesOrderListItem }) {
           {error}
         </p>
       )}
-
-    </div>
+    </>
   );
 }

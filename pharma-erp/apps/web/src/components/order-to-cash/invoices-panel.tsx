@@ -1,10 +1,15 @@
-import type {
-  DispatchListItem,
-  SalesInvoiceListItem,
-  SalesOrderListItem,
+import {
+  O2C_PAYMENT_STATUSES,
+  O2C_PAYMENT_STATUS_LABELS,
+  type DispatchListItem,
+  type SalesInvoiceListItem,
+  type SalesOrderListItem,
 } from '@pharma-erp/types';
 
 import { apiFetch } from '@/lib/api';
+
+import { choicesFrom, matchesChoice, withinDates, paginate, type Filters } from './filtering';
+import { FilterPanel, FilterToggle, ListPagerBar, PanelSearch } from './panel-toolbar';
 
 import { IssueInvoiceButton, InvoiceRowActions } from './invoice-actions';
 import {
@@ -17,12 +22,32 @@ import {
   Money,
   Panel,
   StatusBadge,
-  StepHeader,
   Table,
 } from './ui';
 
+const INVOICE_FILTERS = [
+  {
+    param: 'status',
+    label: 'Status',
+    allLabel: 'Any status',
+    choices: [
+      { value: 'DRAFT', label: 'Draft' },
+      { value: 'ISSUED', label: 'Issued' },
+      { value: 'CANCELLED', label: 'Cancelled' },
+    ],
+  },
+  {
+    param: 'paymentStatus',
+    label: 'Payment',
+    allLabel: 'Any payment state',
+    choices: choicesFrom(O2C_PAYMENT_STATUSES, O2C_PAYMENT_STATUS_LABELS),
+  },
+  { param: 'dateFrom', label: 'Date from' },
+  { param: 'dateTo', label: 'Date to' },
+] as const;
+
 const READY_COLUMNS = [
-  'Order #',
+  'Order',
   'Customer',
   'Order date',
   col.right('Order value'),
@@ -32,7 +57,7 @@ const READY_COLUMNS = [
 ] as const;
 
 const COLUMNS = [
-  'Invoice #',
+  'Invoice',
   'Customer',
   'Date',
   col.right('Subtotal'),
@@ -52,7 +77,13 @@ const COLUMNS = [
  * line-picker anywhere on it: the batches billed are the batches FEFO reserved,
  * and the only input is which order to bill.
  */
-export async function InvoicesPanel({ search }: { search?: string }) {
+export async function InvoicesPanel({
+  search,
+  filters,
+}: {
+  search?: string;
+  filters: Filters;
+}) {
   const query = search ? `?search=${encodeURIComponent(search)}` : '';
 
   const [invoices, orders, dispatches] = await Promise.all([
@@ -89,13 +120,23 @@ export async function InvoicesPanel({ search }: { search?: string }) {
     }
   }
 
+  // Status, payment state and the invoice date: a closed set, a closed set and
+  // a range. What is typed — numbers, customer, GSTIN, the order it came from —
+  // is answered by the API instead.
+  const visible = invoices.ok
+    ? invoices.data.filter(
+        (row) =>
+          matchesChoice(row.status, filters.status) &&
+          matchesChoice(row.paymentStatus, filters.paymentStatus) &&
+          withinDates(row.invoiceDate, filters.dateFrom, filters.dateTo),
+      )
+    : [];
+
+  // One page of it. The list is already in hand, so paging is a slice.
+  const paged = paginate(visible, filters);
+
   return (
     <>
-      <StepHeader
-        title="Invoices"
-        description="Tax invoices raised from an order's reserved batches. GST is split from the place of supply, and any DPCO or NLEM ceiling price is checked before the invoice is issued."
-      />
-
       <div className="mb-6">
         <Panel heading="Ready to invoice" count={readyToInvoice.length} noun="order">
           {!orders.ok ? (
@@ -170,13 +211,19 @@ export async function InvoicesPanel({ search }: { search?: string }) {
 
       <Panel
         heading="Invoices"
-        count={invoices.ok ? invoices.data.length : undefined}
+        count={invoices.ok ? visible.length : undefined}
         noun="invoice"
-        footer="Addresses, GSTIN, HSN codes, rates, batch numbers and expiry dates are snapshotted onto each invoice when it is issued, so a later correction to master data never rewrites a filed document."
+        action={
+          <>
+            <PanelSearch stepKey="invoices" placeholder="Search invoices…" />
+            <FilterToggle fields={INVOICE_FILTERS} />
+          </>
+        }
       >
+        <FilterPanel fields={INVOICE_FILTERS} />
         {!invoices.ok ? (
           <ErrorState what="invoices" message={invoices.error} />
-        ) : invoices.data.length === 0 ? (
+        ) : visible.length === 0 ? (
           <EmptyState
             title={search ? `No invoice matches “${search}”.` : 'No invoices yet.'}
             hint={
@@ -187,11 +234,21 @@ export async function InvoicesPanel({ search }: { search?: string }) {
           />
         ) : (
           <Table columns={COLUMNS}>
-            {invoices.data.map((invoice) => (
+            {paged.rows.map((invoice) => (
               <InvoiceRow key={invoice.id} invoice={invoice} />
             ))}
           </Table>
         )}
+
+        <ListPagerBar
+          page={paged.page}
+          pageCount={paged.pageCount}
+          pageSize={paged.pageSize}
+          first={paged.first}
+          last={paged.last}
+          total={paged.total}
+          noun="invoices"
+        />
       </Panel>
     </>
   );

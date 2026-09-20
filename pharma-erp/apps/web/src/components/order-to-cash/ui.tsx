@@ -24,54 +24,46 @@ import {
 // Page section
 // ---------------------------------------------------------------------------
 
-/** A step's heading and one-line description, above its content. */
-export function StepHeader({
-  title,
-  description,
-  action,
-}: {
-  title: string;
-  description: string;
-  action?: ReactNode;
-}) {
-  return (
-    <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-      <div>
-        <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
-        <p className="mt-1 max-w-3xl text-sm text-slate-600">{description}</p>
-      </div>
-      {action}
-    </div>
-  );
-}
 
 /** The card every list sits in, with a count in its header. */
 export function Panel({
   heading,
   count,
   noun,
+  action,
   children,
-  footer,
 }: {
   heading: string;
   count?: number;
   noun?: string;
+  /**
+   * The toolbar: search, filter, and whatever creates a record. It sits on the
+   * header row beside the count rather than in a band above the table, so the
+   * list stays the tallest thing on the screen — the same arrangement
+   * Procure-to-Pay uses.
+   */
+  action?: ReactNode;
   children: ReactNode;
-  footer?: ReactNode;
 }) {
   return (
     <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
-      <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3.5">
-        <h3 className="text-base font-semibold text-slate-900">
-          {count === undefined
-            ? heading
-            : `${count} ${noun ?? heading.toLowerCase()}${count === 1 ? '' : 's'}`}
-        </h3>
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 border-b border-slate-200 px-5 py-3.5">
+        {/* The name of the list, then how long it is — the arrangement
+            Procure-to-Pay uses. The count alone ("6 orders") left the panel
+            with no title at all, so which list you were looking at had to be
+            inferred from the columns. */}
+        <div>
+          <h3 className="text-base font-semibold text-slate-900">{heading}</h3>
+          {count !== undefined && (
+            <p className="mt-0.5 text-sm text-slate-500">
+              {count} {noun ?? heading.toLowerCase()}
+              {count === 1 ? '' : 's'}
+            </p>
+          )}
+        </div>
+        {action && <div className="flex flex-wrap items-center gap-2">{action}</div>}
       </div>
       {children}
-      {footer && (
-        <div className="border-t border-slate-200 px-5 py-3 text-xs text-slate-500">{footer}</div>
-      )}
     </section>
   );
 }
@@ -88,11 +80,13 @@ export function Panel({
  * type exists to make impossible — the heading and the numbers under it are one
  * column and have to be declared once.
  */
-export type TableColumn = string | { label: string; align: 'left' | 'right' };
+export type TableColumn = string | { label: string; align: 'left' | 'right' | 'center' };
 
-/** Right-aligns a column. `col.right('Amount')` reads better at the call site. */
+/** Aligns a column. `col.right('Amount')` reads better at the call site. */
 export const col = {
   right: (label: string): TableColumn => ({ label, align: 'right' }),
+  /** For a column holding a control rather than a value, e.g. one button. */
+  center: (label: string): TableColumn => ({ label, align: 'center' }),
 };
 
 export function Table({
@@ -129,7 +123,7 @@ export function Table({
                   key={label}
                   scope="col"
                   className={`whitespace-nowrap px-5 py-3 font-medium ${
-                    align === 'right' ? 'text-right' : ''
+                    align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : ''
                   }`}
                 >
                   {label}
@@ -150,13 +144,13 @@ export function Cell({
   className = '',
 }: {
   children: ReactNode;
-  align?: 'left' | 'right';
+  align?: 'left' | 'right' | 'center';
   className?: string;
 }) {
   return (
     <td
       className={`px-5 py-3.5 align-top ${
-        align === 'right' ? 'text-right tabular-nums' : ''
+        align === 'right' ? 'text-right tabular-nums' : align === 'center' ? 'text-center' : ''
       } ${className}`}
     >
       {children}

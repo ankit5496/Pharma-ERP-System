@@ -15,6 +15,7 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { NumberingService } from '../../procurement/numbering.service';
 import { TenantContextService } from '../../tenant/tenant-context.service';
 import { AllocationService } from '../allocation/allocation.service';
+import { licencesOnFile } from '../customers/licences-on-file';
 
 import type { CreateSalesOrderDto, UpdateSalesOrderDto } from './dto/sales-order.dto';
 
@@ -55,6 +56,10 @@ export class SalesOrdersService {
                 { orderNumber: { contains: term, mode: 'insensitive' } },
                 { customer: { name: { contains: term, mode: 'insensitive' } } },
                 { customer: { code: { contains: term, mode: 'insensitive' } } },
+                // The line items, so an order can be found by what is on it.
+                { items: { some: { item: { code: { contains: term, mode: 'insensitive' } } } } },
+                { items: { some: { item: { name: { contains: term, mode: 'insensitive' } } } } },
+                { notes: { contains: term, mode: 'insensitive' } },
               ],
             }
           : {}),
@@ -425,7 +430,12 @@ export class SalesOrdersService {
     // --- Licence gate -------------------------------------------------------
     // A licence has to be BOTH in date and not withdrawn. A suspended licence
     // inside its validity window is still no licence to sell against.
-    const licences = order.customer.customerLicences
+    // Read through licencesOnFile, so this agrees with the Customers tab: a
+    // customer added on the Master Data screen holds their licence on the party
+    // record and has no row in the Order-to-Cash register at all.
+    const onFile = licencesOnFile(order.customer, order.customer.customerLicences);
+
+    const licences = onFile
       .map((licence) => ({
         licence,
         daysToExpiry: Math.round(
@@ -445,7 +455,7 @@ export class SalesOrdersService {
 
     if (!chosen) {
       reasons.push(
-        order.customer.customerLicences.length === 0
+        onFile.length === 0
           ? 'No drug licence is on file for this customer.'
           : 'Every drug licence on file has expired or been withdrawn.',
       );
