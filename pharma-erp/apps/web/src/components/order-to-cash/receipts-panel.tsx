@@ -1,10 +1,23 @@
 import {
+  RECEIPT_STATUSES,
+  RECEIPT_STATUS_LABELS,
+  PAYMENT_METHODS,
   PAYMENT_METHOD_LABELS,
   type ReceiptListItem,
   type SalesInvoiceListItem,
 } from '@pharma-erp/types';
 
 import { apiFetch } from '@/lib/api';
+
+import { choicesFrom, matchesChoice, withinDates, paginate, type Filters } from './filtering';
+
+import {
+  CreateDialogButton,
+  ListPagerBar,
+  FilterPanel,
+  FilterToggle,
+  PanelSearch,
+} from './panel-toolbar';
 
 import { NewReceiptForm, ReceiptRowActions } from './receipt-actions';
 import {
@@ -16,14 +29,30 @@ import {
   Money,
   Panel,
   StatusBadge,
-  StepHeader,
   Table,
 } from './ui';
 
+const RECEIPT_FILTERS = [
+  {
+    param: 'status',
+    label: 'Status',
+    allLabel: 'Any status',
+    choices: choicesFrom(RECEIPT_STATUSES, RECEIPT_STATUS_LABELS),
+  },
+  {
+    param: 'paymentMethod',
+    label: 'Payment method',
+    allLabel: 'Any method',
+    choices: choicesFrom(PAYMENT_METHODS, PAYMENT_METHOD_LABELS),
+  },
+  { param: 'dateFrom', label: 'Date from' },
+  { param: 'dateTo', label: 'Date to' },
+] as const;
+
 const COLUMNS = [
-  'Receipt #',
+  'Receipt',
   'Customer',
-  'Invoice #',
+  'Invoice',
   'Date',
   col.right('Amount'),
   'Payment method',
@@ -41,17 +70,28 @@ const COLUMNS = [
  * system holds no design for advance payments and offering a field that the API
  * would refuse would be worse than not offering it.
  */
-export async function ReceiptsPanel({ search }: { search?: string }) {
+export async function ReceiptsPanel({
+  search,
+  filters,
+}: {
+  search?: string;
+  /**
+   * The Filter panel's selections. Applied here rather than on the wire:
+   * the list endpoint takes only a search term, and the rows are already
+   * loaded. What search covers is deliberately not repeated here — see
+   * filtering.ts.
+   */
+  filters: Filters;
+}) {
   const query = search ? `?search=${encodeURIComponent(search)}` : '';
 
   const [receipts, invoices] = await Promise.all([
     apiFetch<ReceiptListItem[]>(`/api/v1/order-to-cash/receipts${query}`, {
       authenticated: true,
     }),
-    apiFetch<SalesInvoiceListItem[]>(
-      '/api/v1/order-to-cash/sales-invoices?paymentStatus=UNPAID',
-      { authenticated: true },
-    ),
+    apiFetch<SalesInvoiceListItem[]>('/api/v1/order-to-cash/sales-invoices?paymentStatus=UNPAID', {
+      authenticated: true,
+    }),
   ]);
 
   // Part-paid invoices are also collectable, so they are fetched separately and
@@ -71,27 +111,46 @@ export async function ReceiptsPanel({ search }: { search?: string }) {
     0,
   );
 
+  // Filtered after fetching, for the reason in the prop's comment.
+  const visible = receipts.ok
+    ? receipts.data.filter(
+        (row) =>
+          matchesChoice(row.status, filters.status) &&
+          matchesChoice(row.paymentMethod, filters.paymentMethod) &&
+          withinDates(row.receiptDate, filters.dateFrom, filters.dateTo),
+      )
+    : [];
+
+  // One page of it. The list is already in hand, so paging is a slice.
+  const paged = paginate(visible, filters);
+
   return (
     <>
-      <StepHeader
-        title="Receipts"
-        description="Payments collected and applied to an invoice. Recording one reduces the customer's outstanding balance and updates the invoice's payment status."
-      />
-
-      <div className="mb-6">
-        <NewReceiptForm
-          invoices={collectable}
-          invoicesError={invoices.ok ? null : invoices.error}
-          totalOutstanding={totalOutstanding.toFixed(2)}
-        />
-      </div>
-
       <Panel
         heading="Receipts"
-        count={receipts.ok ? receipts.data.length : undefined}
+        count={receipts.ok ? visible.length : undefined}
         noun="receipt"
-        footer="A receipt can never exceed the invoice's outstanding balance — this system holds no payments on account. A bounced cheque is reversed with a visible adjustment, never by deleting the receipt."
+        action={
+          <>
+            <PanelSearch stepKey="receipts" placeholder="Search receipts…" />
+            <FilterToggle fields={RECEIPT_FILTERS} />
+            <CreateDialogButton
+              label="New receipt"
+              title="New receipt"
+              disabled={collectable.length === 0}
+              disabledHint="Nothing is currently outstanding."
+            >
+              <NewReceiptForm
+                inDialog
+                invoices={collectable}
+                invoicesError={invoices.ok ? null : invoices.error}
+                totalOutstanding={totalOutstanding.toFixed(2)}
+              />
+            </CreateDialogButton>
+          </>
+        }
       >
+        <FilterPanel fields={RECEIPT_FILTERS} />
         {!receipts.ok ? (
           <ErrorState what="receipts" message={receipts.error} />
         ) : receipts.data.length === 0 ? (
@@ -105,11 +164,21 @@ export async function ReceiptsPanel({ search }: { search?: string }) {
           />
         ) : (
           <Table columns={COLUMNS}>
-            {receipts.data.map((receipt) => (
+            {paged.rows.map((receipt) => (
               <ReceiptRow key={receipt.id} receipt={receipt} />
             ))}
           </Table>
         )}
+
+        <ListPagerBar
+          page={paged.page}
+          pageCount={paged.pageCount}
+          pageSize={paged.pageSize}
+          first={paged.first}
+          last={paged.last}
+          total={paged.total}
+          noun="receipts"
+        />
       </Panel>
     </>
   );

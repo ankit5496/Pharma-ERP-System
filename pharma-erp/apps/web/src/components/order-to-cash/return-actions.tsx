@@ -1,5 +1,8 @@
 'use client';
 
+import { RowActionMenu, type RowAction } from '@/components/row-action-menu';
+import { pushToast } from '@/components/toast';
+
 import { useMemo, useState, useTransition } from 'react';
 import {
   RETURNED_STOCK_DISPOSITIONS,
@@ -11,7 +14,8 @@ import {
 } from '@pharma-erp/types';
 
 import { createSalesReturnAction, updateSalesReturnAction } from './actions';
-import { EditButton, EditDialog } from './edit-kit';
+import { EditDialog } from './edit-kit';
+import { DialogFooter, useDialogClose } from './modal';
 import { SearchableSelect } from './searchable-select';
 import { Note, PRIMARY_BUTTON, SECONDARY_BUTTON, formatDate, formatQuantity } from './ui';
 
@@ -37,10 +41,18 @@ interface DraftReturnLine {
 export function NewReturnForm({
   invoices,
   invoicesError,
+  inDialog = false,
 }: {
   invoices: readonly SalesInvoiceDetail[];
   invoicesError: string | null;
+  /**
+   * Rendered inside the panel's create dialog, which already supplies the
+   * title, the description and a way out — so the trigger card and the
+   * internal header are suppressed rather than drawn twice.
+   */
+  inDialog?: boolean;
 }) {
+  const closeDialog = useDialogClose();
   const [open, setOpen] = useState(false);
   const [invoiceId, setInvoiceId] = useState('');
   const [returnDate, setReturnDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -66,7 +78,7 @@ export function NewReturnForm({
     setReasonNotes('');
   };
 
-  if (!open) {
+  if (!inDialog && !open) {
     return (
       <div className="flex items-center justify-between gap-4 rounded-lg border border-slate-200 bg-white px-5 py-4 shadow-sm">
         <div>
@@ -83,14 +95,15 @@ export function NewReturnForm({
           disabled={invoices.length === 0}
           className={PRIMARY_BUTTON}
         >
-          + New return
+          New return
         </button>
       </div>
     );
   }
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+    <div className={inDialog ? '' : 'rounded-lg border border-slate-200 bg-white p-6 shadow-sm'}>
+      {!inDialog && (
       <div className="flex items-start justify-between gap-4">
         <div>
           <h3 className="text-base font-semibold text-slate-900">New return</h3>
@@ -109,6 +122,7 @@ export function NewReturnForm({
           Cancel
         </button>
       </div>
+      )}
 
       {invoicesError && (
         <div className="mt-5">
@@ -145,7 +159,9 @@ export function NewReturnForm({
               placeholder="Search by invoice number or customer…"
               options={invoices.map((candidate) => ({
                 value: candidate.id,
-                label: `${candidate.invoiceNumber} — ${candidate.customerName}`,
+                label: candidate.invoiceNumber,
+                hint: candidate.customerName,
+                keywords: candidate.customerName,
               }))}
             />
           </div>
@@ -160,7 +176,7 @@ export function NewReturnForm({
             type="date"
             value={returnDate}
             onChange={(event) => setReturnDate(event.target.value)}
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           />
         </div>
 
@@ -172,7 +188,7 @@ export function NewReturnForm({
             id="ret-reason"
             value={reason}
             onChange={(event) => setReason(event.target.value)}
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           >
             {RETURN_REASONS.map((candidate) => (
               <option key={candidate} value={candidate}>
@@ -314,7 +330,7 @@ export function NewReturnForm({
         />
       </div>
 
-      <div className="mt-5">
+      <DialogFooter>
         <button
           type="button"
           disabled={pending || !invoiceId}
@@ -350,6 +366,13 @@ export function NewReturnForm({
                   text: `Return ${result.data?.returnNumber ?? ''} recorded. Stock has been received into quarantine and the customer credited.`,
                 });
                 reset();
+                pushToast(
+                  'success',
+                  `Return ${result.data?.returnNumber ?? ''} recorded. Stock is in quarantine and the customer is credited.`,
+                );
+                // Saved, so the dialog's work is done. Inline (no dialog) this
+                // is null and the success message below stays on screen instead.
+                closeDialog?.();
               } else {
                 setMessage({ kind: 'error', text: result.error ?? 'That did not work.' });
               }
@@ -359,7 +382,7 @@ export function NewReturnForm({
         >
           {pending ? 'Recording…' : 'Record return & credit'}
         </button>
-      </div>
+      </DialogFooter>
     </div>
   );
 }
@@ -374,13 +397,22 @@ export function NewReturnForm({
 export function SalesReturnRowActions({ salesReturn }: { salesReturn: SalesReturnListItem }) {
   const [editing, setEditing] = useState(false);
 
-  if (salesReturn.status !== 'DRAFT') {
-    return <span className="text-xs text-slate-400">—</span>;
-  }
+  // DRAFT only, so on every other row the trigger is plainly closed rather than
+  // opening on a single greyed entry.
+  const settled =
+    salesReturn.status === 'DRAFT'
+      ? null
+      : 'This return has been received or credited, so it can no longer be changed.';
+
+  const actions: RowAction[] = [{ label: 'Edit', onSelect: () => setEditing(true) }];
 
   return (
-    <div className="min-w-[5rem]">
-      <EditButton onClick={() => setEditing(true)} />
+    <>
+      <RowActionMenu
+        label={salesReturn.returnNumber}
+        actions={actions}
+        disabledReason={settled}
+      />
 
       {editing && (
         <EditDialog
@@ -405,6 +437,6 @@ export function SalesReturnRowActions({ salesReturn }: { salesReturn: SalesRetur
           onSave={(patch) => updateSalesReturnAction(salesReturn.id, patch)}
         />
       )}
-    </div>
+    </>
   );
 }

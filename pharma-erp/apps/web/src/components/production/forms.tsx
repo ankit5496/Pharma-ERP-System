@@ -68,8 +68,11 @@ function useReportOnSaved(state: ActionResult) {
  *   * Inside a register's drawer, the REGISTER does, because it also has to
  *     close the drawer — and the two are one step, so the form is never left
  *     standing open behind the confirmation.
- *   * Inline on a batch card — the packing and release forms — there is no
- *     drawer and no register listening, so this raises it directly.
+ *   * Where no register is listening, this raises it directly. That is the
+ *     packing form, inline on a batch card, and the release form — which does
+ *     open in a drawer, but one PendingReleaseList opens for itself rather
+ *     than a ProductionRegister, so there is no SavedContext above it. Its
+ *     drawer closes when the decided batch drops out of the pending list.
  *
  * `useIsInsideRegister` tells the two apart, rather than a prop every caller
  * would have to set correctly. Without it both would fire and the dialogs
@@ -382,7 +385,7 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
       {/* Ordered as the record reads, not as the inputs happen to be typed:
           the number and the date identify the order, then what it is for, then
           the formulation the requirement below is computed against. */}
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid items-end gap-4 sm:grid-cols-2">
         <ReadOnlyField label="Work order no." value={orderNumber ?? undefined} placeholder="…" />
 
         <div>
@@ -393,7 +396,7 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
         </div>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid items-end gap-4 sm:grid-cols-3">
         <div className="sm:col-span-2">
           <label htmlFor="productId" className={LABEL}>
             Product
@@ -588,7 +591,7 @@ export function IssueMaterialForm({
       {/* US-PROD-02's first two fields, plus the choice of what to dispense
           against. The work order is a PICKER now: this form used to be handed
           one order and no way to reach the others. */}
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid items-end gap-4 sm:grid-cols-2">
         <ReadOnlyField
           label="Issue no."
           value={issueNumber ? <span className="font-mono">{issueNumber}</span> : undefined}
@@ -1017,7 +1020,12 @@ export function RecordBatchForm({ orders }: { orders: ProductionOrderSummary[] }
     <form action={action} className="space-y-4 px-6 py-5">
       <Result state={state} pending={pending} />
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      {/* `items-end` so the CONTROLS line up along one baseline however tall
+          each label turns out to be. "Actual quantity manufactured" wraps to
+          two lines where "Work order" takes one, and without this the short
+          labels left their inputs riding high above the long one's — three
+          boxes at three different heights across one row. */}
+      <div className="grid items-end gap-4 sm:grid-cols-3">
         <div>
           <label htmlFor="productionOrderId" className={LABEL}>
             Work order
@@ -1170,7 +1178,7 @@ export function RecordPackingForm({
           link is structural (this form only exists inside a batch that has
           one), but the story names it as a field and a packing record that
           does not say which batch it belongs to is one nobody can check. */}
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid items-end gap-3 sm:grid-cols-3">
         <ReadOnlyField
           label="Linked BMR"
           value={<span className="font-mono">{batchNumber}</span>}
@@ -1341,8 +1349,12 @@ export function ReleaseDecisionForm({
   const [notes, setNotes] = useState('');
   const canBlock = notes.trim().length > 0;
 
+  // NO CARD OF ITS OWN. This used to sit inline on the register, one per row,
+  // where a bordered grey panel was what separated one batch's controls from
+  // the next. It now opens in a drawer that is already a panel, and a second
+  // border inside the first reads as a box somebody forgot to remove.
   return (
-    <form action={action} className="space-y-3 rounded-md border border-slate-200 bg-slate-50 p-4">
+    <form action={action} className="space-y-3">
       <input type="hidden" name="batchId" value={batchId} />
 
       <Result state={state} pending={pending} />
@@ -1407,8 +1419,8 @@ export function ReleaseDecisionForm({
           ) : (
             <>
               Releasing adds <strong>{packedQuantity}</strong> {uom} of {batchNumber} to sellable
-              stock. Holding withholds it pending further testing; rejecting withholds it for
-              good. None of the three can be undone here.
+              stock. Holding withholds it pending further testing; rejecting withholds it for good.
+              None of the three can be undone here.
             </>
           )}
           {!canBlock && (

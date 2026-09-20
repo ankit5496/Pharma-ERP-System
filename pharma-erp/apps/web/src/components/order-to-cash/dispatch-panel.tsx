@@ -1,6 +1,17 @@
+import { DISPATCH_STATUSES, DISPATCH_STATUS_LABELS } from '@pharma-erp/types';
 import type { AllocationRow, DispatchListItem } from '@pharma-erp/types';
 
 import { apiFetch } from '@/lib/api';
+
+import { choicesFrom, matchesChoice, withinDates, paginate, type Filters } from './filtering';
+
+import {
+  CreateDialogButton,
+  ListPagerBar,
+  FilterPanel,
+  FilterToggle,
+  PanelSearch,
+} from './panel-toolbar';
 
 import { DispatchRowActions, NewDispatchForm, type ReadyOrder } from './dispatch-actions';
 import {
@@ -12,14 +23,24 @@ import {
   Panel,
   Quantity,
   StatusBadge,
-  StepHeader,
   Table,
 } from './ui';
 
+const DISPATCH_FILTERS = [
+  {
+    param: 'status',
+    label: 'Status',
+    allLabel: 'Any status',
+    choices: choicesFrom(DISPATCH_STATUSES, DISPATCH_STATUS_LABELS),
+  },
+  { param: 'dateFrom', label: 'Date from' },
+  { param: 'dateTo', label: 'Date to' },
+] as const;
+
 const COLUMNS = [
-  'Dispatch #',
-  'Order #',
-  'Invoice #',
+  'Dispatch',
+  'Order',
+  'Invoice',
   'Customer',
   'Dispatch date',
   col.right('Qty'),
@@ -45,7 +66,19 @@ const COLUMNS = [
  * Quantities are never typed here: a line ships what remains allocated on that
  * batch. That is both less work and one fewer place for a number to be wrong.
  */
-export async function DispatchPanel({ search }: { search?: string }) {
+export async function DispatchPanel({
+  search,
+  filters,
+}: {
+  search?: string;
+  /**
+   * The Filter panel's selections. Applied here rather than on the wire:
+   * the list endpoint takes only a search term, and the rows are already
+   * loaded. What search covers is deliberately not repeated here — see
+   * filtering.ts.
+   */
+  filters: Filters;
+}) {
   const query = search ? `?search=${encodeURIComponent(search)}` : '';
 
   const [dispatches, allocations] = await Promise.all([
@@ -88,26 +121,44 @@ export async function DispatchPanel({ search }: { search?: string }) {
 
   const readyToDispatch = [...readyByOrder.values()];
 
+  // Filtered after fetching, for the reason in the prop's comment.
+  const visible = dispatches.ok
+    ? dispatches.data.filter(
+        (row) =>
+          matchesChoice(row.status, filters.status) &&
+          withinDates(row.dispatchDate, filters.dateFrom, filters.dateTo),
+      )
+    : [];
+
+  // One page of it. The list is already in hand, so paging is a slice.
+  const paged = paginate(visible, filters);
+
   return (
     <>
-      <StepHeader
-        title="Dispatch"
-        description="Goods leaving the warehouse, recorded down to the batch. Confirming a dispatch reduces finished-goods stock and writes the inventory ledger in the same transaction."
-      />
-
-      <div className="mb-6">
-        <NewDispatchForm
-          orders={readyToDispatch}
-          ordersError={allocations.ok ? null : allocations.error}
-        />
-      </div>
-
       <Panel
         heading="Dispatches"
-        count={dispatches.ok ? dispatches.data.length : undefined}
+        count={dispatches.ok ? visible.length : undefined}
         noun="dispatch"
-        footer="A dispatch can never exceed what was allocated."
+        action={
+          <>
+            <PanelSearch stepKey="dispatch" placeholder="Search dispatches…" />
+            <FilterToggle fields={DISPATCH_FILTERS} />
+            <CreateDialogButton
+              label="New dispatch"
+              title="New dispatch"
+              disabled={readyToDispatch.length === 0}
+              disabledHint="No order currently has stock allocated and waiting to ship."
+            >
+              <NewDispatchForm
+                inDialog
+                orders={readyToDispatch}
+                ordersError={allocations.ok ? null : allocations.error}
+              />
+            </CreateDialogButton>
+          </>
+        }
       >
+        <FilterPanel fields={DISPATCH_FILTERS} />
         {!dispatches.ok ? (
           <ErrorState what="dispatches" message={dispatches.error} />
         ) : dispatches.data.length === 0 ? (
@@ -121,11 +172,21 @@ export async function DispatchPanel({ search }: { search?: string }) {
           />
         ) : (
           <Table columns={COLUMNS}>
-            {dispatches.data.map((dispatch) => (
+            {paged.rows.map((dispatch) => (
               <DispatchRow key={dispatch.id} dispatch={dispatch} />
             ))}
           </Table>
         )}
+
+        <ListPagerBar
+          page={paged.page}
+          pageCount={paged.pageCount}
+          pageSize={paged.pageSize}
+          first={paged.first}
+          last={paged.last}
+          total={paged.total}
+          noun="dispatchs"
+        />
       </Panel>
     </>
   );

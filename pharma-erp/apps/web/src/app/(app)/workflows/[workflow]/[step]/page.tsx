@@ -6,7 +6,6 @@ import { findWorkflow, findWorkflowStep } from '@pharma-erp/types';
 // sub-tab change no longer re-runs the session lookup. See ../layout.tsx.
 import { JOB_WORK_STEPS } from '@/components/job-work/panels';
 import { OrderToCashStep } from '@/components/order-to-cash';
-import { StepSearch } from '@/components/order-to-cash/step-search';
 import {
   BatchRecordPanel,
   BatchReleasePanel,
@@ -16,6 +15,23 @@ import {
 } from '@/components/production/panels';
 
 export const dynamic = 'force-dynamic';
+
+/**
+ * The workflows that title their own screens.
+ *
+ * Their panels each render a card with a heading and a record count, above
+ * their own search and filter controls, and the sub-tab bar has already named
+ * the step — so a page-level heading here was the third name for one screen,
+ * with a paragraph under it restating what the table shows. Both were
+ * withdrawn at the product owner's request.
+ *
+ * ONE LIST RATHER THAN A PREDICATE PER WORKFLOW. The two were added on separate
+ * branches as `showStepHeading` and `ownsItsHeading`, which is precisely how
+ * this file ended up in conflict: the same rule, written twice, in opposite
+ * polarities. Production and the rest still render the heading, so this is a
+ * list of exceptions and not a flag to delete.
+ */
+const WORKFLOWS_OWNING_THEIR_HEADING: ReadonlySet<string> = new Set(['order-to-cash', 'job-work']);
 
 /**
  * One step of one workflow.
@@ -57,22 +73,25 @@ export default async function WorkflowStepPage({ params, searchParams }: PagePro
 
   const query = await searchParams;
   const search = typeof query.search === 'string' ? query.search : undefined;
+  // Written by the panel's Filter button. Read here so a filtered list is a
+  // URL somebody can share, and so the back button undoes it. Every string
+  // parameter is passed on: each Order-to-Cash tab filters on different fields,
+  // and naming them here would mean editing this shared page for each one.
+  const filters: Record<string, string> = Object.fromEntries(
+    Object.entries(query).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1] !== '',
+    ),
+  );
 
-  /**
-   * Job Work titles its own screens.
-   *
-   * Every one of its panels renders a Panel with a title and its own search and
-   * filter controls, and the sub-tab is already named in the nav above — so the
-   * step heading here would be the third name for the same screen, with a
-   * paragraph under it restating what the table shows.
-   */
-  const ownsItsHeading = workflow.key === 'job-work';
+  const showStepHeading = !WORKFLOWS_OWNING_THEIR_HEADING.has(workflow.key);
 
   return (
-    <section aria-label={ownsItsHeading ? step.label : undefined}
-      aria-labelledby={ownsItsHeading ? undefined : 'step-heading'}
+    // Without a visible heading the section still needs a name, so it is given
+    // one directly rather than pointing at an element that is not rendered.
+    <section
+      {...(showStepHeading ? { 'aria-labelledby': 'step-heading' } : { 'aria-label': step.label })}
     >
-      {!ownsItsHeading && (
+      {showStepHeading && (
         <>
           <h2 id="step-heading" className="text-lg font-semibold text-slate-900">
             {step.label}
@@ -83,23 +102,12 @@ export default async function WorkflowStepPage({ params, searchParams }: PagePro
         </>
       )}
 
-      <div className={ownsItsHeading ? undefined : 'mt-5'}>
+      <div className={showStepHeading ? 'mt-5' : undefined}>
         {/* The extension point promised in WORKFLOWS: a step whose `state` is
             'ready' has a screen registered for it and renders it; anything else
-            still gets the honest placeholder.
-
-            Order-to-Cash takes its own branch because each of its panels
-            renders its own heading — they need the room for a search box and a
-            create button beside the title. Production steps sit under the
-            shared heading above. */}
+            still gets the honest placeholder. */}
         {workflow.key === 'order-to-cash' && step.state === 'ready' ? (
-          <>
-            {/* A fragment, not a <section>: the shared heading above already
-                opens one, and nesting a second would give the step two
-                landmarks for one screen. */}
-            <StepSearch step={step.label} stepKey={step.key} search={search} />
-            <OrderToCashStep step={step.key} search={search} />
-          </>
+          <OrderToCashStep step={step.key} search={search} filters={filters} />
         ) : step.state === 'ready' ? (
           <BuiltStep workflowKey={workflow.key} stepKey={step.key} query={query} />
         ) : (

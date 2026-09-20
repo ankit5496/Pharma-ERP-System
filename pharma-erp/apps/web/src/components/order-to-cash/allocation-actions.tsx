@@ -1,5 +1,7 @@
 'use client';
 
+import { RowActionMenu, type RowAction } from '@/components/row-action-menu';
+import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
 import type { AllocationRow } from '@pharma-erp/types';
 
@@ -8,8 +10,9 @@ import {
   releaseAllocationAction,
   updateAllocationAction,
 } from './actions';
-import { EditButton, EditDialog } from './edit-kit';
-import { DANGER_BUTTON, PRIMARY_BUTTON } from './ui';
+import { ConfirmDialog } from './confirm-dialog';
+import { EditDialog } from './edit-kit';
+import { formatDate, PRIMARY_BUTTON } from './ui';
 
 /**
  * Commits the FEFO allocation for one order.
@@ -32,8 +35,21 @@ export function AllocateOrderButton({
   const [message, setMessage] = useState<{ kind: 'error' | 'info'; text: string } | null>(null);
   const [pending, startTransition] = useTransition();
 
+  /**
+   * `revalidatePath` in the action marks the server's copy stale; it does not
+   * guarantee the tab you are looking at re-renders, because the client router
+   * holds its own cache of this route keyed by its query string — the search
+   * term, the filters and the page number this screen writes there. Asking the
+   * router to refresh after the write is what puts the new reservation in the
+   * table you are already looking at, rather than on your next visit.
+   */
+  const router = useRouter();
+
   return (
-    <div className="text-right">
+    // Centred under the Actions heading. It was `text-right` for the stacked
+    // list this button used to sit in, where it hugged the row's right edge —
+    // and that beat the cell's own alignment once the list became a table.
+    <div className="text-center">
       <button
         type="button"
         disabled={pending}
@@ -42,11 +58,36 @@ export function AllocateOrderButton({
           startTransition(async () => {
             const result = await allocateOrderAction(salesOrderId);
 
-            setMessage(
-              result.ok
-                ? { kind: 'info', text: `Stock reserved for ${orderNumber}, nearest expiry first.` }
-                : { kind: 'error', text: result.error ?? 'That did not work.' },
-            );
+            if (!result.ok) {
+              setMessage({ kind: 'error', text: result.error ?? 'That did not work.' });
+              return;
+            }
+
+            // Names the batches it took. They are the newest rows in the
+            // Reservations table below — which is ordered newest first — so
+            // this says what to look for rather than only that something
+            // happened.
+            // The endpoint answers with every reservation the order holds, not
+            // only the ones just made, so this reads as a statement of where
+            // the order now stands.
+            const reserved = result.data ?? [];
+            const picks = reserved
+              .map(
+                (row) =>
+                  `${row.quantityAllocated} from ${row.batchNumber} (expires ${formatDate(
+                    row.expiryDate,
+                  )})`,
+              )
+              .join(', ');
+
+            setMessage({
+              kind: 'info',
+              text: picks
+                ? `${orderNumber} now holds ${picks}. Nearest expiry first — the rows are at the top of Reservations below.`
+                : `Stock reserved for ${orderNumber}, nearest expiry first.`,
+            });
+
+            router.refresh();
           });
         }}
         className={PRIMARY_BUTTON}
@@ -57,7 +98,7 @@ export function AllocateOrderButton({
       {message && (
         <p
           role={message.kind === 'error' ? 'alert' : 'status'}
-          className={`mt-2 max-w-xs text-xs ${
+          className={`mx-auto mt-2 max-w-xs text-xs ${
             message.kind === 'error' ? 'text-red-700' : 'text-slate-600'
           }`}
         >
@@ -77,7 +118,9 @@ export function AllocateOrderButton({
  * something.
  */
 export function AllocationRowActions({ allocation }: { allocation: AllocationRow }) {
+  const router = useRouter();
   const [error, setError] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
   const [editing, setEditing] = useState(false);
   const [pending, startTransition] = useTransition();
 
@@ -85,45 +128,66 @@ export function AllocationRowActions({ allocation }: { allocation: AllocationRow
   // ALLOCATED only: once any part has shipped the row records a movement.
   const canEdit = allocation.status === 'ALLOCATED';
 
+  const release = () => {
+    setError(null);
+    startTransition(async () => {
+      const result = await releaseAllocationAction(allocation.id);
+      if (!result.ok) setError(result.error ?? 'That did not work.');
+      else {
+        setConfirming(false);
+        router.refresh();
+      }
+    });
+  };
+
+  const actions: RowAction[] = [
+    {
+      label: 'Edit',
+      onSelect: () => setEditing(true),
+      disabledReason: canEdit
+        ? null
+        : 'Part of this allocation has shipped, so the row records a movement.',
+    },
+    {
+      label: 'Release',
+      onSelect: () => setConfirming(true),
+      disabledReason: canRelease ? null : 'Nothing is reserved on this row to release.',
+    },
+  ];
+
   return (
-    <div className="min-w-[9rem]">
-      <div className="flex flex-wrap gap-1.5">
-        {canEdit && <EditButton onClick={() => setEditing(true)} />}
+    <>
+      <RowActionMenu
+        label={`${allocation.itemCode} on ${allocation.orderNumber}`}
+        actions={actions}
+        busy={pending}
+      />
 
-        {canRelease && (
-          <button
-            type="button"
-            disabled={pending}
-            onClick={() => {
-              if (
-                !window.confirm(
-                  `Release batch ${allocation.batchNumber} back to free stock?\n\n` +
-                    `Anything already dispatched stays dispatched — only the undispatched ` +
-                    `remainder is returned.`,
-                )
-              ) {
-                return;
-              }
-
-              setError(null);
-              startTransition(async () => {
-                const result = await releaseAllocationAction(allocation.id);
-                if (!result.ok) setError(result.error ?? 'That did not work.');
-              });
-            }}
-            className={DANGER_BUTTON}
-          >
-            Release
-          </button>
-        )}
-
-        {!canEdit && !canRelease && <span className="text-xs text-slate-400">—</span>}
-      </div>
+      {confirming && (
+        <ConfirmDialog
+          title={`Release batch ${allocation.batchNumber}?`}
+          description="The undispatched quantity returns to free stock and can be allocated to another order. Anything already dispatched stays dispatched."
+          details={[
+            { label: 'Order', value: `${allocation.orderNumber} · ${allocation.customerName}` },
+            { label: 'Product', value: `${allocation.itemName} (${allocation.itemCode})` },
+            { label: 'Reserved', value: allocation.quantityAllocated },
+            { label: 'Already dispatched', value: allocation.quantityDispatched },
+          ]}
+          confirmLabel="Release to free stock"
+          pending={pending}
+          onConfirm={release}
+          onClose={() => setConfirming(false)}
+        />
+      )}
 
       {editing && (
         <EditDialog
-          title={`Adjust ${allocation.itemCode} on ${allocation.orderNumber}`}
-          description={`Batch ${allocation.batchNumber} · expires ${allocation.expiryDate}`}
+          title={`Edit ${allocation.orderNumber}`}
+          // The product moves down here with the batch it was picked from, so
+          // the heading reads like every other Edit dialog in the module.
+          description={`${allocation.itemCode} · batch ${allocation.batchNumber} · expires ${formatDate(
+            allocation.expiryDate,
+          )}`}
           note="The batch cannot be changed — FEFO picked it. To reserve a different batch, release this allocation and allocate again."
           fields={[
             {
@@ -144,6 +208,6 @@ export function AllocationRowActions({ allocation }: { allocation: AllocationRow
           {error}
         </p>
       )}
-    </div>
+    </>
   );
 }

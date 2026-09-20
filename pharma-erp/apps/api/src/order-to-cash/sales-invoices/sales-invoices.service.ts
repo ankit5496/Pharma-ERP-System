@@ -53,6 +53,8 @@ export class SalesInvoicesService {
               OR: [
                 { invoiceNumber: { contains: term, mode: 'insensitive' } },
                 { customer: { name: { contains: term, mode: 'insensitive' } } },
+                { salesOrder: { orderNumber: { contains: term, mode: 'insensitive' } } },
+                { customer: { gstin: { contains: term, mode: 'insensitive' } } },
               ],
             }
           : {}),

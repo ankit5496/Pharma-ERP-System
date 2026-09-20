@@ -1,6 +1,17 @@
+import { SALES_ORDER_STATUSES, SALES_ORDER_STATUS_LABELS } from '@pharma-erp/types';
 import type { CustomerListItem, ItemListItem, SalesOrderListItem } from '@pharma-erp/types';
 
 import { apiFetch } from '@/lib/api';
+
+import { choicesFrom, matchesChoice, withinDates, paginate, type Filters } from './filtering';
+
+import {
+  CreateDialogButton,
+  ListPagerBar,
+  FilterPanel,
+  FilterToggle,
+  PanelSearch,
+} from './panel-toolbar';
 
 import { NewSalesOrderForm, SalesOrderRowActions } from './sales-order-forms';
 import {
@@ -15,12 +26,42 @@ import {
   Panel,
   Quantity,
   StatusBadge,
-  StepHeader,
   Table,
 } from './ui';
 
+const SALES_ORDER_FILTERS = [
+  {
+    param: 'status',
+    label: 'Status',
+    allLabel: 'Any status',
+    choices: choicesFrom(SALES_ORDER_STATUSES, SALES_ORDER_STATUS_LABELS),
+  },
+  {
+    param: 'licenceCheck',
+    label: 'Licence check',
+    allLabel: 'Any licence verdict',
+    choices: [
+      { value: 'PASS', label: 'Pass' },
+      { value: 'FAIL', label: 'Fail' },
+      { value: 'NOT_RUN', label: 'Not run' },
+    ],
+  },
+  {
+    param: 'creditCheck',
+    label: 'Credit check',
+    allLabel: 'Any credit verdict',
+    choices: [
+      { value: 'PASS', label: 'Pass' },
+      { value: 'FAIL', label: 'Fail' },
+      { value: 'NOT_RUN', label: 'Not run' },
+    ],
+  },
+  { param: 'dateFrom', label: 'Date from' },
+  { param: 'dateTo', label: 'Date to' },
+] as const;
+
 const COLUMNS = [
-  'Order #',
+  'Order',
   'Customer',
   'Date',
   col.right('Qty'),
@@ -40,7 +81,19 @@ const COLUMNS = [
  * means a licence or a credit decision is needed, PASS means the order can go to
  * allocation. Collapsing any pair of those would hide the next action.
  */
-export async function SalesOrdersPanel({ search }: { search?: string }) {
+export async function SalesOrdersPanel({
+  search,
+  filters,
+}: {
+  search?: string;
+  /**
+   * The Filter panel's selections. Applied here rather than on the wire:
+   * the list endpoint takes only a search term, and the rows are already
+   * loaded. What search covers is deliberately not repeated here — see
+   * filtering.ts.
+   */
+  filters: Filters;
+}) {
   const query = search ? `?search=${encodeURIComponent(search)}` : '';
 
   // Fetched together: the form needs customers and products to offer, and three
@@ -57,28 +110,46 @@ export async function SalesOrdersPanel({ search }: { search?: string }) {
     }),
   ]);
 
+  // Filtered after fetching, for the reason in the prop's comment.
+  const visible = orders.ok
+    ? orders.data.filter(
+        (row) =>
+          matchesChoice(row.status, filters.status) &&
+          matchesChoice(row.licenceCheck, filters.licenceCheck) &&
+          matchesChoice(row.creditCheck, filters.creditCheck) &&
+          withinDates(row.orderDate, filters.dateFrom, filters.dateTo),
+      )
+    : [];
+
+  // One page of it. The list is already in hand, so paging is a slice.
+  const paged = paginate(visible, filters);
+
   return (
     <>
-      <StepHeader
-        title="Sales orders"
-        description="Orders received from a distributor, priced from the item master. An order must pass both the licence and the credit check before any stock can be reserved against it."
-      />
-
-      <div className="mb-6">
-        <NewSalesOrderForm
-          customers={customers.ok ? customers.data : []}
-          items={items.ok ? items.data : []}
-          customersError={customers.ok ? null : customers.error}
-          itemsError={items.ok ? null : items.error}
-        />
-      </div>
-
       <Panel
-        heading="Orders"
-        count={orders.ok ? orders.data.length : undefined}
+        heading="Sales orders"
+        count={orders.ok ? visible.length : undefined}
         noun="order"
-        footer="Both checks are re-run from the database every time. A pass recorded earlier is never reused at allocation, invoicing or dispatch — each of those re-reads it."
+        action={
+          <>
+            <PanelSearch stepKey="sales-orders" placeholder="Search orders…" />
+            <FilterToggle fields={SALES_ORDER_FILTERS} />
+            <CreateDialogButton
+              label="New sales order"
+              title="New sales order"
+            >
+              <NewSalesOrderForm
+                inDialog
+                customers={customers.ok ? customers.data : []}
+                items={items.ok ? items.data : []}
+                customersError={customers.ok ? null : customers.error}
+                itemsError={items.ok ? null : items.error}
+              />
+            </CreateDialogButton>
+          </>
+        }
       >
+        <FilterPanel fields={SALES_ORDER_FILTERS} />
         {!orders.ok ? (
           <ErrorState what="sales orders" message={orders.error} />
         ) : orders.data.length === 0 ? (
@@ -92,11 +163,21 @@ export async function SalesOrdersPanel({ search }: { search?: string }) {
           />
         ) : (
           <Table columns={COLUMNS}>
-            {orders.data.map((order) => (
+            {paged.rows.map((order) => (
               <OrderRow key={order.id} order={order} />
             ))}
           </Table>
         )}
+
+        <ListPagerBar
+          page={paged.page}
+          pageCount={paged.pageCount}
+          pageSize={paged.pageSize}
+          first={paged.first}
+          last={paged.last}
+          total={paged.total}
+          noun="orders"
+        />
       </Panel>
     </>
   );

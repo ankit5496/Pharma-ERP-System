@@ -1,5 +1,7 @@
 'use client';
 
+import { RowActionMenu, type RowAction } from '@/components/row-action-menu';
+import { pushToast } from '@/components/toast';
 import { useState, useTransition } from 'react';
 import type { DispatchListItem } from '@pharma-erp/types';
 
@@ -9,9 +11,11 @@ import {
   markDeliveredAction,
   updateDispatchAction,
 } from './actions';
-import { EditButton, EditDialog } from './edit-kit';
+import { ConfirmDialog } from './confirm-dialog';
+import { EditDialog } from './edit-kit';
 import { SearchableSelect } from './searchable-select';
-import { Note, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
+import { DialogFooter, useDialogClose } from './modal';
+import { formatDate, Note, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 
 /** One allocated batch with stock still to ship. */
 export interface ReadyLine {
@@ -44,10 +48,18 @@ export interface ReadyOrder {
 export function NewDispatchForm({
   orders,
   ordersError,
+  inDialog = false,
 }: {
   orders: readonly ReadyOrder[];
   ordersError: string | null;
+  /**
+   * Rendered inside the panel's create dialog, which already supplies the
+   * title, the description and a way out — so the trigger card and the
+   * internal header are suppressed rather than drawn twice.
+   */
+  inDialog?: boolean;
 }) {
+  const closeDialog = useDialogClose();
   const [open, setOpen] = useState(false);
   const [salesOrderId, setSalesOrderId] = useState('');
   const [dispatchDate, setDispatchDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -56,7 +68,7 @@ export function NewDispatchForm({
 
   const selected = orders.find((order) => order.salesOrderId === salesOrderId) ?? null;
 
-  if (!open) {
+  if (!inDialog && !open) {
     return (
       <div className="flex items-center justify-between gap-4 rounded-lg border border-slate-200 bg-white px-5 py-4 shadow-sm">
         <div>
@@ -73,14 +85,15 @@ export function NewDispatchForm({
           disabled={orders.length === 0}
           className={PRIMARY_BUTTON}
         >
-          + New dispatch
+          New dispatch
         </button>
       </div>
     );
   }
 
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+    <div className={inDialog ? '' : 'rounded-lg border border-slate-200 bg-white p-6 shadow-sm'}>
+      {!inDialog && (
       <div className="flex items-start justify-between gap-4">
         <div>
           <h3 className="text-base font-semibold text-slate-900">New dispatch</h3>
@@ -100,6 +113,7 @@ export function NewDispatchForm({
           Cancel
         </button>
       </div>
+      )}
 
       {ordersError && (
         <div className="mt-5">
@@ -156,13 +170,20 @@ export function NewDispatchForm({
                 text: `Dispatch ${result.data?.dispatchNumber ?? ''} created as a draft. Confirm it in the table below to reduce stock — the invoice becomes available after that.`,
               });
               setSalesOrderId('');
+              pushToast(
+                'success',
+                `Dispatch ${result.data?.dispatchNumber ?? ''} created as a draft. Confirm it in the table below to reduce stock.`,
+              );
+              // Saved, so the dialog's work is done. Inline (no dialog) this
+              // is null and the success message below stays on screen instead.
+              closeDialog?.();
             } else {
               setMessage({ kind: 'error', text: result.error ?? 'That did not work.' });
             }
           });
         }}
       >
-        <div className="lg:col-span-2">
+        <div>
           <label htmlFor="dsp-order" className="field-label">
             Order <span className="text-red-600">*</span>
           </label>
@@ -174,8 +195,11 @@ export function NewDispatchForm({
               placeholder="Search by order number or customer…"
               options={orders.map((order) => ({
                 value: order.salesOrderId,
-                label: `${order.orderNumber} — ${order.customerName}`,
-                hint: `${order.lines.length} line${order.lines.length === 1 ? '' : 's'}`,
+                label: order.orderNumber,
+                hint: `${order.customerName} · ${order.lines.length} line${
+                  order.lines.length === 1 ? '' : 's'
+                }`,
+                keywords: order.customerName,
               }))}
             />
           </div>
@@ -190,7 +214,7 @@ export function NewDispatchForm({
             type="date"
             value={dispatchDate}
             onChange={(event) => setDispatchDate(event.target.value)}
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           />
         </div>
 
@@ -203,7 +227,7 @@ export function NewDispatchForm({
             name="transporterName"
             maxLength={255}
             autoComplete="off"
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           />
         </div>
 
@@ -216,7 +240,7 @@ export function NewDispatchForm({
             name="vehicleNumber"
             maxLength={32}
             autoComplete="off"
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           />
         </div>
 
@@ -229,7 +253,7 @@ export function NewDispatchForm({
             name="lrNumber"
             maxLength={64}
             autoComplete="off"
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           />
         </div>
 
@@ -242,11 +266,11 @@ export function NewDispatchForm({
             name="ewayBillNumber"
             maxLength={32}
             autoComplete="off"
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           />
         </div>
 
-        <div className="sm:col-span-2">
+        <div className="sm:col-span-2 lg:col-span-3">
           <label htmlFor="dsp-notes" className="field-label">
             Notes
           </label>
@@ -255,11 +279,11 @@ export function NewDispatchForm({
             name="notes"
             maxLength={1000}
             autoComplete="off"
-            className="field mt-1.5"
+            className="field mt-1.5 h-10"
           />
         </div>
 
-        <div className="sm:col-span-2 lg:col-span-3">
+        <DialogFooter className="sm:col-span-2 lg:col-span-3">
           <button
             type="submit"
             disabled={pending || !salesOrderId}
@@ -267,7 +291,7 @@ export function NewDispatchForm({
           >
             {pending ? 'Recording…' : 'Create dispatch'}
           </button>
-        </div>
+        </DialogFooter>
       </form>
     </div>
   );
@@ -283,6 +307,7 @@ export function NewDispatchForm({
 export function DispatchRowActions({ dispatch }: { dispatch: DispatchListItem }) {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [pending, startTransition] = useTransition();
 
   const run = (fn: () => Promise<{ ok: boolean; error?: string }>) => {
@@ -293,38 +318,67 @@ export function DispatchRowActions({ dispatch }: { dispatch: DispatchListItem })
     });
   };
 
-  if (dispatch.status !== 'DRAFT' && dispatch.status !== 'DISPATCHED') {
-    return <span className="text-xs text-slate-400">—</span>;
-  }
+  // Delivered and cancelled dispatches are finished: the trigger is plainly
+  // closed rather than opening on three greyed entries.
+  const settled =
+    dispatch.status === 'DRAFT' || dispatch.status === 'DISPATCHED'
+      ? null
+      : `This dispatch is ${dispatch.status.toLowerCase()}, so there is nothing left to do to it.`;
+
+  const isDraft = dispatch.status === 'DRAFT';
+
+  const actions: RowAction[] = [
+    {
+      label: 'Edit',
+      onSelect: () => setEditing(true),
+      // DRAFT only: once confirmed the stock has left and the note records a
+      // movement rather than a plan.
+      disabledReason: isDraft
+        ? null
+        : 'This dispatch has been confirmed, so its consignment details are a record of what shipped.',
+    },
+    {
+      label: 'Confirm & reduce stock',
+      onSelect: () => setConfirming(true),
+      disabledReason: isDraft ? null : 'Already confirmed — the stock has left.',
+    },
+    {
+      label: 'Mark delivered',
+      onSelect: () => run(() => markDeliveredAction(dispatch.id)),
+      disabledReason: isDraft ? 'Confirm the dispatch first — nothing has shipped yet.' : null,
+    },
+  ];
 
   return (
-    <div className="min-w-[8rem]">
-      {/* DRAFT only: once confirmed the stock has left and the note records a
-          movement rather than a plan. */}
-      {dispatch.status === 'DRAFT' && (
-        <div className="mb-1.5">
-          <EditButton onClick={() => setEditing(true)} />
-        </div>
-      )}
+    <>
+      <RowActionMenu
+        label={dispatch.dispatchNumber}
+        actions={actions}
+        busy={pending}
+        disabledReason={settled}
+      />
 
-      {dispatch.status === 'DRAFT' ? (
-        <button
-          type="button"
-          disabled={pending}
-          onClick={() => run(() => confirmDispatchAction(dispatch.id))}
-          className={PRIMARY_BUTTON}
-        >
-          {pending ? 'Confirming…' : 'Confirm & reduce stock'}
-        </button>
-      ) : (
-        <button
-          type="button"
-          disabled={pending}
-          onClick={() => run(() => markDeliveredAction(dispatch.id))}
-          className={SECONDARY_BUTTON}
-        >
-          {pending ? 'Saving…' : 'Mark delivered'}
-        </button>
+      {confirming && (
+        <ConfirmDialog
+          title={`Confirm ${dispatch.dispatchNumber}?`}
+          description="Stock leaves the batches reserved for this order and the movement is written to the inventory ledger. It cannot be reversed by editing — a wrongly shipped consignment comes back as a sales return."
+          details={[
+            { label: 'Order', value: `${dispatch.orderNumber} · ${dispatch.customerName}` },
+            { label: 'Dispatch date', value: formatDate(dispatch.dispatchDate) },
+            { label: 'Quantity', value: dispatch.totalQuantity },
+            {
+              label: 'Lines',
+              value: `${dispatch.itemCount} line${dispatch.itemCount === 1 ? '' : 's'}`,
+            },
+          ]}
+          confirmLabel="Confirm & reduce stock"
+          pending={pending}
+          onConfirm={() => {
+            run(() => confirmDispatchAction(dispatch.id));
+            setConfirming(false);
+          }}
+          onClose={() => setConfirming(false)}
+        />
       )}
 
       {editing && (
@@ -350,6 +404,6 @@ export function DispatchRowActions({ dispatch }: { dispatch: DispatchListItem })
           {error}
         </p>
       )}
-    </div>
+    </>
   );
 }
