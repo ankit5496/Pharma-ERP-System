@@ -3,283 +3,301 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 
 /**
- * A picklist you can type into, for options that come from RECORDS.
+ * A lookup field you can type into.
  *
- * Only for those. A fixed enum — item type, GST rate, licence status — is a
- * handful of choices that never grows, and a search box over five options is
- * furniture. The registers are the opposite: every item, party or formulation
- * ever created is in the list, it only grows, and by the time it is long enough
- * to be a problem it is far too long to scroll.
+ * A NATIVE <select> IS NOT SEARCHABLE IN ANY USEFUL SENSE. Typing into one
+ * jumps to the first option starting with those letters and resets after a
+ * second, so finding "Shree Krishna Pharmaceuticals" among two hundred vendors
+ * means either knowing it starts with S and typing fast, or scrolling. A lookup
+ * points at another record, and the way anyone actually finds a record is by
+ * typing part of what they remember of it — a fragment of the name, a code, a
+ * document number.
  *
- * WHAT IT SHOWS BEFORE YOU TYPE. Not the whole list: the most recently created
- * few, which is a deliberate bet about what someone is reaching for. A person
- * writing a formulation for a product they added minutes ago should find it
- * without typing, and someone after an older record was going to search anyway.
- * The count is RECENT_COUNT below.
+ * SO THIS MATCHES ON ANY SUBSTRING of the label or the hint, which is what puts
+ * "PO-2026-0158 — Render Vendor" within reach of typing "render" or "0158".
  *
- * THE CALLER SORTS. This component takes the order it is given and shows the
- * first few, so every call site sorts newest-first before passing options in.
- * Deliberate: "newest" is a different field on each record — `createdAt` for an
- * item or a party, `version` for a formulation, and the work-order list arrives
- * newest-first from the API already — and a sort here would need to know all of
- * them.
+ * IT SUBMITS LIKE A SELECT. When `name` is given, the chosen value is carried
+ * by a hidden input, so a plain form submission posts exactly what a <select>
+ * would have posted and no calling form needs to know this is a combobox. The
+ * visible text box is deliberately NOT the posted field: it holds whatever was
+ * typed, which is a search term and not an id.
  *
- * A NATIVE <select> IS STILL UNDERNEATH, hidden, holding the real value. Three
- * things depend on it and none are worth reimplementing: the form submits by
- * `name` with no JavaScript of ours, React 19's form-reset repair in
- * SelectField works by writing to `element.value`, and an unstyled native
- * control is what assistive technology handles best. This adds a text input and
- * a list ON TOP of that, and writes through to it.
+ * WHAT IS TYPED IS NEVER A VALUE. Closing without choosing restores the label
+ * of whatever is actually selected, so the box can never be left showing a
+ * vendor that was not picked — the failure mode that makes home-made
+ * autocompletes untrustworthy.
  */
-
-/** How many records to offer before anything is typed. */
-const RECENT_COUNT = 3;
-
-export interface SelectOption {
+export interface LookupOption {
   value: string;
   label: string;
+  /** Searched alongside the label, and shown under it. A code, a date, a total. */
+  hint?: string;
+  /**
+   * Matched when typing, never shown.
+   *
+   * For an identifier the list no longer displays: a customer code dropped from
+   * the label is still what somebody types to find them, and a picker that
+   * cannot find DIST-002 because it now reads "ROX PHARMA" is worse than the
+   * label it replaced.
+   */
+  keywords?: string;
 }
 
+/** The name Order-to-Cash used for {@link LookupOption}. Kept so its imports resolve. */
+export type SelectOption = LookupOption;
+
 export function SearchableSelect({
+  id,
+  name,
+  ariaLabel,
   options,
   value,
   onChange,
-  placeholder = '--None--',
-  id,
-  required,
-  disabled,
-  invalid,
-  describedBy,
+  emptyLabel = 'None',
+  placeholder = 'Type to search…',
+  required = false,
+  disabled = false,
+  small,
+  className,
 }: {
-  /** Newest first — see the note above on what is shown before typing. */
-  options: readonly SelectOption[];
+  /** Omit where there is no visible label and `ariaLabel` names the control. */
+  id?: string;
+  /** Omit for a control that only filters the page — nothing is then posted. */
+  name?: string;
+  /** The accessible name, for a control with no visible label beside it. */
+  ariaLabel?: string;
+  options: readonly LookupOption[];
   value: string;
   onChange: (value: string) => void;
-  /** The empty choice. Null hides it, for a field that cannot be cleared. */
-  placeholder?: string | null;
-  id?: string;
+  /**
+   * What an empty field says, and — where a blank is legal — the row that
+   * clears it.
+   *
+   * ON A REQUIRED FIELD IT IS A PLACEHOLDER AND NOTHING MORE: no row is
+   * offered for it, because "nothing" is not one of the answers. On an optional
+   * field it is also offered as the top row, so a choice can be undone.
+   */
+  emptyLabel?: string;
+  placeholder?: string;
   required?: boolean;
   disabled?: boolean;
-  invalid?: boolean;
-  describedBy?: string;
+  /** The compact height, for a control sitting inline in a table row. */
+  small?: boolean;
+  /** Overrides the height entirely; `small` is ignored when this is given. */
+  className?: string;
 }) {
+  // `small` picks between the two shared field heights; `className` overrides
+  // both, for the callers that size the control themselves.
+  const fieldClass = className ?? (small ? 'field-sm h-9 w-full' : 'field-sm w-full');
   const listId = useId();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [active, setActive] = useState(0);
-  const rootRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * The row the keyboard is on. -1 is "none yet", and that is the value the
+   * list opens with.
+   *
+   * NOTHING IS PICKED FOR YOU. Opening a list is not choosing from it, so the
+   * first row is not pre-armed and Enter on an untouched list commits nothing.
+   * Arrowing in, or typing, is what puts the keyboard on a row.
+   */
+  const [active, setActive] = useState(-1);
+
+  const wrapper = useRef<HTMLDivElement>(null);
+  const input = useRef<HTMLInputElement>(null);
 
   const selected = options.find((option) => option.value === value) ?? null;
 
+  /**
+   * The list as it stands.
+   *
+   * Filtered case-insensitively on label AND hint, so a vendor can be found by
+   * its code and an order by its number, which is how people remember them.
+   *
+   * The "none" row is there only when a blank is a legal answer. A required
+   * field that offered one would be presenting the thing it is about to refuse
+   * as if it were a choice — and, sitting at the top of the list, it reads as
+   * an item that is already selected.
+   */
   const matches = useMemo(() => {
-    const needle = query.trim().toLowerCase();
+    const term = query.trim().toLowerCase();
+    const all: LookupOption[] = required
+      ? [...options]
+      : [{ value: '', label: emptyLabel }, ...options];
 
-    // Nothing typed: the most recent few. Typed: everything that matches, with
-    // no cap — a search that silently stopped at three would hide the record
-    // somebody was looking for.
-    if (!needle) return options.slice(0, RECENT_COUNT);
+    if (!term) return all;
 
-    return options.filter((option) => option.label.toLowerCase().includes(needle));
-  }, [options, query]);
+    return all.filter(
+      (option) =>
+        option.value === '' ||
+        `${option.label} ${option.hint ?? ''} ${option.keywords ?? ''}`
+          .toLowerCase()
+          .includes(term),
+    );
+  }, [options, query, emptyLabel, required]);
 
-  // Close on a click anywhere else. Pointerdown rather than click: a click on
-  // another control would otherwise land while this list is still over it.
+  // Closing on an outside pointer press rather than on blur: blur fires before
+  // the click that caused it lands, so closing there would dismiss the list
+  // under the pointer and swallow the choice being made.
   useEffect(() => {
-    if (!open) return;
+    if (!open) return undefined;
 
-    function onPointerDown(event: PointerEvent) {
-      if (rootRef.current?.contains(event.target as Node)) return;
-      setOpen(false);
-      setQuery('');
-    }
+    const onPointerDown = (event: PointerEvent) => {
+      if (!wrapper.current?.contains(event.target as Node)) setOpen(false);
+    };
 
     document.addEventListener('pointerdown', onPointerDown);
 
     return () => document.removeEventListener('pointerdown', onPointerDown);
   }, [open]);
 
-  // The highlight belongs to the current result set, not to wherever it was
-  // left: after typing, "the first match" is the only sensible starting point.
-  useEffect(() => setActive(0), [query, open]);
-
-  function choose(option: SelectOption | null) {
-    onChange(option?.value ?? '');
-    setOpen(false);
+  const choose = (option: LookupOption) => {
+    onChange(option.value);
     setQuery('');
-  }
+    setActive(-1);
+    setOpen(false);
+    input.current?.focus();
+  };
 
-  function onKeyDown(event: React.KeyboardEvent) {
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault();
-
-      if (!open) {
-        setOpen(true);
-        return;
-      }
-
-      const step = event.key === 'ArrowDown' ? 1 : -1;
-      const count = matches.length + (placeholder === null ? 0 : 1);
-
-      if (count > 0) setActive((current) => (current + step + count) % count);
-
-      return;
-    }
-
-    if (event.key === 'Enter' && open) {
-      event.preventDefault();
-
-      // Index 0 is the "none" row whenever a placeholder is offered, so the
-      // options start one later.
-      const offset = placeholder === null ? 0 : 1;
-
-      if (placeholder !== null && active === 0) choose(null);
-      else choose(matches[active - offset] ?? null);
-
-      return;
-    }
-
-    if (event.key === 'Escape' && open) {
-      event.preventDefault();
-      // Stopped here so Escape closes the list rather than the drawer the form
-      // is in — one Escape, one thing closed.
-      event.stopPropagation();
-      setOpen(false);
-      setQuery('');
-    }
-  }
-
-  const offset = placeholder === null ? 0 : 1;
+  const openList = () => {
+    if (disabled) return;
+    setActive(-1);
+    setOpen(true);
+  };
 
   return (
-    <div ref={rootRef} className="relative">
-      {/* The real control. Hidden from sight and from assistive technology —
-          the text input above carries the accessible name and the value — but
-          still submitted with the form, and still what SelectField's reset
-          repair writes to. */}
-      <select
-        id={id}
-        aria-hidden="true"
-        tabIndex={-1}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        required={required}
-        disabled={disabled}
-        className="sr-only"
-      >
-        {placeholder !== null && <option value="">{placeholder}</option>}
-        {options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
+    <div ref={wrapper} className="relative">
+      {/* What the form posts. The text box above it is a search term. */}
+      {name && <input type="hidden" name={name} value={value} />}
 
       <input
+        ref={input}
+        id={id}
         type="text"
         role="combobox"
         aria-expanded={open}
         aria-controls={listId}
         aria-autocomplete="list"
-        aria-required={required}
-        aria-invalid={invalid}
-        aria-describedby={describedBy}
+        aria-label={ariaLabel}
+        aria-required={required || undefined}
+        autoComplete="off"
         disabled={disabled}
-        // Typing filters; not typing shows what is chosen. Keeping the query in
-        // the box after a choice would leave a half-typed string beside a
-        // different selected value.
+        // Closed, it reads as the current selection; open, it is a search box.
         value={open ? query : (selected?.label ?? '')}
-        placeholder={selected ? undefined : (placeholder ?? 'Search…')}
+        // Read-only while closed, so a click lands on the control rather than
+        // placing a caret in text that is a label, not an editable value. It
+        // becomes writable the moment the list opens.
+        readOnly={!open}
+        // Open with a selection, the placeholder IS the selection: the box
+        // is empty because it is waiting for a search term, not because the
+        // choice was lost.
+        placeholder={open ? (selected?.label ?? placeholder) : emptyLabel}
+        // NOT onFocus. A dialog focuses its first control on open, and tabbing
+        // past a lookup focuses it too — neither is a request to see the list.
+        onClick={openList}
         onChange={(event) => {
+          if (!open) openList();
           setQuery(event.target.value);
-          if (!open) setOpen(true);
+          // Typing narrows the list to what was asked for, so arming the top
+          // row is a genuine shortcut rather than a guess: Enter then takes
+          // the best match for what the user actually typed.
+          setActive(event.target.value.trim() ? 0 : -1);
         }}
-        onFocus={() => setOpen(true)}
-        onKeyDown={onKeyDown}
-        className={`w-full rounded-md border bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:outline-none focus:ring-1 disabled:cursor-not-allowed disabled:bg-slate-50 ${
-          invalid
-            ? 'border-red-400 focus:border-red-500 focus:ring-red-500'
-            : 'border-slate-300 focus:border-slate-900 focus:ring-slate-900'
-        }`}
-      />
+        onKeyDown={(event) => {
+          if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+            event.preventDefault();
 
-      {/* Purely decorative: the caret says "this is a picklist" to anyone who
-          would otherwise read a text box and not think to click. */}
-      <span
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-y-0 right-3 flex items-center text-slate-400"
-      >
-        ▾
-      </span>
+            if (!open) {
+              openList();
+
+              return;
+            }
+
+            const step = event.key === 'ArrowDown' ? 1 : -1;
+
+            setActive((current) => {
+              // From "none yet", Down lands on the first row and Up on the
+              // last, which is what both keys mean when nothing is active.
+              if (current < 0) return step > 0 ? 0 : matches.length - 1;
+
+              const next = current + step;
+
+              if (next < 0) return matches.length - 1;
+              if (next >= matches.length) return 0;
+
+              return next;
+            });
+
+            return;
+          }
+
+          if (event.key === 'Enter' && open) {
+            // Only swallowed while the list is open, so Enter still submits
+            // the surrounding form the rest of the time.
+            event.preventDefault();
+
+            // Nothing arrowed to and nothing typed means nothing chosen —
+            // Enter must not commit whichever row happens to be first.
+            const option = active >= 0 ? matches[active] : undefined;
+
+            if (option) choose(option);
+
+            return;
+          }
+
+          if (event.key === 'Escape' && open) {
+            event.preventDefault();
+            setQuery('');
+            setOpen(false);
+          }
+        }}
+        className={fieldClass}
+      />
 
       {open && (
         <ul
           id={listId}
           role="listbox"
-          className="absolute z-20 mt-1 max-h-64 w-full overflow-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg"
+          className="absolute z-30 mt-1 max-h-60 w-full overflow-y-auto rounded-md border border-slate-200 bg-white py-1 text-left shadow-lg"
         >
-          {placeholder !== null && (
-            <Row active={active === 0} selected={value === ''} onPick={() => choose(null)} muted>
-              {placeholder}
-            </Row>
-          )}
-
           {matches.length === 0 ? (
-            <li className="px-3 py-2 text-sm text-slate-500">No match for “{query.trim()}”.</li>
+            <li className="px-3 py-2 text-xs text-slate-500">
+              {query.trim() ? `No match for “${query.trim()}”.` : 'Nothing to choose from yet.'}
+            </li>
           ) : (
             matches.map((option, index) => (
-              <Row
-                key={option.value}
-                active={active === index + offset}
-                selected={option.value === value}
-                onPick={() => choose(option)}
-              >
-                {option.label}
-              </Row>
+              <li key={option.value || '__none'}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={option.value === value}
+                  // pointerdown rather than click: the outside-press handler
+                  // runs on pointerdown, and a click would arrive after it.
+                  onPointerDown={(event) => {
+                    event.preventDefault();
+                    choose(option);
+                  }}
+                  onMouseEnter={() => setActive(index)}
+                  className={`block w-full px-3 py-1.5 text-left text-xs ${
+                    index === active ? 'bg-slate-100' : ''
+                  } ${option.value === value ? 'font-semibold text-slate-900' : 'text-slate-700'}`}
+                >
+                  {option.value === '' ? (
+                    <span className="text-slate-500">{option.label}</span>
+                  ) : (
+                    <>
+                      <span className="block">{option.label}</span>
+                      {option.hint && (
+                        <span className="block text-[11px] text-slate-500">{option.hint}</span>
+                      )}
+                    </>
+                  )}
+                </button>
+              </li>
             ))
-          )}
-
-          {/* Said only when the list is the recent few AND there are more
-              behind it — otherwise it would claim a shortening that is not
-              happening. */}
-          {!query.trim() && options.length > RECENT_COUNT && (
-            <li className="border-t border-slate-100 px-3 py-1.5 text-xs text-slate-500">
-              Showing the {RECENT_COUNT} most recent of {options.length}. Type to search.
-            </li>
           )}
         </ul>
       )}
     </div>
-  );
-}
-
-function Row({
-  active,
-  selected,
-  muted,
-  onPick,
-  children,
-}: {
-  active: boolean;
-  selected: boolean;
-  muted?: boolean;
-  onPick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <li
-      role="option"
-      aria-selected={selected}
-      // Mousedown, not click: click fires after blur, by which point the list
-      // has already closed and the choice is lost.
-      onMouseDown={(event) => {
-        event.preventDefault();
-        onPick();
-      }}
-      className={`cursor-pointer px-3 py-2 text-sm ${
-        active ? 'bg-slate-100' : ''
-      } ${selected ? 'font-semibold text-slate-900' : muted ? 'text-slate-500' : 'text-slate-700'}`}
-    >
-      {children}
-    </li>
   );
 }

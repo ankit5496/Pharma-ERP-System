@@ -319,23 +319,27 @@ export function SelectField({
     return (
       <Shell {...shell}>
         <div className={shell.compact ? 'mt-1' : 'mt-1.5'}>
+          {/* `name` is given, so the component posts the chosen value through
+              its own hidden input — no second one here, which would submit the
+              field twice. */}
           <SearchableSelect
             id={shell.name}
+            name={shell.name}
             options={options}
-            placeholder={placeholder}
+            // `placeholder` on a SelectField names the unchosen entry, which
+            // is this component's `emptyLabel`. Null there means the field's
+            // own options already include a "none" — Schedule classification
+            // is the case — so there is nothing extra to offer and the default
+            // stands in as a prompt only.
+            emptyLabel={placeholder ?? undefined}
             // Controlled only. An uncontrolled searchable select would have to
             // track the DOM's value to render its own text box, and the two
             // would disagree the moment React 19 reset the form.
             value={value ?? defaultValue ?? ''}
             onChange={(next) => onChange?.(next)}
             required={shell.required}
-            invalid={shell.error ? true : undefined}
-            describedBy={shell.error ? `${shell.name}-error` : undefined}
+            small={shell.compact}
           />
-          {/* The value the form actually submits. SearchableSelect's own
-              <select> carries no `name`, because it renders one per field and
-              a second named control would submit twice. */}
-          <input type="hidden" name={shell.name} value={value ?? defaultValue ?? ''} />
         </div>
       </Shell>
     );
