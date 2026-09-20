@@ -1,6 +1,8 @@
 'use client';
 
 import { RowActionMenu, type RowAction } from '@/components/row-action-menu';
+import { pushToast } from '@/components/toast';
+
 import { useMemo, useState, useTransition } from 'react';
 import {
   RETURNED_STOCK_DISPOSITIONS,
@@ -13,7 +15,7 @@ import {
 
 import { createSalesReturnAction, updateSalesReturnAction } from './actions';
 import { EditDialog } from './edit-kit';
-import { DialogFooter } from './modal';
+import { DialogFooter, useDialogClose } from './modal';
 import { SearchableSelect } from './searchable-select';
 import { Note, PRIMARY_BUTTON, SECONDARY_BUTTON, formatDate, formatQuantity } from './ui';
 
@@ -50,6 +52,7 @@ export function NewReturnForm({
    */
   inDialog?: boolean;
 }) {
+  const closeDialog = useDialogClose();
   const [open, setOpen] = useState(false);
   const [invoiceId, setInvoiceId] = useState('');
   const [returnDate, setReturnDate] = useState(() => new Date().toISOString().slice(0, 10));
@@ -156,9 +159,9 @@ export function NewReturnForm({
               placeholder="Search by invoice number or customer…"
               options={invoices.map((candidate) => ({
                 value: candidate.id,
-                label: candidate.customerName,
-                hint: candidate.invoiceNumber,
-                keywords: candidate.invoiceNumber,
+                label: candidate.invoiceNumber,
+                hint: candidate.customerName,
+                keywords: candidate.customerName,
               }))}
             />
           </div>
@@ -363,6 +366,13 @@ export function NewReturnForm({
                   text: `Return ${result.data?.returnNumber ?? ''} recorded. Stock has been received into quarantine and the customer credited.`,
                 });
                 reset();
+                pushToast(
+                  'success',
+                  `Return ${result.data?.returnNumber ?? ''} recorded. Stock is in quarantine and the customer is credited.`,
+                );
+                // Saved, so the dialog's work is done. Inline (no dialog) this
+                // is null and the success message below stays on screen instead.
+                closeDialog?.();
               } else {
                 setMessage({ kind: 'error', text: result.error ?? 'That did not work.' });
               }

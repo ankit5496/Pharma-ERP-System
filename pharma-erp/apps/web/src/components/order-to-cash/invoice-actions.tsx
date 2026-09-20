@@ -5,8 +5,9 @@ import { useState, useTransition } from 'react';
 import type { SalesInvoiceListItem } from '@pharma-erp/types';
 
 import { cancelInvoiceAction, issueInvoiceAction, updateInvoiceAction } from './actions';
+import { ConfirmDialog } from './confirm-dialog';
 import { EditDialog } from './edit-kit';
-import { Note, PRIMARY_BUTTON } from './ui';
+import { formatDate, Note, PRIMARY_BUTTON } from './ui';
 
 /**
  * Issues the tax invoice for a confirmed dispatch.
@@ -43,19 +44,21 @@ export function IssueInvoiceButton({
   // would push the table sideways for something the eye reads once.
   if (!dispatchId) {
     return (
-      <button
-        type="button"
-        disabled
-        title={`Confirm a dispatch for ${orderNumber} first — an invoice bills what shipped, not what is reserved.`}
-        className={`${PRIMARY_BUTTON} opacity-40`}
-      >
-        Raise invoice
-      </button>
+      <div className="text-center">
+        <button
+          type="button"
+          disabled
+          title={`Confirm a dispatch for ${orderNumber} first — an invoice bills what shipped, not what is reserved.`}
+          className={`${PRIMARY_BUTTON} opacity-40`}
+        >
+          Raise invoice
+        </button>
+      </div>
     );
   }
 
   return (
-    <div className="text-right">
+    <div className="text-center">
       <button
         type="button"
         disabled={pending}
@@ -80,7 +83,7 @@ export function IssueInvoiceButton({
       </button>
 
       {message && (
-        <div className="mt-2 max-w-xs text-left">
+        <div className="mx-auto mt-2 max-w-xs text-left">
           {message.kind === 'error' ? (
             <Note tone="red">
               <p className="font-semibold">Invoice not issued for {orderNumber}</p>
@@ -103,6 +106,7 @@ export function IssueInvoiceButton({
  * a sales return, and the button says so instead of failing on click.
  */
 export function InvoiceRowActions({ invoice }: { invoice: SalesInvoiceListItem }) {
+  const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [pending, startTransition] = useTransition();
@@ -137,21 +141,12 @@ export function InvoiceRowActions({ invoice }: { invoice: SalesInvoiceListItem }
     />
   ) : null;
 
-  const cancel = () => {
-    const reason = window.prompt(
-      `Cancel invoice ${invoice.invoiceNumber}?
-
-` +
-        `The number stays used and the receivable is reversed with a visible ` +
-        `adjustment — nothing is deleted. Reason (optional):`,
-    );
-
-    if (reason === null) return;
-
+  const cancel = (reason?: string) => {
     setError(null);
     startTransition(async () => {
-      const result = await cancelInvoiceAction(invoice.id, reason || undefined);
+      const result = await cancelInvoiceAction(invoice.id, reason);
       if (!result.ok) setError(result.error ?? 'That did not work.');
+      else setConfirming(false);
     });
   };
 
@@ -159,7 +154,7 @@ export function InvoiceRowActions({ invoice }: { invoice: SalesInvoiceListItem }
     { label: 'Edit', onSelect: () => setEditing(true) },
     {
       label: 'Cancel',
-      onSelect: cancel,
+      onSelect: () => setConfirming(true),
       // An invoice with money or a return against it is corrected by raising a
       // sales return, not by cancelling what has already been acted on.
       disabledReason: canCancel
@@ -171,6 +166,24 @@ export function InvoiceRowActions({ invoice }: { invoice: SalesInvoiceListItem }
   return (
     <>
       <RowActionMenu label={invoice.invoiceNumber} actions={actions} busy={pending} />
+
+      {confirming && (
+        <ConfirmDialog
+          title={`Cancel invoice ${invoice.invoiceNumber}?`}
+          description="The number stays used and the receivable is reversed with a visible adjustment. Nothing is deleted — a tax invoice is a statutory document."
+          details={[
+            { label: 'Customer', value: invoice.customerName },
+            { label: 'Invoice date', value: formatDate(invoice.invoiceDate) },
+            { label: 'Total', value: invoice.grandTotal },
+            { label: 'Received', value: invoice.amountPaid },
+          ]}
+          reason={{ label: 'Reason', hint: 'Optional. Kept with the invoice.' }}
+          confirmLabel="Cancel invoice"
+          pending={pending}
+          onConfirm={cancel}
+          onClose={() => setConfirming(false)}
+        />
+      )}
 
       {error && (
         <p role="alert" className="mt-2 max-w-xs text-xs text-red-700">

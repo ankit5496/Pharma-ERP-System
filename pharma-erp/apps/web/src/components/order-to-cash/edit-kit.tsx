@@ -2,7 +2,7 @@
 
 import { useState, useTransition, type ReactNode } from 'react';
 
-import { Modal } from './modal';
+import { DialogFooter, Modal } from './modal';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 
 /**
@@ -131,7 +131,7 @@ export function EditDialog({
                 id={`o2c-edit-${field.name}`}
                 name={field.name}
                 defaultValue={field.value}
-                className="field mt-1.5"
+                className="field mt-1.5 h-10"
               >
                 {field.options.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -146,7 +146,7 @@ export function EditDialog({
                 type={field.type ?? 'text'}
                 defaultValue={field.value}
                 autoComplete="off"
-                className="field mt-1.5"
+                className="field mt-1.5 h-10"
               />
             )}
 
@@ -154,14 +154,15 @@ export function EditDialog({
           </div>
         ))}
 
-        <div className="flex gap-2 sm:col-span-2">
+        {/* The dialog's own footer — Cancel left, the action right, against a
+            rule spanning the full width — so an edit closes the same way the
+            create forms do rather than with two buttons loose under the last
+            field. */}
+        <DialogFooter className="sm:col-span-2">
           <button type="submit" disabled={pending} className={PRIMARY_BUTTON}>
             {pending ? 'Saving…' : 'Save changes'}
           </button>
-          <button type="button" onClick={onClose} className={SECONDARY_BUTTON}>
-            Cancel
-          </button>
-        </div>
+        </DialogFooter>
       </form>
     </Modal>
   );

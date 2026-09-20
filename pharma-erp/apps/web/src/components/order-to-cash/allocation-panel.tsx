@@ -40,6 +40,10 @@ const ALLOCATION_FILTERS = [
     allLabel: 'Any schedule',
     choices: choicesFrom(SCHEDULE_CATEGORIES, SCHEDULE_CATEGORY_LABELS),
   },
+  // When the stock was set aside, so "what did I allocate today" is one
+  // selection rather than a read of the whole table.
+  { param: 'allocatedFrom', label: 'Allocated from' },
+  { param: 'allocatedTo', label: 'Allocated to' },
   // Which reservations are running out — the question FEFO exists to answer,
   // and one no search term can express.
   { param: 'expiryFrom', label: 'Expires on or after' },
@@ -57,6 +61,10 @@ const AWAITING_COLUMNS = [
 
 const COLUMNS = [
   'Order',
+  // When the stock was set aside. The only other date here is the batch's
+  // expiry, which says nothing about when this reservation was made — so there
+  // was no way to pick out today's work.
+  'Allocated on',
   'Product',
   'Batch',
   'Expiry',
@@ -94,22 +102,36 @@ export async function AllocationPanel({
   // Approved or part-allocated orders still needing stock. Anything not past
   // both gates is deliberately absent: it is not allocatable, and listing it
   // with a disabled button would invite the question of why.
+  //
+  // ORDERS HOLDING NO STOCK AT ALL. Allocation is all or nothing, so an order
+  // leaves this queue the moment it is allocated — it is Dispatch's problem
+  // from then on. An order that still holds part of an older, partial
+  // reservation is not waiting for stock, it is holding some: releasing that
+  // reservation returns it here.
   const awaiting = orders.ok
     ? orders.data.filter(
         (order) =>
           order.licenceCheck === 'PASS' &&
           order.creditCheck === 'PASS' &&
-          ['APPROVED', 'PARTIALLY_ALLOCATED'].includes(order.status),
+          order.status === 'APPROVED',
       )
     : [];
 
-  // The reservations, narrowed by the Filter panel. Status and schedule are
-  // closed sets and expiry is a date — none of them is something to type.
+  // LIVE RESERVATIONS BY DEFAULT — stock actually being held, which is what
+  // can still be edited or released. A row that shipped or was released back
+  // is history: it answers "what happened to this batch", not "what is held",
+  // and left in the list it buried the handful of rows someone can act on.
+  //
+  // The Filter's Status field reaches them: choosing Dispatched or Released
+  // back shows exactly those, so nothing is hidden, only out of the way.
   const reservations = allocations.ok
     ? allocations.data.filter(
         (row) =>
-          matchesChoice(row.status, filters.status) &&
+          (filters.status
+            ? row.status === filters.status
+            : row.status === 'ALLOCATED' || row.status === 'PARTIALLY_DISPATCHED') &&
           matchesChoice(row.scheduleCategory, filters.schedule) &&
+          withinDates(row.createdAt, filters.allocatedFrom, filters.allocatedTo) &&
           withinDates(row.expiryDate, filters.expiryFrom, filters.expiryTo),
       )
     : [];
@@ -126,7 +148,7 @@ export async function AllocationPanel({
           ) : awaiting.length === 0 ? (
             <EmptyState
               title="Nothing is waiting for stock."
-              hint="An order appears here once it has passed both the licence and the credit check."
+              hint="An order appears here once it has passed both the licence and the credit check, and leaves once its stock is reserved."
             />
           ) : (
             <Table columns={AWAITING_COLUMNS} minWidth="min-w-[48rem]">
@@ -154,8 +176,8 @@ export async function AllocationPanel({
           <ErrorState what="allocations" message={allocations.error} />
         ) : reservations.length === 0 ? (
           <EmptyState
-            title="No stock has been reserved yet."
-            hint="Allocate an approved order above. Only RELEASED, unexpired batches with available quantity are eligible."
+            title="No stock is currently reserved."
+            hint="Allocate an approved order above. Only RELEASED, unexpired batches with available quantity are eligible. Dispatched and released reservations are behind the Status filter."
           />
         ) : (
           <Table columns={COLUMNS}>
@@ -225,6 +247,12 @@ function AllocationTableRow({ allocation }: { allocation: AllocationRow }) {
       <Cell>
         <p className="font-mono text-xs font-medium text-slate-900">{allocation.orderNumber}</p>
         <p className="mt-0.5 text-[11px] text-slate-500">{allocation.customerName}</p>
+      </Cell>
+
+      <Cell>
+        <span className="whitespace-nowrap text-xs text-slate-700">
+          {formatDate(allocation.createdAt)}
+        </span>
       </Cell>
 
       <Cell>
