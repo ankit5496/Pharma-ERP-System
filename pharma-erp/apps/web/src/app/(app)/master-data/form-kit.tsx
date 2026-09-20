@@ -622,10 +622,25 @@ export function SubmitActions({
 export function FormError({
   message,
   fieldErrors,
+  shownFields,
 }: {
   message: string;
   /** What is already marked inline; the banner hides when this covers it. */
   fieldErrors?: Record<string, string>;
+  /**
+   * The field names this form actually renders an `error` for.
+   *
+   * WITHOUT IT THE BANNER HID ON TRUST. Any field error at all suppressed it,
+   * on the assumption that every message had reached a control — and a form
+   * that renders fifteen inputs but wires `error` to ten has five fields whose
+   * refusal reaches nothing. `shelfLifeMonths` is one: the API caps it at 120
+   * months, the item form never shows that message, and the save failed with
+   * nothing on screen to say why.
+   *
+   * Given this, the banner hides only when every named field is one the form
+   * can mark. Omit it to keep the old behaviour.
+   */
+  shownFields?: readonly string[];
 }) {
   // Anything marked on a control is already said where it can be acted on, so
   // the banner has nothing left to add. Hidden on the presence of field errors
@@ -637,7 +652,15 @@ export function FormError({
   // A refusal with no field attached still shows: a role check, an expired
   // session, a rule about the state of a document. Those have no control to
   // point at, which is exactly when a banner is the only place to put them.
-  if (fieldErrors && Object.keys(fieldErrors).length > 0) return null;
+  const named = fieldErrors ? Object.keys(fieldErrors) : [];
+
+  // Every refusal reached a control, so the banner has nothing left to add.
+  // When `shownFields` is absent this is the old test — any field error hides
+  // it — which is right for a form that wires every field it renders.
+  const allShown =
+    named.length > 0 && (!shownFields || named.every((field) => shownFields.includes(field)));
+
+  if (allShown) return null;
 
   return (
     <div

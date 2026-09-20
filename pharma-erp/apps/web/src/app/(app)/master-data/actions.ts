@@ -954,11 +954,23 @@ export async function savePackagingAction(
   const packVariant = String(formData.get('packVariant') ?? '').trim();
   const unitsPerPack = String(formData.get('unitsPerPack') ?? '').trim();
 
-  const packagingMissing = requireFields([
-    ['Finished product', productId, 'productId'],
-    ['Pack variant', packVariant, 'packVariant'],
-    ['Units per pack', unitsPerPack, 'unitsPerPack'],
-  ]);
+  // The product is fixed once the specification exists — a spec is FOR a
+  // product, and the update endpoint does not accept a new one — so the edit
+  // form shows it read-only and submits nothing. Requiring it on that path
+  // refused every edit with "Finished product is required", naming a field
+  // the form does not render as editable. Same shape as the BOM action above.
+  const packagingMissing = requireFields(
+    requirementId
+      ? [
+          ['Pack variant', packVariant, 'packVariant'],
+          ['Units per pack', unitsPerPack, 'unitsPerPack'],
+        ]
+      : [
+          ['Finished product', productId, 'productId'],
+          ['Pack variant', packVariant, 'packVariant'],
+          ['Units per pack', unitsPerPack, 'unitsPerPack'],
+        ],
+  );
 
   if (packagingMissing) return { ok: false, values, ...packagingMissing };
 

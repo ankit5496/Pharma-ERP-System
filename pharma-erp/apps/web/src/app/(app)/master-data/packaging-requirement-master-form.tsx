@@ -69,6 +69,9 @@ const REQUIREMENT_OPTIONS = (
   label: `${PACKAGING_COMPONENT_REQUIREMENT_LABELS[key]} — ${PACKAGING_COMPONENT_REQUIREMENT_DESCRIPTIONS[key]}`,
 }));
 
+/** The fields this form marks; see FormError in ./form-kit. */
+const MARKED_FIELDS = ['productId', 'packVariant', 'unitsPerPack'] as const;
+
 const INITIAL: ActionResult = { ok: false };
 
 export function PackagingRequirementMasterForm({
@@ -167,7 +170,11 @@ export function PackagingRequirementMasterForm({
   return (
     <form action={formAction} className="flex flex-col gap-8" noValidate>
       {!state.ok && state.message && (
-        <FormError message={state.message} fieldErrors={state.fieldErrors} />
+        <FormError
+          message={state.message}
+          fieldErrors={state.fieldErrors}
+          shownFields={MARKED_FIELDS}
+        />
       )}
 
       {(products.length === 0 || packingMaterials.length === 0) && (
