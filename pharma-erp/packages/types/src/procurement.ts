@@ -691,9 +691,27 @@ export interface QcResultItem {
 export interface QcQueueItem {
   lot: StockLotSummary;
   item: ItemSummary;
-  vendor: { id: string; name: string };
-  goodsReceipt: { id: string; number: string; receiptDate: string };
-  purchaseOrder: { id: string; number: string };
+
+  /**
+   * Where the material came from — a purchase, or a principal's challan.
+   *
+   * EXACTLY ONE OF THESE IS SET, which the database enforces through the
+   * `stock_lots_has_one_source` CHECK rather than by convention. Purchased
+   * material has a vendor, an order and a goods receipt; a principal's has a
+   * principal, a job-work order and a delivery challan, and no purchase exists
+   * anywhere behind it.
+   */
+  vendor: { id: string; name: string } | null;
+  goodsReceipt: { id: string; number: string; receiptDate: string } | null;
+  purchaseOrder: { id: string; number: string } | null;
+
+  /** Set for principal-owned material; null for anything bought. */
+  jobWork: {
+    principal: { id: string; name: string };
+    jobWorkOrder: { id: string; number: string };
+    materialReceipt: { id: string; number: string; receiptDate: string };
+    deliveryChallanNumber: string;
+  } | null;
   /** Newest first. Empty until the first decision is recorded. */
   history: QcResultItem[];
   /** Days until expiry, negative when already expired. Null when no expiry. */

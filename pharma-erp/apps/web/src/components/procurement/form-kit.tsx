@@ -32,6 +32,7 @@ export function SubmitButton({
   name,
   value,
   formNoValidate,
+  disabled = false,
 }: {
   children: ReactNode;
   pendingLabel?: string;
@@ -52,6 +53,14 @@ export function SubmitButton({
    * distinction from `saveAsDraft`, so nothing rests on the attribute alone.
    */
   formNoValidate?: boolean;
+  /**
+   * Refuses the submit before it is made.
+   *
+   * A COURTESY, NOT A RULE. The API re-decides every time, so this exists to
+   * stop somebody pressing a button that was always going to be refused — not
+   * to be the thing that refuses them.
+   */
+  disabled?: boolean;
 }) {
   const { pending } = useFormStatus();
 
@@ -68,7 +77,7 @@ export function SubmitButton({
       name={name}
       value={value}
       formNoValidate={formNoValidate}
-      disabled={pending}
+      disabled={pending || disabled}
       // aria-busy so a screen reader announces the wait, not just the sighted
       // change of label.
       aria-busy={pending}
@@ -491,7 +500,11 @@ export function FormFooter({
   className = '',
 }: {
   onCancel: () => void;
-  children: ReactNode;
+  /**
+   * What sits on the right. Omitted on a read-only dialog, where Cancel is
+   * the only thing to do and calling it "Save" would be a lie.
+   */
+  children?: ReactNode;
   /**
    * For a form that lays out as a grid, where the footer has to span it.
    * Without this a two-column form puts the footer in one CELL, and the save

@@ -333,7 +333,9 @@ export class MaterialIssueService {
           where: { id: { in: chosen.map((entry) => entry.lotId) }, itemId: line.item.id },
           // Needed to judge the bucket: ownership is on the lot, but which
           // job-work order a principal-owned lot belongs to is on its receipt.
-          include: { jobWorkMaterialReceipt: { select: { jobWorkOrderId: true } } },
+          include: {
+            jobWorkMaterialReceiptLine: { select: { receipt: { select: { jobWorkOrderId: true } } } },
+          },
         });
 
         const lotsById = new Map(lots.map((lot) => [lot.id, lot]));

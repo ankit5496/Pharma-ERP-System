@@ -307,11 +307,17 @@ const challanReceipt = await store('/job-work/material-receipts', {
   body: {
     jobWorkOrderId: order.id,
     deliveryChallanNumber: `DC-MW-${tag}`,
-    itemId: material.id,
-    batchNumber: `MW-IBU-${tag}`,
-    receivedQuantity: '50',
-    manufacturingDate: iso(new Date(today.getFullYear(), today.getMonth() - 1, 1)),
-    expiryDate: iso(plusYears(2)),
+    receiptDate: iso(today),
+    qcRequired: false,
+    lines: [
+      {
+        itemId: material.id,
+        batchNumber: `MW-IBU-${tag}`,
+        receivedQuantity: '50',
+        manufacturingDate: iso(new Date(today.getFullYear(), today.getMonth() - 1, 1)),
+        expiryDate: iso(plusYears(2)),
+      },
+    ],
   },
 });
 
@@ -368,11 +374,17 @@ const conversionReceipt = await store('/job-work/material-receipts', {
   body: {
     jobWorkOrderId: conversionOrder.id,
     deliveryChallanNumber: `DC-CV-${tag}`,
-    itemId: material.id,
-    batchNumber: `CV-IBU-${tag}`,
-    receivedQuantity: '50',
-    manufacturingDate: iso(new Date(today.getFullYear(), today.getMonth() - 1, 1)),
-    expiryDate: iso(plusYears(2)),
+    receiptDate: iso(today),
+    qcRequired: false,
+    lines: [
+      {
+        itemId: material.id,
+        batchNumber: `CV-IBU-${tag}`,
+        receivedQuantity: '50',
+        manufacturingDate: iso(new Date(today.getFullYear(), today.getMonth() - 1, 1)),
+        expiryDate: iso(plusYears(2)),
+      },
+    ],
   },
 });
 

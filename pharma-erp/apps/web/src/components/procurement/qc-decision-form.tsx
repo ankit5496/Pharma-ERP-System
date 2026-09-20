@@ -143,32 +143,50 @@ export function QcDecisionForm({ lot }: { lot: QcQueueItem }) {
               />
             </Field>
 
-            <Field label="Vendor" htmlFor={`qc-vendor-${lot.lot.id}`}>
+            {/* WHOSE MATERIAL, AND ON WHAT DOCUMENT. A purchased lot names its
+                vendor, order and goods receipt; a principal's names the
+                principal, their job-work order and their delivery challan. The
+                labels change with it, because calling a principal a "vendor"
+                here would be the one thing US-JW-02 is most insistent about. */}
+            <Field
+              label={lot.jobWork ? 'Principal' : 'Vendor'}
+              htmlFor={`qc-source-${lot.lot.id}`}
+            >
               <input
-                id={`qc-vendor-${lot.lot.id}`}
+                id={`qc-source-${lot.lot.id}`}
                 disabled
                 readOnly
-                value={lot.vendor.name}
+                value={lot.jobWork?.principal.name ?? lot.vendor?.name ?? '—'}
                 className="field"
               />
             </Field>
 
-            <Field label="Purchase order" htmlFor={`qc-po-${lot.lot.id}`}>
+            <Field
+              label={lot.jobWork ? 'Job-work order' : 'Purchase order'}
+              htmlFor={`qc-po-${lot.lot.id}`}
+            >
               <input
                 id={`qc-po-${lot.lot.id}`}
                 disabled
                 readOnly
-                value={lot.purchaseOrder.number}
+                value={lot.jobWork?.jobWorkOrder.number ?? lot.purchaseOrder?.number ?? '—'}
                 className="field font-mono"
               />
             </Field>
 
-            <Field label="Goods receipt" htmlFor={`qc-grn-${lot.lot.id}`}>
+            <Field
+              label={lot.jobWork ? 'Material receipt' : 'Goods receipt'}
+              htmlFor={`qc-grn-${lot.lot.id}`}
+            >
               <input
                 id={`qc-grn-${lot.lot.id}`}
                 disabled
                 readOnly
-                value={lot.goodsReceipt.number}
+                value={
+                  lot.jobWork
+                    ? `${lot.jobWork.materialReceipt.number} · challan ${lot.jobWork.deliveryChallanNumber}`
+                    : (lot.goodsReceipt?.number ?? '—')
+                }
                 className="field font-mono"
               />
             </Field>
@@ -178,7 +196,7 @@ export function QcDecisionForm({ lot }: { lot: QcQueueItem }) {
                 id={`qc-recd-${lot.lot.id}`}
                 disabled
                 readOnly
-                value={lot.goodsReceipt.receiptDate.slice(0, 10)}
+                value={(lot.jobWork?.materialReceipt.receiptDate ?? lot.goodsReceipt?.receiptDate ?? '').slice(0, 10)}
                 className="field tabular-nums"
               />
             </Field>

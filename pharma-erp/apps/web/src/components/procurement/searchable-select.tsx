@@ -52,7 +52,14 @@ export function SearchableSelect({
   options: readonly LookupOption[];
   value: string;
   onChange: (value: string) => void;
-  /** The "no selection" entry. Always offered, so a choice can be undone. */
+  /**
+   * What an empty field says, and — where a blank is legal — the row that
+   * clears it.
+   *
+   * ON A REQUIRED FIELD IT IS A PLACEHOLDER AND NOTHING MORE: no row is
+   * offered for it, because "nothing" is not one of the answers. On an optional
+   * field it is also offered as the top row, so a choice can be undone.
+   */
   emptyLabel?: string;
   placeholder?: string;
   required?: boolean;
@@ -62,7 +69,16 @@ export function SearchableSelect({
   const listId = useId();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [active, setActive] = useState(0);
+
+  /**
+   * The row the keyboard is on. -1 is "none yet", and that is the value the
+   * list opens with.
+   *
+   * NOTHING IS PICKED FOR YOU. Opening a list is not choosing from it, so the
+   * first row is not pre-armed and Enter on an untouched list commits nothing.
+   * Arrowing in, or typing, is what puts the keyboard on a row.
+   */
+  const [active, setActive] = useState(-1);
 
   const wrapper = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
@@ -70,14 +86,21 @@ export function SearchableSelect({
   const selected = options.find((option) => option.value === value) ?? null;
 
   /**
-   * The list as it stands, with the "none" entry at the top.
+   * The list as it stands.
    *
    * Filtered case-insensitively on label AND hint, so a vendor can be found by
    * its code and an order by its number, which is how people remember them.
+   *
+   * The "none" row is there only when a blank is a legal answer. A required
+   * field that offered one would be presenting the thing it is about to refuse
+   * as if it were a choice — and, sitting at the top of the list, it reads as
+   * an item that is already selected.
    */
   const matches = useMemo(() => {
     const term = query.trim().toLowerCase();
-    const all: LookupOption[] = [{ value: '', label: emptyLabel }, ...options];
+    const all: LookupOption[] = required
+      ? [...options]
+      : [{ value: '', label: emptyLabel }, ...options];
 
     if (!term) return all;
 
@@ -86,7 +109,7 @@ export function SearchableSelect({
         option.value === '' ||
         `${option.label} ${option.hint ?? ''}`.toLowerCase().includes(term),
     );
-  }, [options, query, emptyLabel]);
+  }, [options, query, emptyLabel, required]);
 
   // Closing on an outside pointer press rather than on blur: blur fires before
   // the click that caused it lands, so closing there would dismiss the list
@@ -106,13 +129,14 @@ export function SearchableSelect({
   const choose = (option: LookupOption) => {
     onChange(option.value);
     setQuery('');
+    setActive(-1);
     setOpen(false);
     input.current?.focus();
   };
 
   const openList = () => {
     if (disabled) return;
-    setActive(0);
+    setActive(-1);
     setOpen(true);
   };
 
@@ -148,7 +172,10 @@ export function SearchableSelect({
         onChange={(event) => {
           if (!open) openList();
           setQuery(event.target.value);
-          setActive(0);
+          // Typing narrows the list to what was asked for, so arming the top
+          // row is a genuine shortcut rather than a guess: Enter then takes
+          // the best match for what the user actually typed.
+          setActive(event.target.value.trim() ? 0 : -1);
         }}
         onKeyDown={(event) => {
           if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -163,6 +190,10 @@ export function SearchableSelect({
             const step = event.key === 'ArrowDown' ? 1 : -1;
 
             setActive((current) => {
+              // From "none yet", Down lands on the first row and Up on the
+              // last, which is what both keys mean when nothing is active.
+              if (current < 0) return step > 0 ? 0 : matches.length - 1;
+
               const next = current + step;
 
               if (next < 0) return matches.length - 1;
@@ -179,7 +210,9 @@ export function SearchableSelect({
             // the surrounding form the rest of the time.
             event.preventDefault();
 
-            const option = matches[active];
+            // Nothing arrowed to and nothing typed means nothing chosen —
+            // Enter must not commit whichever row happens to be first.
+            const option = active >= 0 ? matches[active] : undefined;
 
             if (option) choose(option);
 
@@ -202,7 +235,9 @@ export function SearchableSelect({
           className="absolute z-30 mt-1 max-h-60 w-full overflow-y-auto rounded-md border border-slate-200 bg-white py-1 text-left shadow-lg"
         >
           {matches.length === 0 ? (
-            <li className="px-3 py-2 text-xs text-slate-500">No match for “{query.trim()}”.</li>
+            <li className="px-3 py-2 text-xs text-slate-500">
+              {query.trim() ? `No match for “${query.trim()}”.` : 'Nothing to choose from yet.'}
+            </li>
           ) : (
             matches.map((option, index) => (
               <li key={option.value || '__none'}>

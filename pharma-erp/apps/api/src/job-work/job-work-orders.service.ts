@@ -89,7 +89,9 @@ export class JobWorkOrdersService {
               },
             },
           },
-          orderBy: { principalBrandName: 'asc' },
+          // Newest first, like every other picklist: the product list on the
+          // order form is reached into, not read down.
+          orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         },
       },
       orderBy: { createdAt: 'desc' },
@@ -351,15 +353,21 @@ export class JobWorkOrdersService {
    */
   private async toSummary(order: OrderWithRelations): Promise<JobWorkOrderSummary> {
     const [received, consumed, dispatched, productionOrderCount] = await Promise.all([
-      this.prisma.scoped.jobWorkMaterialReceipt.aggregate({
-        where: { jobWorkOrderId: order.id, deletedAt: null },
+      // What arrived is on the receipt's LINES now, one join below the order.
+      this.prisma.scoped.jobWorkMaterialReceiptLine.aggregate({
+        where: {
+          deletedAt: null,
+          receipt: { jobWorkOrderId: order.id, deletedAt: null },
+        },
         _sum: { receivedQuantity: true },
       }),
       // Consumption is counted off the ISSUE LINES that drew from this order's
       // principal-owned lots — the same rows that answer a recall — rather than
       // off anything stored on the order.
       this.prisma.scoped.materialIssueLine.aggregate({
-        where: { lot: { jobWorkMaterialReceipt: { jobWorkOrderId: order.id } } },
+        where: {
+          lot: { jobWorkMaterialReceiptLine: { receipt: { jobWorkOrderId: order.id } } },
+        },
         _sum: { quantityIssued: true },
       }),
       this.prisma.scoped.jobWorkInvoice.aggregate({

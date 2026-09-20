@@ -58,14 +58,32 @@ export default async function WorkflowStepPage({ params, searchParams }: PagePro
   const query = await searchParams;
   const search = typeof query.search === 'string' ? query.search : undefined;
 
-  return (
-    <section aria-labelledby="step-heading">
-      <h2 id="step-heading" className="text-lg font-semibold text-slate-900">
-        {step.label}
-      </h2>
-      {step.purpose && <p className="mt-1 max-w-3xl text-sm text-slate-600">{step.purpose}</p>}
+  /**
+   * Job Work titles its own screens.
+   *
+   * Every one of its panels renders a Panel with a title and its own search and
+   * filter controls, and the sub-tab is already named in the nav above — so the
+   * step heading here would be the third name for the same screen, with a
+   * paragraph under it restating what the table shows.
+   */
+  const ownsItsHeading = workflow.key === 'job-work';
 
-      <div className="mt-5">
+  return (
+    <section aria-label={ownsItsHeading ? step.label : undefined}
+      aria-labelledby={ownsItsHeading ? undefined : 'step-heading'}
+    >
+      {!ownsItsHeading && (
+        <>
+          <h2 id="step-heading" className="text-lg font-semibold text-slate-900">
+            {step.label}
+          </h2>
+          {step.purpose && (
+            <p className="mt-1 max-w-3xl text-sm text-slate-600">{step.purpose}</p>
+          )}
+        </>
+      )}
+
+      <div className={ownsItsHeading ? undefined : 'mt-5'}>
         {/* The extension point promised in WORKFLOWS: a step whose `state` is
             'ready' has a screen registered for it and renders it; anything else
             still gets the honest placeholder.
@@ -83,7 +101,7 @@ export default async function WorkflowStepPage({ params, searchParams }: PagePro
             <OrderToCashStep step={step.key} search={search} />
           </>
         ) : step.state === 'ready' ? (
-          <BuiltStep workflowKey={workflow.key} stepKey={step.key} />
+          <BuiltStep workflowKey={workflow.key} stepKey={step.key} query={query} />
         ) : (
           <StepPlaceholder workflowLabel={workflow.label} stepLabel={step.label} />
         )}
@@ -100,7 +118,10 @@ export default async function WorkflowStepPage({ params, searchParams }: PagePro
  * missing key here rather than a silently blank page. `state: 'ready'` and an
  * entry in this table have to be changed together, and that is the point.
  */
-const PRODUCTION_STEPS: Record<string, () => React.ReactNode> = {
+/** A screen, given the URL it was asked for. */
+export type StepQuery = Record<string, string | string[] | undefined>;
+
+const PRODUCTION_STEPS: Record<string, (query: StepQuery) => React.ReactNode> = {
   formulations: () => <FormulationsPanel />,
   'production-orders': () => <ProductionOrdersPanel />,
   'material-issue': () => <MaterialIssuePanel />,
@@ -108,7 +129,21 @@ const PRODUCTION_STEPS: Record<string, () => React.ReactNode> = {
   'batch-release': () => <BatchReleasePanel />,
 };
 
-function BuiltStep({ workflowKey, stepKey }: { workflowKey: string; stepKey: string }) {
+function BuiltStep({
+  workflowKey,
+  stepKey,
+  query,
+}: {
+  workflowKey: string;
+  stepKey: string;
+  /**
+   * The URL's query, handed to whichever panel renders.
+   *
+   * Job Work's lists filter themselves from it — the same `search` and filter
+   * keys the Procure-to-Pay screens write, so both use one set of controls.
+   */
+  query: Record<string, string | string[] | undefined>;
+}) {
   const table =
     workflowKey === 'production-quality'
       ? PRODUCTION_STEPS
@@ -129,7 +164,7 @@ function BuiltStep({ workflowKey, stepKey }: { workflowKey: string; stepKey: str
     );
   }
 
-  return <>{render()}</>;
+  return <>{render(query)}</>;
 }
 
 /**

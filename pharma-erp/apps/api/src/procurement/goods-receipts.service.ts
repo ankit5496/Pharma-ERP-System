@@ -106,6 +106,12 @@ export class GoodsReceiptsService {
         { purchaseOrder: { number: { contains: search, mode: 'insensitive' } } },
         { lines: { some: { vendorBatchNumber: { contains: search, mode: 'insensitive' } } } },
         { lines: { some: { item: { name: { contains: search, mode: 'insensitive' } } } } },
+        // THE PERSON, resolved to ids first. `receivedById` is a bare UUID
+        // column with no relation behind it, so there is no name here to put a
+        // `contains` on — the search term is turned into the ids of everyone it
+        // matches and the document is matched on those. An empty list matches
+        // nothing, which is the right answer when no such person exists.
+        { receivedById: { in: await this.people.idsMatching(search) } },
       ];
     }
 

@@ -1,4 +1,16 @@
-import { IsOptional, IsString, IsUUID, Matches, MaxLength } from 'class-validator';
+import { Type } from 'class-transformer';
+import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  IsArray,
+  IsBoolean,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Matches,
+  MaxLength,
+  ValidateNested,
+} from 'class-validator';
 
 /**
  * Request shape for a job-work material receipt — US-JW-02.
@@ -18,22 +30,15 @@ const CALENDAR_DAY_MESSAGE = 'must be a calendar date in YYYY-MM-DD form, with n
 const QUANTITY = /^\d{1,14}(\.\d{1,4})?$/;
 const QUANTITY_MESSAGE = 'must be a quantity with at most 4 decimal places, sent as a string';
 
-export class CreateJobWorkMaterialReceiptDto {
-  @IsUUID()
-  jobWorkOrderId!: string;
-
-  /**
-   * The principal's own document number.
-   *
-   * Named for what it is. US-JW-02 is explicit that it "must NOT be treated as
-   * a Purchase Invoice", and the surest way to honour that is for the word
-   * "invoice" to appear nowhere on this record.
-   */
-  @IsString()
-  @MaxLength(64)
-  @Matches(/\S/, { message: 'deliveryChallanNumber must not be blank' })
-  deliveryChallanNumber!: string;
-
+/**
+ * One material on the challan.
+ *
+ * The principal ships a formulation's worth of material at once — an API, a
+ * filler, a lubricant — on a single document. Each arrives with its own batch
+ * marking, its own dates and its own quantity, so each is described separately
+ * here while the document they came on is described once, above.
+ */
+export class JobWorkMaterialReceiptLineDto {
   @IsUUID()
   itemId!: string;
 
@@ -58,4 +63,63 @@ export class CreateJobWorkMaterialReceiptDto {
   @IsString()
   @MaxLength(500)
   notes?: string;
+}
+
+export class CreateJobWorkMaterialReceiptDto {
+  @IsUUID()
+  jobWorkOrderId!: string;
+
+  /**
+   * The principal's own document number.
+   *
+   * Named for what it is. US-JW-02 is explicit that it "must NOT be treated as
+   * a Purchase Invoice", and the surest way to honour that is for the word
+   * "invoice" to appear nowhere on this record.
+   */
+  @IsString()
+  @MaxLength(64)
+  @Matches(/\S/, { message: 'deliveryChallanNumber must not be blank' })
+  deliveryChallanNumber!: string;
+
+  /** The date on the challan, which is not always the day it is keyed in. */
+  @Matches(CALENDAR_DAY, { message: `receiptDate ${CALENDAR_DAY_MESSAGE}` })
+  receiptDate!: string;
+
+  /**
+   * Whether this consignment has to clear incoming QC before it may be issued.
+   *
+   * DEFAULTS TO TRUE IN THE SERVICE, not here: omitting the field has to mean
+   * "inspect it", which is the rule purchased material already lives under. A
+   * caller sending false is making a deliberate choice, and it is recorded on
+   * the receipt and audited with the rest of the create.
+   */
+  @IsOptional()
+  @IsBoolean()
+  qcRequired?: boolean;
+
+  /**
+   * The materials on the challan — at least one.
+   *
+   * AN ARRAY EVEN FOR ONE, because a delivery of three materials is one event
+   * and has to be recorded as one: the store officer who is interrupted after
+   * the second must not leave the company holding two of the three with two lot
+   * numbers already spent. The service validates every line before it writes
+   * any of them, inside a single transaction.
+   *
+   * The ceiling is generous rather than meaningful: no formulation has 200
+   * materials, and the limit exists so a malformed request cannot ask the
+   * numbering series for an unbounded run of lot numbers.
+   */
+  /** A note about the delivery as a whole. Per-material notes are on the line. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  notes?: string;
+
+  @IsArray()
+  @ArrayMinSize(1, { message: 'A receipt needs at least one material on it.' })
+  @ArrayMaxSize(200)
+  @ValidateNested({ each: true })
+  @Type(() => JobWorkMaterialReceiptLineDto)
+  lines!: JobWorkMaterialReceiptLineDto[];
 }

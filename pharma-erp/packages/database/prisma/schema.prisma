@@ -152,7 +152,8 @@ model Tenant {
   jobWorkAgreements       JobWorkAgreement[]
   jobWorkProductMappings  JobWorkProductMapping[]
   jobWorkOrders           JobWorkOrder[]
-  jobWorkMaterialReceipts JobWorkMaterialReceipt[]
+  jobWorkMaterialReceipts     JobWorkMaterialReceipt[]
+  jobWorkMaterialReceiptLines JobWorkMaterialReceiptLine[]
   jobWorkInvoices         JobWorkInvoice[]
 
   // Packaging: what each pack presentation consumes.
@@ -415,6 +416,18 @@ enum PartyStatus {
 }
 
 /// Where a work order has reached. Ordered as the process runs.
+/// Where a principal's delivery stands.
+///
+/// RELEASED is the resting state for a consignment that needed no inspection,
+/// which is why it is the default: a receipt booked with qcRequired false is
+/// available to production the moment it is saved.
+enum JobWorkReceiptStatus {
+  PENDING_QC
+  RELEASED
+  ON_HOLD
+  REJECTED
+}
+
 enum ProductionOrderStatus {
   PLANNED
   MATERIAL_ISSUED
@@ -1285,7 +1298,7 @@ model Item {
   // stock table, shared with Procure-to-Pay.
   productionOrders  ProductionOrder[]
   issueLines        MaterialIssueLine[]
-  jobWorkReceipts   JobWorkMaterialReceipt[]
+  jobWorkReceiptLines JobWorkMaterialReceiptLine[]
   finishedGoodsLots FinishedGoodsLot[]
   salesOrderItems   SalesOrderItem[]
   salesInvoiceItems SalesInvoiceItem[]
@@ -1806,6 +1819,12 @@ model JobWorkOrder {
 ///
 /// Applies to PURE_CONVERSION only. Enforced in the service against the ORDER's
 /// frozen billing model, not the agreement's current one.
+/// One delivery from a principal: the document, not the material on it.
+///
+/// US-JW-02 with the structure the paperwork actually has. A challan names a
+/// consignment and lists what is on it, and the decision that matters at this
+/// level — whether the consignment needs incoming QC — is taken once for the
+/// delivery rather than once per drum.
 model JobWorkMaterialReceipt {
   id       String @id @default(uuid()) @db.Uuid
   tenantId String @map("tenant_id") @db.Uuid
@@ -1819,15 +1838,23 @@ model JobWorkMaterialReceipt {
   /// the same series. Named `delivery_challan_number` and never `invoice`.
   deliveryChallanNumber String @map("delivery_challan_number") @db.VarChar(64)
 
-  itemId String @map("item_id") @db.Uuid
+  /// The date on the challan, which is not always the day it was keyed in.
+  receiptDate DateTime @map("receipt_date") @db.Date
 
-  /// The principal's batch/lot marking on the container.
-  batchNumber String @map("batch_number") @db.VarChar(64)
+  /// Whether this consignment has to clear incoming QC before it may be
+  /// issued to production.
+  ///
+  /// DEFAULTS FROM THE ITEM MASTER, decided by the service when the receipt is
+  /// booked: if any material on the challan is marked as requiring incoming
+  /// QC, the consignment does. Stored rather than re-derived so a later change
+  /// to an item master cannot retrospectively put a released consignment back
+  /// into quarantine.
+  qcRequired Boolean @default(true) @map("qc_required")
 
-  receivedQuantity Decimal @map("received_quantity") @db.Decimal(18, 4)
-
-  manufacturingDate DateTime? @map("manufacturing_date") @db.Date
-  expiryDate        DateTime? @map("expiry_date") @db.Date
+  /// Where the consignment stands, derived from its lines and kept in step by
+  /// the service: PENDING_QC while any line is quarantined, ON_HOLD if one is
+  /// held, REJECTED if one is rejected, RELEASED when all are usable.
+  status JobWorkReceiptStatus @default(RELEASED)
 
   notes String? @db.VarChar(500)
 
@@ -1840,18 +1867,59 @@ model JobWorkMaterialReceipt {
 
   tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   jobWorkOrder JobWorkOrder @relation(fields: [jobWorkOrderId], references: [id], onDelete: Restrict)
-  item         Item         @relation(fields: [itemId], references: [id], onDelete: Restrict)
   receivedBy   User?        @relation("JobWorkReceiptReceivedBy", fields: [receivedById], references: [id], onDelete: Restrict)
 
-  /// The principal-owned lot this receipt created. Optional on this side only
+  lines JobWorkMaterialReceiptLine[]
+
+  @@unique([tenantId, receiptNumber])
+  @@index([tenantId, jobWorkOrderId])
+  @@index([tenantId, status])
+  @@map("job_work_material_receipts")
+}
+
+/// One material on a delivery challan, and the lot it became.
+///
+/// A line is a quantity of ONE material with ONE batch marking, which is why
+/// the stock lot hangs here and not on the header: a challan carrying three
+/// materials creates three lots, each traceable to its own line.
+///
+/// The same material may appear on several challans, and the same challan may
+/// carry several batches of one material — both are ordinary, and neither is
+/// merged. Eligibility is summed across lots at the point it is asked about.
+model JobWorkMaterialReceiptLine {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  receiptId String @map("receipt_id") @db.Uuid
+
+  itemId String @map("item_id") @db.Uuid
+
+  /// The principal's batch/lot marking on the container.
+  batchNumber String @map("batch_number") @db.VarChar(64)
+
+  receivedQuantity Decimal @map("received_quantity") @db.Decimal(18, 4)
+
+  manufacturingDate DateTime? @map("manufacturing_date") @db.Date
+  expiryDate        DateTime? @map("expiry_date") @db.Date
+
+  notes String? @db.VarChar(500)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant  Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  receipt JobWorkMaterialReceipt    @relation(fields: [receiptId], references: [id], onDelete: Restrict)
+  item    Item                      @relation(fields: [itemId], references: [id], onDelete: Restrict)
+
+  /// The principal-owned lot this line created. Optional on this side only
   /// because Prisma models the unique FK from StockLot; the service always
   /// creates exactly one, in the same transaction.
   stockLot StockLot?
 
-  @@unique([tenantId, receiptNumber])
-  @@index([tenantId, jobWorkOrderId, deletedAt])
+  @@index([tenantId, receiptId])
   @@index([tenantId, itemId])
-  @@map("job_work_material_receipts")
+  @@map("job_work_material_receipt_lines")
 }
 
 // -----------------------------------------------------------------------------
@@ -2365,9 +2433,13 @@ model StockLot {
   /// `stock_lots_has_one_source` CHECK constraint.
   goodsReceiptLineId String? @unique @map("goods_receipt_line_id") @db.Uuid
 
-  /// The job-work material receipt that created this lot — for principal-owned
+  /// The job-work receipt LINE that created this lot — for principal-owned
   /// stock. The other half of the same either/or.
-  jobWorkMaterialReceiptId String? @unique @map("job_work_material_receipt_id") @db.Uuid
+  ///
+  /// The line rather than the receipt: a challan carrying three materials
+  /// creates three lots, and hanging all three off the header would make the
+  /// unique constraint below a lie.
+  jobWorkMaterialReceiptLineId String? @unique @map("job_work_material_receipt_line_id") @db.Uuid
 
   /// Whose material this is. See StockOwnership.
   ///
@@ -2396,7 +2468,7 @@ model StockLot {
   item             Item              @relation(fields: [itemId], references: [id], onDelete: Restrict)
   goodsReceiptLine GoodsReceiptLine? @relation(fields: [goodsReceiptLineId], references: [id], onDelete: Restrict)
 
-  jobWorkMaterialReceipt JobWorkMaterialReceipt? @relation(fields: [jobWorkMaterialReceiptId], references: [id], onDelete: Restrict)
+  jobWorkMaterialReceiptLine JobWorkMaterialReceiptLine? @relation(fields: [jobWorkMaterialReceiptLineId], references: [id], onDelete: Restrict)
 
   qcResults             QcResult[]
   ledgerEntries         StockLedgerEntry[]

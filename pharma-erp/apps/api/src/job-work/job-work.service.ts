@@ -535,5 +535,6 @@ export function toAgreementSummary(agreement: AgreementWithRelations): JobWorkAg
     notes: agreement.notes,
     status: agreementStatus(agreement.validFrom, agreement.validTo),
     mappings: agreement.mappings.map(toMappingView),
+    createdAt: agreement.createdAt.toISOString(),
   };
 }

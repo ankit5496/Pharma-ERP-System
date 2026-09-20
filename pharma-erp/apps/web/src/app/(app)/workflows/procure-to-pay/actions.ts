@@ -126,6 +126,17 @@ export async function createRequisitionAction(
     notes: str(form, 'notes'),
   };
 
+  // Said here rather than left to the API, which would answer a blank item
+  // with "itemId must be a UUID" — true, and no help at all to the person who
+  // simply has not picked one yet.
+  if (!values.itemId) {
+    return {
+      status: 'error',
+      message: 'Select the item to requisition.',
+      values,
+    };
+  }
+
   return submit(
     `${BASE}/requisitions`,
     {

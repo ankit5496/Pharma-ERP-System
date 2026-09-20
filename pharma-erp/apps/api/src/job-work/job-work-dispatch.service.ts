@@ -3,6 +3,7 @@ import { BadRequestException, ConflictException, Injectable } from '@nestjs/comm
 import { Prisma } from '@pharma-erp/database';
 import {
   INVOICE_BASIS_FOR_BILLING_MODEL,
+  STOCK_BUCKET_FOR_BILLING_MODEL,
   type BillingModel,
   type ConversionRateBasis,
   type JobWorkDispatchableBatch,
@@ -76,7 +77,9 @@ export class JobWorkDispatchService {
         productionOrder: { jobWorkOrderId: order.id, deletedAt: null },
       },
       include: {
-        productionOrder: { select: { orderNumber: true, product: true } },
+        productionOrder: {
+          select: { orderNumber: true, product: true, jobWorkBillingModel: true },
+        },
         finishedGoodsLot: { select: { quantityAvailable: true } },
       },
       orderBy: { expiryDate: 'asc' },
@@ -92,6 +95,14 @@ export class JobWorkDispatchService {
         releaseStatus: batch.releaseStatus,
         quantityAvailable: (batch.finishedGoodsLot?.quantityAvailable ?? ZERO).toString(),
         item: toItemSummary(batch.productionOrder.product),
+        // THE MODEL FROZEN ON THE PRODUCTION ORDER, through the same rule the
+        // tagging code applies when it decides a batch's bucket — so the screen
+        // reports the decision that was made, not one re-derived from the
+        // agreement as it stands today. A batch reaching here always has a
+        // job-work order behind it, so the fallback only satisfies the type.
+        stockOwnership: batch.productionOrder.jobWorkBillingModel
+          ? STOCK_BUCKET_FOR_BILLING_MODEL[batch.productionOrder.jobWorkBillingModel]
+          : 'COMPANY_OWNED',
       }));
   }
 
@@ -377,7 +388,7 @@ function round2(value: Prisma.Decimal): Prisma.Decimal {
 
 const INVOICE_INCLUDE = {
   jobWorkOrder: {
-    select: { id: true, orderNumber: true, principal: { select: { name: true } } },
+    select: { id: true, orderNumber: true, principal: { select: { id: true, name: true } } },
   },
   batch: { select: { batchNumber: true } },
   createdBy: { select: { fullName: true } },
@@ -392,6 +403,7 @@ function toInvoiceView(invoice: InvoiceWithRelations): JobWorkInvoiceView {
 
     jobWorkOrderId: invoice.jobWorkOrder.id,
     jobWorkOrderNumber: invoice.jobWorkOrder.orderNumber,
+    principalId: invoice.jobWorkOrder.principal.id,
     principalName: invoice.jobWorkOrder.principal.name,
 
     batchId: invoice.batchId,

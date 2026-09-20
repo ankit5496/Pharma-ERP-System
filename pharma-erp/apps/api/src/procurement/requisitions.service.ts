@@ -120,6 +120,12 @@ export class RequisitionsService {
         { item: { code: { contains: search, mode: 'insensitive' } } },
         { preferredVendor: { name: { contains: search, mode: 'insensitive' } } },
         { notes: { contains: search, mode: 'insensitive' } },
+        // THE PERSON, resolved to ids first. `requestedById` is a bare UUID
+        // column with no relation behind it, so there is no name here to put a
+        // `contains` on — the search term is turned into the ids of everyone it
+        // matches and the document is matched on those. An empty list matches
+        // nothing, which is the right answer when no such person exists.
+        { requestedById: { in: await this.people.idsMatching(search) } },
       ];
     }
 

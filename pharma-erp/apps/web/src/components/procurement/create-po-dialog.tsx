@@ -1,7 +1,7 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { formatUom, type PartySummary, type RequisitionListItem } from '@pharma-erp/types';
 
 import { createPurchaseOrderAction } from '@/app/(app)/workflows/procure-to-pay/actions';
@@ -15,6 +15,7 @@ import {
   useAction,
 } from './form-kit';
 import { noWheelChange } from '@/lib/number-input';
+import { SearchableSelect } from './searchable-select';
 
 /**
  * Create Purchase Order, opened from a requisition.
@@ -43,6 +44,18 @@ export function CreatePoDialog({
   vendors: readonly PartySummary[];
 }) {
   const [state, formAction] = useAction(createPurchaseOrderAction);
+
+  /**
+   * The chosen vendor, which the lookup posts through a hidden input.
+   *
+   * Seeded from the requisition's preferred vendor when it named one — the
+   * common case for an auto-reorder — and from the last attempt when a
+   * submit was refused, so a rejected order does not lose the choice.
+   */
+  const [vendorId, setVendorId] = useState(
+    state.values?.vendorId ?? requisition.preferredVendor?.id ?? '',
+  );
+
   const dialog = useRef<HTMLDialogElement>(null);
   const router = useRouter();
 
@@ -129,22 +142,20 @@ export function CreatePoDialog({
 
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label="Vendor" htmlFor="po-vendor" required hint="From the party master.">
-            <select
+            <SearchableSelect
               id="po-vendor"
               name="vendorId"
               required
-              // The requisition's preferred vendor when it named one, which is
-              // the common case for an auto-reorder.
-              defaultValue={state.values?.vendorId ?? requisition.preferredVendor?.id ?? ''}
+              options={vendors.map((vendor) => ({
+                value: vendor.id,
+                label: vendor.name,
+                hint: vendor.code,
+              }))}
+              value={vendorId}
+              onChange={setVendorId}
+              emptyLabel="Select vendor"
               className="field-sm w-full"
-            >
-              <option value="">Choose a vendor</option>
-              {vendors.map((vendor) => (
-                <option key={vendor.id} value={vendor.id}>
-                  {vendor.name}
-                </option>
-              ))}
-            </select>
+            />
           </Field>
 
           <Field

@@ -48,7 +48,9 @@ export class UsersService {
     const rows = await this.prisma.scoped.user.findMany({
       where: { deletedAt: null },
       select: LIST_SELECT,
-      orderBy: [{ fullName: 'asc' }],
+      // Newest first, matching every other lookup in the app: the account
+      // somebody is looking for is usually the one just created.
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     });
 
     return rows.map((row) => this.toListItem(row));

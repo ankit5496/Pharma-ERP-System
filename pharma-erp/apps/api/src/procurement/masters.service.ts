@@ -44,6 +44,16 @@ export class MastersService {
     private readonly numbering: NumberingService,
   ) {}
 
+  /**
+   * The item master, newest first.
+   *
+   * NEWEST FIRST BECAUSE THIS IS A PICKLIST. Every lookup in Procure-to-Pay
+   * reads this list, and the item somebody is reaching for is far more often
+   * the one just added to the master than one three hundred rows down an
+   * alphabet. Typing finds the rest — the lookup matches on any substring of
+   * the name or the code — so the ordering only has to serve the case where
+   * nobody types anything.
+   */
   async listItems(itemType?: string): Promise<ItemSummary[]> {
     const rows = await this.prisma.scoped.item.findMany({
       where: {
@@ -51,7 +61,9 @@ export class MastersService {
         ...(itemType ? { itemType: itemType as 'RAW_MATERIAL' } : {}),
       },
       select: ITEM_SELECT,
-      orderBy: [{ name: 'asc' }],
+      // The id breaks ties: two items created in the same millisecond by one
+      // import must not swap places between two loads of the same screen.
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     });
 
     return rows.map(toItemSummary);
@@ -106,11 +118,12 @@ export class MastersService {
     }
   }
 
+  /** Vendors and the rest, newest first — see listItems for why. */
   async listParties(partyType?: PartyType): Promise<PartySummary[]> {
     const rows = await this.prisma.scoped.party.findMany({
       where: { deletedAt: null, ...(partyType ? { partyType } : {}) },
       select: PARTY_SELECT,
-      orderBy: [{ name: 'asc' }],
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     });
 
     return rows.map(toPartySummary);

@@ -81,6 +81,12 @@ export class PaymentsService {
         { vendorInvoiceNumber: { contains: search, mode: 'insensitive' } },
         { vendor: { name: { contains: search, mode: 'insensitive' } } },
         { purchaseOrder: { number: { contains: search, mode: 'insensitive' } } },
+        // THE PERSON, resolved to ids first. `recordedById` is a bare UUID
+        // column with no relation behind it, so there is no name here to put a
+        // `contains` on — the search term is turned into the ids of everyone it
+        // matches and the document is matched on those. An empty list matches
+        // nothing, which is the right answer when no such person exists.
+        { recordedById: { in: await this.people.idsMatching(search) } },
       ];
     }
 
