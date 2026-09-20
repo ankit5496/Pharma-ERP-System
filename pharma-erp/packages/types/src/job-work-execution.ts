@@ -16,8 +16,8 @@
  */
 
 import type { BillingModel, ConversionRateBasis } from './job-work';
+import type { ItemSummary, StockLotStatus } from './procurement';
 import type { BatchReleaseStatus } from './production';
-import type { ItemSummary } from './procurement';
 
 /** Whose material a stock lot is. Mirrors the `StockOwnership` DB enum. */
 export const STOCK_OWNERSHIPS = ['COMPANY_OWNED', 'PRINCIPAL_OWNED'] as const;
@@ -179,31 +179,132 @@ export interface UpdateJobWorkOrderRequest {
 // US-JW-02 — the principal's material
 // -----------------------------------------------------------------------------
 
+/**
+ * One material the order's formulation calls for.
+ *
+ * WHAT THE PRINCIPAL IS EXPECTED TO SUPPLY, read from the BOM the order is
+ * pinned to. The receipt form lists these rather than asking someone to
+ * remember them, and the quantity typed against each one is what actually
+ * arrived — which is not the same number, and is why the BOM figure is shown
+ * beside it rather than used as the value.
+ */
+/**
+ * Which list a material came off, and therefore which section it belongs in.
+ *
+ * RAW is everything the formulation calls for; PACKING is everything the pack
+ * specification calls for. They are separate masters with separate scaling
+ * rules, and a store officer checking a challan reads them as separate
+ * sections — but they arrive on one document and are received as one receipt.
+ */
+export const JOB_WORK_MATERIAL_KINDS = ['RAW', 'PACKING'] as const;
+export type JobWorkMaterialKind = (typeof JOB_WORK_MATERIAL_KINDS)[number];
+
+export const JOB_WORK_MATERIAL_KIND_LABELS: Record<JobWorkMaterialKind, string> = {
+  RAW: 'Raw materials',
+  PACKING: 'Packing materials',
+};
+
+export interface JobWorkOrderMaterial {
+  item: ItemSummary;
+  kind: JobWorkMaterialKind;
+
+  /**
+   * What the source master calls for, per its own batch or pack.
+   *
+   * Reference, not a default — the whole point of recording a receipt is that
+   * what arrived and what was asked for differ.
+   */
+  quantityPerBatch: string;
+
+  /**
+   * What that quantity is expressed against, in words.
+   *
+   * The two masters state themselves differently — a BOM per its output
+   * quantity, a pack specification per pack or per batch — so this is a phrase
+   * rather than a number the screen would have to interpret.
+   */
+  quantityBasis: string;
+
+  /** Kept for the formulation lines, whose basis is a plain quantity. */
+  bomOutputQuantity: string;
+}
+
+/**
+ * Where a principal's delivery stands.
+ *
+ * PENDING_QC while any material on it is still quarantined, ON_HOLD or
+ * REJECTED if a decision went that way, RELEASED when everything on the
+ * challan is usable. Derived from the lines by the API, never set by hand.
+ */
+export const JOB_WORK_RECEIPT_STATUSES = ['PENDING_QC', 'RELEASED', 'ON_HOLD', 'REJECTED'] as const;
+export type JobWorkReceiptStatus = (typeof JOB_WORK_RECEIPT_STATUSES)[number];
+
+export const JOB_WORK_RECEIPT_STATUS_LABELS: Record<JobWorkReceiptStatus, string> = {
+  PENDING_QC: 'QC pending',
+  RELEASED: 'Released',
+  ON_HOLD: 'On hold',
+  REJECTED: 'Rejected',
+};
+
+/**
+ * One material on a delivery challan, and the lot it became.
+ *
+ * The QC status is the LOT's status, not a second field kept in step with it:
+ * quarantined material is what "pending" means, and reading it off the lot is
+ * what makes the answer here and the answer production gets the same answer.
+ */
+export interface JobWorkMaterialReceiptLineView {
+  id: string;
+  item: ItemSummary;
+  batchNumber: string;
+  receivedQuantity: string;
+  manufacturingDate: string | null;
+  expiryDate: string | null;
+  notes: string | null;
+
+  /** Constant by construction — see the service. */
+  stockOwnership: StockOwnership;
+
+  lotId: string | null;
+  lotNumber: string | null;
+  lotStatus: StockLotStatus | null;
+  lotQuantityAvailable: string | null;
+}
+
+/**
+ * A principal's delivery: the document, and the materials on it.
+ *
+ * US-JW-02. The header names the consignment — whose it is, which order it is
+ * against, their challan number, the date, and whether it has to clear
+ * incoming QC. The lines are what physically arrived.
+ */
 export interface JobWorkMaterialReceiptView {
   id: string;
   receiptNumber: string;
 
   jobWorkOrderId: string;
   jobWorkOrderNumber: string;
+  principalId: string;
   principalName: string;
 
-  /** The principal's own document. Never a purchase invoice. */
   deliveryChallanNumber: string;
+  /** YYYY-MM-DD, off the challan. */
+  receiptDate: string;
 
-  item: ItemSummary;
-  batchNumber: string;
-  receivedQuantity: string;
+  /**
+   * Whether this consignment has to clear incoming QC before it may be
+   * issued. Decided when the receipt is booked and then fixed, so a later
+   * change of policy cannot put released material back into quarantine.
+   */
+  qcRequired: boolean;
+  status: JobWorkReceiptStatus;
 
-  manufacturingDate: string | null;
-  expiryDate: string | null;
   notes: string | null;
 
-  /** SYSTEM-SET. Always PRINCIPAL_OWNED; carried so a screen can show it. */
-  stockOwnership: StockOwnership;
+  lines: JobWorkMaterialReceiptLineView[];
 
-  /** The lot this receipt created, and what is left of it. */
-  lotNumber: string | null;
-  lotQuantityAvailable: string | null;
+  /** Sum of the lines, so a list can show it without loading them. */
+  totalReceivedQuantity: string;
 
   receivedAt: string;
   receivedBy: string | null;
@@ -248,6 +349,17 @@ export interface JobWorkDispatchableBatch {
   /** Releasable finished goods left on this batch. */
   quantityAvailable: string;
   item: ItemSummary;
+
+  /**
+   * Who owns the goods — off the production order, not the agreement.
+   *
+   * The billing model was copied onto the production order when the batch was
+   * raised, and is the value the stock-bucket rule read to decide where the
+   * batch's materials and output belong. An agreement renegotiated afterwards
+   * does not change who owns a batch already made, so this reports the decision
+   * that was taken rather than one derived from today's terms.
+   */
+  stockOwnership: StockOwnership;
 }
 
 export interface JobWorkInvoiceView {
@@ -256,6 +368,8 @@ export interface JobWorkInvoiceView {
 
   jobWorkOrderId: string;
   jobWorkOrderNumber: string;
+  /** Who is being billed. The id, so a list can filter on it. */
+  principalId: string;
   principalName: string;
 
   batchId: string;
@@ -315,9 +429,99 @@ export interface CreateJobWorkDispatchRequest {
  * US-JW-06 rules 1 to 5 expressed as an absence of machinery rather than as a
  * permission check.
  */
+/**
+ * One material of a formulation, and whether there is enough of it.
+ *
+ * THE SAME ARITHMETIC THE REFUSAL USES. This is what the Production screen
+ * shows before anyone presses the button, computed by the same service that
+ * decides whether to accept the work order — so the table and the answer
+ * cannot disagree.
+ *
+ * Which pool "eligible" counts depends on the billing model, and that is the
+ * whole difference between the two: principal-owned material received against
+ * THIS order under pure conversion, company-owned released stock under own
+ * procurement.
+ */
+export interface JobWorkMaterialReadinessLine {
+  item: ItemSummary;
+
+  /** What the formulation calls for at this batch size. */
+  requiredQuantity: string;
+
+  /**
+   * What was received against this order — pure conversion only.
+   *
+   * The gross figure off the challans, before QC, expiry or consumption are
+   * taken into account. Shown beside `eligibleQuantity` because the gap
+   * between the two is the thing a store officer needs explaining.
+   */
+  receivedQuantity: string | null;
+
+  /**
+   * What could actually be issued right now.
+   *
+   * Correct ownership, in date, QC released, not consumed, and — under own
+   * procurement — not already spoken for by another open work order.
+   */
+  eligibleQuantity: string;
+
+  /** Released stock in the company bucket — own procurement only. */
+  availableStock: string | null;
+  /** Committed to work orders already raised — own procurement only. */
+  reservedQuantity: string | null;
+
+  /** requiredQuantity − eligibleQuantity, floored at zero. */
+  shortageQuantity: string;
+
+  /** Quantity sitting in quarantine, on hold or rejected, if any. */
+  quantityAwaitingQc: string;
+  quantityRejectedOrHeld: string;
+  /** Quantity excluded because it is expired or too near expiry. */
+  quantityExpired: string;
+
+  ready: boolean;
+}
+
+/** What the Production screen needs to explain itself. */
+export interface JobWorkMaterialReadiness {
+  jobWorkOrderId: string;
+  jobWorkOrderNumber: string;
+  principalId: string;
+  principalName: string;
+  agreementId: string;
+  agreementReference: string | null;
+  billingModel: BillingModel;
+
+  product: ItemSummary;
+  principalBrandName: string;
+  stockBucket: StockOwnership;
+
+  /** The batch size the figures below were worked out for. */
+  batchSize: string;
+  bomId: string;
+  bomVersion: number;
+  bomOutputQuantity: string;
+
+  lines: JobWorkMaterialReadinessLine[];
+
+  /** True only when every line is ready. The button follows this. */
+  ready: boolean;
+
+  /**
+   * Why not, if not — in the same words the API refuses with.
+   *
+   * Null when ready. A non-material blocker (no BOM, lapsed agreement) puts
+   * its reason here with an empty line list.
+   */
+  blockedReason: string | null;
+}
+
 export interface JobWorkRegisterRow {
   jobWorkOrderId: string;
   jobWorkOrderNumber: string;
+
+  /** When the job-work order was raised. ISO 8601. Orders the picklists. */
+  createdAt: string;
 
   principalId: string;
   principalName: string;
@@ -334,10 +538,21 @@ export interface JobWorkRegisterRow {
   materialReceived: string;
   /** SUM of material-issue lines drawn from this order's principal-owned lots. */
   quantityConsumed: string;
+  /** SUM of released batch quantities made against this order (US-JW-03/04). */
+  finishedGoodsProduced: string;
   /** SUM of job-work invoice dispatched quantities (US-JW-05). */
   finishedGoodsDispatched: string;
   /** materialReceived − quantityConsumed. */
   closingBalance: string;
+
+  /**
+   * What this order has been billed, if anything.
+   *
+   * An order may be invoiced more than once — a part dispatch is a part
+   * invoice — so this is a list rather than a field, and the amount is the sum.
+   */
+  invoiceNumbers: string[];
+  invoicedAmount: string;
 }
 
 /** The register, grouped by principal and agreement as US-JW-06 asks. */
@@ -352,6 +567,8 @@ export interface JobWorkRegisterGroup {
 
   totalMaterialReceived: string;
   totalQuantityConsumed: string;
+  totalFinishedGoodsProduced: string;
   totalFinishedGoodsDispatched: string;
   totalClosingBalance: string;
+  totalInvoicedAmount: string;
 }

@@ -17,6 +17,23 @@ import {
 export const dynamic = 'force-dynamic';
 
 /**
+ * The workflows that title their own screens.
+ *
+ * Their panels each render a card with a heading and a record count, above
+ * their own search and filter controls, and the sub-tab bar has already named
+ * the step — so a page-level heading here was the third name for one screen,
+ * with a paragraph under it restating what the table shows. Both were
+ * withdrawn at the product owner's request.
+ *
+ * ONE LIST RATHER THAN A PREDICATE PER WORKFLOW. The two were added on separate
+ * branches as `showStepHeading` and `ownsItsHeading`, which is precisely how
+ * this file ended up in conflict: the same rule, written twice, in opposite
+ * polarities. Production and the rest still render the heading, so this is a
+ * list of exceptions and not a flag to delete.
+ */
+const WORKFLOWS_OWNING_THEIR_HEADING: ReadonlySet<string> = new Set(['order-to-cash', 'job-work']);
+
+/**
  * One step of one workflow.
  *
  * Two dynamic segments serve all four tabs and all twenty-eight steps, driven
@@ -66,18 +83,7 @@ export default async function WorkflowStepPage({ params, searchParams }: PagePro
     ),
   );
 
-  /**
-   * ORDER-TO-CASH RENDERS NO STEP HEADING.
-   *
-   * Its sub-tab bar already names the step, and each panel's own card carries
-   * a heading and a record count, so a third title above the search box was
-   * saying the same word twice on one screen. Withdrawn at the product owner's
-   * request on 2026-09-19.
-   *
-   * Scoped to this workflow rather than removed outright: Production and the
-   * others still render it, and this page is shared by all four.
-   */
-  const showStepHeading = workflow.key !== 'order-to-cash';
+  const showStepHeading = !WORKFLOWS_OWNING_THEIR_HEADING.has(workflow.key);
 
   return (
     // Without a visible heading the section still needs a name, so it is given
@@ -103,7 +109,7 @@ export default async function WorkflowStepPage({ params, searchParams }: PagePro
         {workflow.key === 'order-to-cash' && step.state === 'ready' ? (
           <OrderToCashStep step={step.key} search={search} filters={filters} />
         ) : step.state === 'ready' ? (
-          <BuiltStep workflowKey={workflow.key} stepKey={step.key} />
+          <BuiltStep workflowKey={workflow.key} stepKey={step.key} query={query} />
         ) : (
           <StepPlaceholder workflowLabel={workflow.label} stepLabel={step.label} />
         )}
@@ -120,7 +126,10 @@ export default async function WorkflowStepPage({ params, searchParams }: PagePro
  * missing key here rather than a silently blank page. `state: 'ready'` and an
  * entry in this table have to be changed together, and that is the point.
  */
-const PRODUCTION_STEPS: Record<string, () => React.ReactNode> = {
+/** A screen, given the URL it was asked for. */
+export type StepQuery = Record<string, string | string[] | undefined>;
+
+const PRODUCTION_STEPS: Record<string, (query: StepQuery) => React.ReactNode> = {
   formulations: () => <FormulationsPanel />,
   'production-orders': () => <ProductionOrdersPanel />,
   'material-issue': () => <MaterialIssuePanel />,
@@ -128,7 +137,21 @@ const PRODUCTION_STEPS: Record<string, () => React.ReactNode> = {
   'batch-release': () => <BatchReleasePanel />,
 };
 
-function BuiltStep({ workflowKey, stepKey }: { workflowKey: string; stepKey: string }) {
+function BuiltStep({
+  workflowKey,
+  stepKey,
+  query,
+}: {
+  workflowKey: string;
+  stepKey: string;
+  /**
+   * The URL's query, handed to whichever panel renders.
+   *
+   * Job Work's lists filter themselves from it — the same `search` and filter
+   * keys the Procure-to-Pay screens write, so both use one set of controls.
+   */
+  query: Record<string, string | string[] | undefined>;
+}) {
   const table =
     workflowKey === 'production-quality'
       ? PRODUCTION_STEPS
@@ -149,7 +172,7 @@ function BuiltStep({ workflowKey, stepKey }: { workflowKey: string; stepKey: str
     );
   }
 
-  return <>{render()}</>;
+  return <>{render(query)}</>;
 }
 
 /**

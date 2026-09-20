@@ -184,6 +184,12 @@ export async function withdrawJobWorkOrderAction(
  * NO OWNERSHIP FIELD is sent, because the tag is system-set. The form shows it
  * as a read-only SYSTEM-SET value so the store officer can see what it will be,
  * which is what section 17 asks for.
+ *
+ * NO MATERIAL IS CHOSEN HERE EITHER. The form lays out a row per material in
+ * the order's formulation and this reads the quantities typed against them. A
+ * row left blank is a material that did not arrive on this challan — partial
+ * deliveries are ordinary — so blank rows are dropped rather than refused, and
+ * a challan with nothing on it at all is what gets sent back.
  */
 export async function createJobWorkReceiptAction(
   _state: ActionState,
@@ -191,17 +197,32 @@ export async function createJobWorkReceiptAction(
 ): Promise<ActionState> {
   const jobWorkOrderId = text(form, 'jobWorkOrderId');
   const deliveryChallanNumber = text(form, 'deliveryChallanNumber');
-  const itemId = text(form, 'itemId');
-  const batchNumber = text(form, 'batchNumber');
-  const receivedQuantity = text(form, 'receivedQuantity');
+  const receiptDate = text(form, 'receiptDate');
+  const notes = text(form, 'notes');
+
+  // An unticked checkbox posts nothing at all, so its absence is the "no", and
+  // the API's own default of true only applies when the field is omitted
+  // entirely — which this form never does.
+  const qcRequired = form.get('qcRequired') !== null;
 
   if (!jobWorkOrderId) return { status: 'error', message: 'Choose the job-work order.' };
   if (!deliveryChallanNumber) {
     return { status: 'error', message: "Enter the principal's delivery challan number." };
   }
-  if (!itemId) return { status: 'error', message: 'Choose the material received.' };
-  if (!batchNumber) return { status: 'error', message: 'Enter the batch or lot number.' };
-  if (!receivedQuantity) return { status: 'error', message: 'Enter the quantity received.' };
+  if (!receiptDate) return { status: 'error', message: 'Enter the date on the challan.' };
+
+  const lines = readReceiptLines(form);
+
+  if ('message' in lines) return { status: 'error', message: lines.message };
+
+  if (lines.rows.length === 0) {
+    return {
+      status: 'error',
+      message:
+        'Enter the quantity received for at least one material. Leave a material blank if it ' +
+        'did not arrive on this challan.',
+    };
+  }
 
   const result = await apiFetch<JobWorkMaterialReceiptView>(
     '/api/v1/job-work/material-receipts',
@@ -211,29 +232,91 @@ export async function createJobWorkReceiptAction(
       json: {
         jobWorkOrderId,
         deliveryChallanNumber,
-        itemId,
-        batchNumber,
-        receivedQuantity,
-        ...(text(form, 'manufacturingDate')
-          ? { manufacturingDate: text(form, 'manufacturingDate') }
-          : {}),
-        ...(text(form, 'expiryDate') ? { expiryDate: text(form, 'expiryDate') } : {}),
-        ...(text(form, 'notes') ? { notes: text(form, 'notes') } : {}),
+        receiptDate,
+        qcRequired,
+        ...(notes ? { notes } : {}),
+        lines: lines.rows,
       },
     },
   );
 
   revalidateFlow();
 
+  const recorded = result.ok ? (result.data as JobWorkMaterialReceiptView) : null;
+
   return toState(
     result,
-    result.ok
-      ? `Receipt ${(result.data as JobWorkMaterialReceiptView).receiptNumber} recorded — ` +
-          'material added to principal-owned stock.'
+    recorded
+      ? `Receipt ${recorded.receiptNumber} recorded — ${recorded.lines.length} ` +
+          `material${recorded.lines.length === 1 ? '' : 's'} on challan ${deliveryChallanNumber}, ` +
+          (recorded.qcRequired
+            ? 'held in quarantine for incoming QC.'
+            : 'added to principal-owned stock.')
       : '',
   );
 }
 
+/**
+ * Reads the material rows off the receipt form.
+ *
+ * The form names them `lines.0.itemId`, `lines.0.receivedQuantity` and so on,
+ * one group per material in the formulation. A group with no quantity typed
+ * into it is skipped — that material simply did not come on this challan.
+ *
+ * The batch marking is required for the ones that DID come: a principal-owned
+ * lot with no batch number on it cannot be traced back to what the principal
+ * shipped, which is the whole reason this record exists.
+ */
+function readReceiptLines(
+  form: FormData,
+):
+  | { rows: ReceiptLinePayload[] }
+  | { message: string } {
+  const rows: ReceiptLinePayload[] = [];
+
+  for (let index = 0; ; index += 1) {
+    const itemId = text(form, `lines.${index}.itemId`);
+
+    if (!itemId) break;
+
+    const receivedQuantity = text(form, `lines.${index}.receivedQuantity`);
+
+    if (!receivedQuantity) continue;
+
+    const batchNumber = text(form, `lines.${index}.batchNumber`);
+
+    if (!batchNumber) {
+      return {
+        message:
+          'Enter the batch or lot number for every material you received. It is what ties the ' +
+          'stock back to what the principal shipped.',
+      };
+    }
+
+    const manufacturingDate = text(form, `lines.${index}.manufacturingDate`);
+    const expiryDate = text(form, `lines.${index}.expiryDate`);
+
+    rows.push({
+      itemId,
+      batchNumber,
+      receivedQuantity,
+      ...(manufacturingDate ? { manufacturingDate } : {}),
+      ...(expiryDate ? { expiryDate } : {}),
+    });
+  }
+
+  return { rows };
+}
+
+/** One material on the challan, as the API takes it. */
+interface ReceiptLinePayload {
+  itemId: string;
+  batchNumber: string;
+  receivedQuantity: string;
+  manufacturingDate?: string;
+  expiryDate?: string;
+  notes?: string;
+}
 // ---------------------------------------------------------------------------
 // US-JW-03 — manufacturing, through the EXISTING work order
 // ---------------------------------------------------------------------------

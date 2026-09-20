@@ -16,7 +16,6 @@
 // merge this comment is being written during.
 import type { BillingModel } from './job-work';
 import type { StockOwnership } from './job-work-execution';
-
 import type { ItemSummary, ItemType, ScheduleClassification, StockLotStatus } from './procurement';
 
 /**

@@ -119,19 +119,51 @@ export default async function IncomingQcPage({
                       <p className="font-mono text-xs text-slate-500"><Code>{row.item.code}</Code></p>
                     </Td>
                     <Td>
-                      <p className="text-xs text-slate-700"><Name>{row.vendor.name}</Name></p>
-                      <p className="mt-0.5 flex flex-wrap gap-2 text-[11px]">
-                        <RecordLink
-                          href={`${PROCUREMENT_ROUTES.goodsReceipts}?search=${row.goodsReceipt.number}`}
-                        >
-                          <Code>{row.goodsReceipt.number}</Code>
-                        </RecordLink>
-                        <RecordLink
-                          href={`${PROCUREMENT_ROUTES.purchaseOrders}?search=${row.purchaseOrder.number}`}
-                        >
-                          <Code>{row.purchaseOrder.number}</Code>
-                        </RecordLink>
-                      </p>
+                      {/* ONE SOURCE OR THE OTHER. A purchased lot came from a
+                          vendor on a goods receipt; a principal's came on their
+                          delivery challan, with no purchase anywhere behind it.
+                          The database guarantees exactly one, so this reads as
+                          a choice rather than a fallback. */}
+                      {row.jobWork ? (
+                        <>
+                          <p className="text-xs text-slate-700">
+                            <Name>{row.jobWork.principal.name}</Name>
+                          </p>
+                          <p className="mt-0.5 flex flex-wrap items-center gap-2 text-[11px]">
+                            <span className="rounded border border-amber-300 bg-amber-50 px-1 py-px text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                              Principal-owned
+                            </span>
+                            <RecordLink
+                              href={`/workflows/job-work/inward-materials?search=${row.jobWork.materialReceipt.number}`}
+                            >
+                              <Code>{row.jobWork.materialReceipt.number}</Code>
+                            </RecordLink>
+                            <span className="font-mono text-slate-500">
+                              {row.jobWork.deliveryChallanNumber}
+                            </span>
+                          </p>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-xs text-slate-700"><Name>{row.vendor?.name}</Name></p>
+                          <p className="mt-0.5 flex flex-wrap gap-2 text-[11px]">
+                            {row.goodsReceipt && (
+                              <RecordLink
+                                href={`${PROCUREMENT_ROUTES.goodsReceipts}?search=${row.goodsReceipt.number}`}
+                              >
+                                <Code>{row.goodsReceipt.number}</Code>
+                              </RecordLink>
+                            )}
+                            {row.purchaseOrder && (
+                              <RecordLink
+                                href={`${PROCUREMENT_ROUTES.purchaseOrders}?search=${row.purchaseOrder.number}`}
+                              >
+                                <Code>{row.purchaseOrder.number}</Code>
+                              </RecordLink>
+                            )}
+                          </p>
+                        </>
+                      )}
                     </Td>
                     <Td align="right">
                       <Qty value={row.lot.quantityAvailable} uom={row.item.uom} />

@@ -119,7 +119,6 @@ export default async function InvoicesPage({
         <FilterPanel
           statuses={statusOptions}
           vendors={vendors.ok ? toOptions(vendors.data) : []}
-          searchableLookups
         />
 
         {!invoices.ok ? (

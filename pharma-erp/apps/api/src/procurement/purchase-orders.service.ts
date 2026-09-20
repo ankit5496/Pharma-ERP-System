@@ -146,6 +146,12 @@ export class PurchaseOrdersService {
         { vendor: { name: { contains: search, mode: 'insensitive' } } },
         { lines: { some: { item: { name: { contains: search, mode: 'insensitive' } } } } },
         { lines: { some: { item: { code: { contains: search, mode: 'insensitive' } } } } },
+        // THE PERSON, resolved to ids first. `createdById` is a bare UUID
+        // column with no relation behind it, so there is no name here to put a
+        // `contains` on — the search term is turned into the ids of everyone it
+        // matches and the document is matched on those. An empty list matches
+        // nothing, which is the right answer when no such person exists.
+        { createdById: { in: await this.people.idsMatching(search) } },
       ];
     }
 
@@ -570,7 +576,9 @@ export class PurchaseOrdersService {
     const rows = await this.prisma.scoped.purchaseOrder.findMany({
       where: { deletedAt: null, status: { in: [...RECEIVABLE_STATUSES] } },
       include: PO_INCLUDE,
-      orderBy: [{ poDate: 'asc' }],
+      // Newest first: this feeds the goods-receipt form's order lookup, and
+      // material arriving today is against an order placed recently.
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     });
 
     const withPending = rows.filter((row) =>
@@ -590,7 +598,10 @@ export class PurchaseOrdersService {
         status: { in: ['PARTIALLY_RECEIVED', 'CLOSED'] },
       },
       include: PO_INCLUDE,
-      orderBy: [{ poDate: 'desc' }],
+      // Newest first, by when the order was raised rather than by its PO date:
+      // this feeds the invoice form's order lookup, and a back-dated order
+      // entered this morning belongs at the top of it.
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     });
 
     const people = await this.people.load(collectIds(...rows.map((row) => row.createdById)));
