@@ -40,6 +40,15 @@ const TYPE_OPTIONS = (Object.keys(LICENCE_TYPE_LABELS) as LicenceType[]).map((ke
   label: LICENCE_TYPE_LABELS[key],
 }));
 
+/**
+ * The fields this form renders an `error` for.
+ *
+ * Anything the API refuses that is NOT here has no control to appear under,
+ * so FormError keeps the banner rather than hiding behind a mark that was
+ * never drawn. See FormError in ./form-kit.
+ */
+const MARKED_FIELDS = ['licenceType', 'licenceNumber', 'issuingAuthority', 'expiryDate'] as const;
+
 const INITIAL: ActionResult = { ok: false };
 
 export function LicenceComplianceMasterForm({
@@ -94,7 +103,11 @@ export function LicenceComplianceMasterForm({
   return (
     <form action={formAction} className="flex flex-col gap-8" noValidate>
       {!state.ok && state.message && (
-        <FormError message={state.message} fieldErrors={state.fieldErrors} />
+        <FormError
+          message={state.message}
+          fieldErrors={state.fieldErrors}
+          shownFields={MARKED_FIELDS}
+        />
       )}
 
       <FormSection title="Licence">
