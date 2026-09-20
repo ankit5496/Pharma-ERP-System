@@ -39,7 +39,9 @@ export class PartiesService {
 
     const parties = await this.prisma.scoped.party.findMany({
       where: { deletedAt: null, ...(partyType ? { partyType } : {}) },
-      orderBy: [{ name: 'asc' }],
+      // Newest first: this list is read as a picklist as often as a
+      // register, and the party somebody wants is usually the one just added.
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       // A count, never the documents: the bytes are in the row, so including
       // them would pull every customer's paperwork to draw a register.
       include: { _count: { select: { documents: { where: { deletedAt: null } } } } },

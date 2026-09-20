@@ -276,8 +276,12 @@ export class ProductionService {
         // rather than denormalised onto the lot: the receipt already knows its
         // order and the order already knows its principal, and a copy here
         // would be a second answer that could drift from the first.
-        jobWorkMaterialReceipt: {
-          select: { jobWorkOrder: { select: { principal: { select: { name: true } } } } },
+        jobWorkMaterialReceiptLine: {
+          select: {
+            receipt: {
+              select: { jobWorkOrder: { select: { principal: { select: { name: true } } } } },
+            },
+          },
         },
       },
       orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { lotNumber: 'asc' }],
@@ -292,7 +296,8 @@ export class ProductionService {
       quantityReceived: lot.quantityReceived.toString(),
       item: toItemSummary(lot.item),
       ownership: lot.ownership,
-      principalName: lot.jobWorkMaterialReceipt?.jobWorkOrder.principal.name ?? null,
+      principalName:
+        lot.jobWorkMaterialReceiptLine?.receipt.jobWorkOrder.principal.name ?? null,
       vendorBatchNumber: lot.vendorBatchNumber,
     }));
   }

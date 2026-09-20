@@ -101,6 +101,9 @@ export interface JobWorkAgreementSummary {
   notes: string | null;
   status: AgreementStatus;
   mappings: JobWorkMappingView[];
+
+  /** When the agreement was recorded. ISO 8601. Orders the picklists. */
+  createdAt: string;
 }
 
 /** One line of the product-to-brand mapping, as sent. */

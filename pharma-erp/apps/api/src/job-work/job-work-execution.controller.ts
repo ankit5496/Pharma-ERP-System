@@ -15,7 +15,9 @@ import {
 import type {
   JobWorkDispatchableBatch,
   JobWorkInvoiceView,
+  JobWorkMaterialReadiness,
   JobWorkMaterialReceiptView,
+  JobWorkOrderMaterial,
   JobWorkOrderablePrincipal,
   JobWorkOrderSummary,
   JobWorkRegisterGroup,
@@ -29,6 +31,7 @@ import { CreateJobWorkOrderDto, UpdateJobWorkOrderDto } from './dto/job-work-ord
 import { CreateJobWorkMaterialReceiptDto } from './dto/job-work-receipt.dto';
 import { JobWorkDispatchService } from './job-work-dispatch.service';
 import { JobWorkOrdersService } from './job-work-orders.service';
+import { JobWorkReadinessService } from './job-work-readiness.service';
 import { JobWorkReceiptsService } from './job-work-receipts.service';
 import { JobWorkRegisterService } from './job-work-register.service';
 
@@ -58,6 +61,7 @@ import { JobWorkRegisterService } from './job-work-register.service';
 export class JobWorkExecutionController {
   constructor(
     private readonly orders: JobWorkOrdersService,
+    private readonly readinessService: JobWorkReadinessService,
     private readonly receipts: JobWorkReceiptsService,
     private readonly dispatch: JobWorkDispatchService,
     private readonly register: JobWorkRegisterService,
@@ -117,6 +121,42 @@ export class JobWorkExecutionController {
   // ---------------------------------------------------------------------------
   // US-JW-02 — the principal's material
   // ---------------------------------------------------------------------------
+
+  /**
+   * The materials the order's formulation calls for.
+   *
+   * Declared before the collection routes below so the receipt form can ask
+   * "what am I expecting against this order" without loading every BOM in
+   * the company and picking one on the client.
+   */
+  /**
+   * Can this order be manufactured, and if not, why not.
+   *
+   * THE SAME CALL THE REFUSAL MAKES. The Production screen renders this as a
+   * table so somebody can see the shortage before pressing the button, and
+   * ProductionService re-asks it when the button is pressed — a screen that
+   * says "Ready" over a service that then refuses would be worse than no
+   * screen at all.
+   *
+   * `batchSize` is optional: without it the order's own quantity is used,
+   * which is what the screen shows before anyone edits the figure.
+   */
+  @Get('orders/:id/readiness')
+  @SkipAudit('Read-only check.')
+  async readiness(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('batchSize') batchSize?: string,
+  ): Promise<JobWorkMaterialReadiness> {
+    return this.readinessService.forOrder(id, batchSize);
+  }
+
+  @Get('orders/:id/materials')
+  @SkipAudit('Read-only lookup for the receipt form.')
+  async orderMaterials(
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<JobWorkOrderMaterial[]> {
+    return this.receipts.materialsFor(id);
+  }
 
   @Get('material-receipts')
   @SkipAudit('Read-only register.')

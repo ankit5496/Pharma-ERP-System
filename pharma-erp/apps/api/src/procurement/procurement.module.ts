@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 
+import { JobWorkModule } from '../job-work/job-work.module';
+
 import { GoodsReceiptsService } from './goods-receipts.service';
 import { InvoicesService } from './invoices.service';
 import { MastersService } from './masters.service';
@@ -27,6 +29,11 @@ import { SummaryService } from './summary.service';
  * imported here; the same arrangement UsersModule uses.
  */
 @Module({
+  // Incoming QC releases a principal’s material as well as a purchased lot,
+  // and a decision on the former has to bring its challan’s status with it.
+  // The rule for what that status means belongs to the receipts service, so it
+  // is imported rather than restated here.
+  imports: [JobWorkModule],
   controllers: [ProcurementController],
   providers: [
     NumberingService,

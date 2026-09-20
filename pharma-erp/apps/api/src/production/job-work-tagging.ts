@@ -67,7 +67,9 @@ export function stockBucketWhere(rule: StockBucketRule): Prisma.StockLotWhereInp
 
   return {
     ownership: 'PRINCIPAL_OWNED',
-    jobWorkMaterialReceipt: { jobWorkOrderId: rule.jobWorkOrderId ?? undefined },
+    jobWorkMaterialReceiptLine: {
+      receipt: { jobWorkOrderId: rule.jobWorkOrderId ?? undefined },
+    },
   };
 }
 
@@ -89,7 +91,7 @@ export function assertLotInBucket(
   lot: {
     lotNumber: string;
     ownership: StockOwnership;
-    jobWorkMaterialReceipt: { jobWorkOrderId: string } | null;
+    jobWorkMaterialReceiptLine: { receipt: { jobWorkOrderId: string } } | null;
   },
   rule: StockBucketRule,
 ): void {
@@ -104,7 +106,7 @@ export function assertLotInBucket(
 
   if (
     rule.ownership === 'PRINCIPAL_OWNED' &&
-    lot.jobWorkMaterialReceipt?.jobWorkOrderId !== rule.jobWorkOrderId
+    lot.jobWorkMaterialReceiptLine?.receipt.jobWorkOrderId !== rule.jobWorkOrderId
   ) {
     throw new ConflictException(
       `Lot ${lot.lotNumber} was received against a different job-work order. Material one ` +

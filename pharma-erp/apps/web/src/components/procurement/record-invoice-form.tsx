@@ -84,6 +84,7 @@ export function RecordInvoiceForm({ orders }: { orders: readonly PurchaseOrderLi
                 options={orderOptions}
                 value={orderId}
                 onChange={chooseOrder}
+                emptyLabel="Select purchase order"
               />
             </Field>
 
@@ -109,6 +110,7 @@ export function RecordInvoiceForm({ orders }: { orders: readonly PurchaseOrderLi
                 value={receiptId}
                 onChange={setReceiptId}
                 required
+                emptyLabel="Select goods receipt"
                 disabled={!order}
               />
             </Field>

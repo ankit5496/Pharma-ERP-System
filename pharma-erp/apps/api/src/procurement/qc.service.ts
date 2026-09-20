@@ -15,6 +15,7 @@ import type {
 } from '@pharma-erp/types';
 
 import { AuditService } from '../common/audit/audit.service';
+import { JobWorkReceiptsService } from '../job-work/job-work-receipts.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
@@ -42,6 +43,27 @@ const LOT_INCLUDE = {
           receiptDate: true,
           vendor: { select: { id: true, name: true } },
           purchaseOrder: { select: { id: true, number: true } },
+        },
+      },
+    },
+  },
+  // The other half of the either/or: a principal's challan, which has no
+  // vendor and no purchase order because there was no purchase.
+  jobWorkMaterialReceiptLine: {
+    select: {
+      receipt: {
+        select: {
+          id: true,
+          receiptNumber: true,
+          receiptDate: true,
+          deliveryChallanNumber: true,
+          jobWorkOrder: {
+            select: {
+              id: true,
+              orderNumber: true,
+              principal: { select: { id: true, name: true } },
+            },
+          },
         },
       },
     },
@@ -78,6 +100,14 @@ export class QcService {
     private readonly tenantContext: TenantContextService,
     private readonly audit: AuditService,
     private readonly people: PeopleService,
+    /**
+     * Only to keep a job-work receipt's status in step with its lots.
+     *
+     * Injected rather than reaching into the table directly so the rule for
+     * what a consignment's status means lives in one place — the service that
+     * owns the receipt — instead of being restated here.
+     */
+    private readonly jobWorkReceipts: JobWorkReceiptsService,
   ) {}
 
   /**
@@ -94,7 +124,12 @@ export class QcService {
     // a Quality Officer’s worklist that they have no document to inspect
     // against. The quality gate job work DOES have is US-JW-04, on the
     // finished batch.
-    const where: Prisma.StockLotWhereInput = { ownership: 'COMPANY_OWNED' };
+    // BOTH BUCKETS. Incoming QC inspects material arriving at the gate, and a
+    // principal's drum arrives at the same gate as a purchased one — it is
+    // simply free of cost. Filtering to company-owned made principal material
+    // that a receipt had marked for inspection impossible to release, which is
+    // the same as having no inspection step at all.
+    const where: Prisma.StockLotWhereInput = {};
 
     if (query.status) {
       where.status = query.status as StockLotStatus;
@@ -130,6 +165,23 @@ export class QcService {
         {
           goodsReceiptLine: { goodsReceipt: { number: { contains: search, mode: 'insensitive' } } },
         },
+        // The principal’s side of the same lookup, now that their material is
+        // on this queue too.
+        {
+          jobWorkMaterialReceiptLine: {
+            receipt: {
+              OR: [
+                { receiptNumber: { contains: search, mode: 'insensitive' } },
+                { deliveryChallanNumber: { contains: search, mode: 'insensitive' } },
+                { jobWorkOrder: { orderNumber: { contains: search, mode: 'insensitive' } } },
+                { jobWorkOrder: { principal: { name: { contains: search, mode: 'insensitive' } } } },
+              ],
+            },
+          },
+        },
+        // WHO INSPECTED IT. The decision carries the person as a bare UUID, so
+        // the name is resolved to ids the same way every other list does it.
+        { qcResults: { some: { inspectedById: { in: await this.people.idsMatching(search) } } } },
       ];
     }
 
@@ -279,6 +331,13 @@ export class QcService {
           },
         });
       }
+
+      // A principal's drum belongs to a challan, and the challan's status is a
+      // summary of its drums. Recomputed here rather than advanced by hand, and
+      // inside this transaction so the two cannot disagree.
+      if (lot.jobWorkMaterialReceiptLine) {
+        await this.jobWorkReceipts.syncStatus(tx, lot.jobWorkMaterialReceiptLine.receipt.id);
+      }
     });
 
     await this.audit.record({
@@ -324,7 +383,7 @@ export class QcService {
       // Same narrowing as the queue, and for the same reason: a QC decision
       // recorded against a principal's material would be a decision about
       // stock this gate does not govern.
-      where: { id, ownership: 'COMPANY_OWNED' },
+      where: { id },
       include: LOT_INCLUDE,
     });
 
@@ -344,30 +403,47 @@ export class QcService {
   }
 
   private toQueueItem(row: LotRow, people: Map<string, string>): QcQueueItem {
-    if (!row.goodsReceiptLine) {
-      // Unreachable: both queries above filter to COMPANY_OWNED, and the
-      // `stock_lots_has_one_source` CHECK guarantees such a lot has a goods
-      // receipt line. Stated as a throw rather than a `!` so that if the
-      // filter is ever relaxed this fails where the cause is, not three
-      // frames away in a mapper.
+    const purchase = row.goodsReceiptLine?.goodsReceipt ?? null;
+    const challan = row.jobWorkMaterialReceiptLine?.receipt ?? null;
+
+    if (!purchase && !challan) {
+      // Unreachable: `stock_lots_has_one_source` guarantees every lot has
+      // exactly one of the two behind it. Stated as a throw rather than a `!`
+      // so that if the constraint is ever relaxed this fails where the cause
+      // is, not three frames away in a mapper.
       throw new Error(
-        `Lot ${row.lotNumber} has no goods receipt behind it, so it is not incoming-QC ` +
-          'material. This is a query that should have excluded it.',
+        `Lot ${row.lotNumber} has neither a goods receipt nor a job-work receipt behind it, ` +
+          'so there is nothing to inspect it against.',
       );
     }
-
-    const receipt = row.goodsReceiptLine.goodsReceipt;
 
     return {
       lot: toStockLotSummary(row),
       item: toItemSummary(row.item),
-      vendor: receipt.vendor,
-      goodsReceipt: {
-        id: receipt.id,
-        number: receipt.number,
-        receiptDate: receipt.receiptDate.toISOString(),
-      },
-      purchaseOrder: receipt.purchaseOrder,
+
+      vendor: purchase?.vendor ?? null,
+      goodsReceipt: purchase
+        ? {
+            id: purchase.id,
+            number: purchase.number,
+            receiptDate: purchase.receiptDate.toISOString(),
+          }
+        : null,
+      purchaseOrder: purchase?.purchaseOrder ?? null,
+
+      jobWork: challan
+        ? {
+            principal: challan.jobWorkOrder.principal,
+            jobWorkOrder: { id: challan.jobWorkOrder.id, number: challan.jobWorkOrder.orderNumber },
+            materialReceipt: {
+              id: challan.id,
+              number: challan.receiptNumber,
+              receiptDate: challan.receiptDate.toISOString(),
+            },
+            deliveryChallanNumber: challan.deliveryChallanNumber,
+          }
+        : null,
+
       history: row.qcResults.map((result) => toQcResultItem(result, people)),
       daysToExpiry: row.expiryDate ? daysUntil(row.expiryDate) : null,
     };

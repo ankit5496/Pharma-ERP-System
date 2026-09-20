@@ -1,12 +1,13 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
+  Logger,
   Param,
   ParseUUIDPipe,
-  Delete,
   Patch,
   Post,
   Query,
@@ -97,6 +98,9 @@ import { SummaryService } from './summary.service';
  */
 @Controller('procurement')
 export class ProcurementController {
+  /** For the reorder check's failure path, which must be diagnosable. */
+  private readonly logger = new Logger(ProcurementController.name);
+
   constructor(
     private readonly summary: SummaryService,
     private readonly stock: StockService,
@@ -122,9 +126,28 @@ export class ProcurementController {
     return this.summary.build();
   }
 
+  /**
+   * What is below its reorder level — after reconciling it.
+   *
+   * THE CHECK RUNS FIRST, so the list is never a report of work the system
+   * intended to do and did not. An item that dropped below its level by a route
+   * that does not trip the check — a rejected batch, a correction, an expiry,
+   * or auto creation being switched on after the fact — would otherwise sit
+   * here reading "auto creation pending" indefinitely, which is precisely what
+   * was reported.
+   *
+   * A GET THAT WRITES, DELIBERATELY. It is safe because the check is
+   * idempotent: the duplicate guard is a query inside the same transaction, so
+   * a refresh, a second tab, or two people looking at once cannot produce a
+   * second requisition for one shortage. Failures are swallowed rather than
+   * shown, because being unable to raise a document must not stop the screen
+   * reporting the shortage — the error is logged where it can be diagnosed.
+   */
   @Get('low-stock')
-  @SkipAudit('Read-only.')
+  @SkipAudit('Read-only. The requisitions the check raises are audited individually.')
   async lowStock(): Promise<LowStockItem[]> {
+    await this.reconcileReorders('the low-stock list');
+
     return this.stock.lowStockItems();
   }
 
@@ -272,7 +295,42 @@ export class ProcurementController {
   @Patch('settings')
   @SkipAudit('Recorded by the service, with both values.')
   async updateSettings(@Body() dto: UpdateProcurementSettingsDto): Promise<ProcurementSettings> {
-    return this.settings.update(dto.autoRequisitionEnabled);
+    const settings = await this.settings.update(dto.autoRequisitionEnabled);
+
+    // SWITCHING IT ON EVALUATES WHAT IS ALREADY SHORT. Without this, turning
+    // the setting on only governs shortages that arrive AFTERWARDS — anything
+    // already below its reorder level waits for a stock movement that may never
+    // come, which is how an item sits at "auto creation pending" forever.
+    //
+    // Switching it off raises nothing, by the same call: run() reads the
+    // setting itself and writes nothing when it is false.
+    if (settings.autoRequisitionEnabled) {
+      await this.reconcileReorders('the auto-creation switch');
+    }
+
+    return settings;
+  }
+
+  /**
+   * Runs the reorder check, and does not let its failure become the caller's.
+   *
+   * The caller here is a screen load or a settings save; neither should fail
+   * because a requisition could not be raised. The error is logged with what
+   * triggered it so the failure is diagnosable rather than silent — what must
+   * not happen is reporting success and writing nothing, which is the bug this
+   * whole change exists to fix.
+   */
+  private async reconcileReorders(trigger: string): Promise<void> {
+    try {
+      await this.reorder.run();
+    } catch (error) {
+      this.logger.error(
+        `Automatic reorder check failed, triggered by ${trigger}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        error instanceof Error ? error.stack : undefined,
+      );
+    }
   }
 
   // -------------------------------------------------------------------------

@@ -106,7 +106,7 @@ export function RequisitionForm({
                 options={items.map(itemOption)}
                 value={itemId}
                 onChange={setItemId}
-                emptyLabel="Choose an item"
+                emptyLabel="Select item"
               />
             </Field>
 

@@ -28,6 +28,9 @@ const FILTER_KEYS = [
   'triggerType',
   'raisedById',
   'requisitionId',
+  // Job Work: whose work a record is, and on what terms.
+  'principalId',
+  'billingModel',
   'dateFrom',
   'dateTo',
 ] as const;
@@ -241,8 +244,10 @@ export function FilterPanel({
   triggerTypes,
   raisedBy,
   requisitions,
+  principals,
+  billingModels,
   showDates = true,
-  searchableLookups = false,
+  searchableLookups = true,
 }: {
   statuses?: readonly FilterOption[];
   vendors?: readonly FilterOption[];
@@ -250,8 +255,23 @@ export function FilterPanel({
   triggerTypes?: readonly FilterOption[];
   raisedBy?: readonly FilterOption[];
   requisitions?: readonly FilterOption[];
+  /** Job Work: the brand owners whose records this list holds. */
+  principals?: readonly FilterOption[];
+  /** Job Work: pure conversion or own procurement. */
+  billingModels?: readonly FilterOption[];
   showDates?: boolean;
   /** Renders the record lookups — vendor, item, requisition — as typeable. */
+  /**
+   * Whether the record lookups are typeable. On by default.
+   *
+   * A lookup points at a record, and records are found by typing part of what
+   * you remember of one — a vendor's name, an order number, a colleague's
+   * surname. Pass false only for a list short enough to read at a glance.
+   *
+   * The enum controls beside them — status, trigger type, billing model — are
+   * never searchable regardless: they are five fixed options, and a search box
+   * over five options is furniture.
+   */
   searchableLookups?: boolean;
 }) {
   const open = useFilterPanelOpen();
@@ -452,6 +472,27 @@ export function FilterPanel({
               options={requisitions}
               allLabel="Any requisition"
               onChange={(value) => set('requisitionId', value)}
+            />
+          )}
+
+          {principals && principals.length > 0 && (
+            <Select
+              label="Principal"
+              searchable={searchableLookups}
+              value={draft.principalId ?? ''}
+              options={principals}
+              allLabel="Any principal"
+              onChange={(value) => set('principalId', value)}
+            />
+          )}
+
+          {billingModels && billingModels.length > 0 && (
+            <Select
+              label="Billing model"
+              value={draft.billingModel ?? ''}
+              options={billingModels}
+              allLabel="Any model"
+              onChange={(value) => set('billingModel', value)}
             />
           )}
 

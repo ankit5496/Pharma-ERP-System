@@ -1,8 +1,11 @@
 'use client';
 
 import { RowActionMenu, type RowAction } from '@/components/row-action-menu';
+import { pushToast } from '@/components/toast';
+
 import { useState, useTransition } from 'react';
 import {
+  O2C_PAYMENT_STATUS_LABELS,
   PAYMENT_METHODS,
   PAYMENT_METHOD_LABELS,
   type ReceiptListItem,
@@ -10,10 +13,11 @@ import {
 } from '@pharma-erp/types';
 
 import { bounceReceiptAction, createReceiptAction, updateReceiptAction } from './actions';
+import { ConfirmDialog } from './confirm-dialog';
 import { EditDialog } from './edit-kit';
-import { DialogFooter } from './modal';
+import { DialogFooter, useDialogClose } from './modal';
 import { SearchableSelect } from './searchable-select';
-import { Money, Note, PRIMARY_BUTTON, SECONDARY_BUTTON, formatDate } from './ui';
+import { formatDate, Money, Note, PRIMARY_BUTTON, SECONDARY_BUTTON } from './ui';
 
 /**
  * Records a payment against an invoice.
@@ -41,6 +45,7 @@ export function NewReceiptForm({
    */
   inDialog?: boolean;
 }) {
+  const closeDialog = useDialogClose();
   const [open, setOpen] = useState(false);
   const [selectedId, setSelectedId] = useState('');
   const [amount, setAmount] = useState('');
@@ -140,6 +145,10 @@ export function NewReceiptForm({
               });
               setSelectedId('');
               setAmount('');
+              pushToast('success', `Receipt ${result.data?.receiptNumber ?? ''} recorded.`);
+              // Saved, so the dialog's work is done. Inline (no dialog) this
+              // is null and the success message below stays on screen instead.
+              closeDialog?.();
             } else {
               setMessage({ kind: 'error', text: result.error ?? 'That did not work.' });
             }
@@ -166,22 +175,18 @@ export function NewReceiptForm({
               placeholder="Search by invoice number or customer…"
               options={invoices.map((invoice) => ({
                 value: invoice.id,
-                label: invoice.customerName,
-                hint: `${invoice.invoiceNumber} · ${invoice.amountOutstanding} due`,
-                keywords: invoice.invoiceNumber,
+                label: invoice.invoiceNumber,
+                // The payment state stays on the option: without it, an invoice
+                // already part paid is indistinguishable from an untouched one,
+                // and the amount pre-filled below differs sharply between the
+                // two.
+                hint: `${invoice.customerName} · ${
+                  O2C_PAYMENT_STATUS_LABELS[invoice.paymentStatus]
+                } · ${invoice.amountOutstanding} due of ${invoice.grandTotal}`,
+                keywords: invoice.customerName,
               }))}
             />
           </div>
-          {selected && (
-            <p className="field-hint">
-              Total <Money value={selected.grandTotal} />, paid{' '}
-              <Money value={selected.amountPaid} />, outstanding{' '}
-              <strong className="font-semibold text-slate-700">
-                <Money value={selected.amountOutstanding} />
-              </strong>
-              {selected.dueDate ? ` · due ${formatDate(selected.dueDate)}` : ''}
-            </p>
-          )}
         </div>
 
         <div>
@@ -312,25 +317,17 @@ export function NewReceiptForm({
  * paid-to-date, leaving both events visible.
  */
 export function ReceiptRowActions({ receipt }: { receipt: ReceiptListItem }) {
+  const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [pending, startTransition] = useTransition();
 
-  const bounce = () => {
-    const reason = window.prompt(
-      `Mark receipt ${receipt.receiptNumber} as bounced?
-
-` +
-        `The amount goes back onto the customer's balance and the invoice reverts to ` +
-        `unpaid or part paid. Reason (optional):`,
-    );
-
-    if (reason === null) return;
-
+  const bounce = (reason?: string) => {
     setError(null);
     startTransition(async () => {
-      const result = await bounceReceiptAction(receipt.id, reason || undefined);
+      const result = await bounceReceiptAction(receipt.id, reason);
       if (!result.ok) setError(result.error ?? 'That did not work.');
+      else setConfirming(false);
     });
   };
 
@@ -355,7 +352,7 @@ export function ReceiptRowActions({ receipt }: { receipt: ReceiptListItem }) {
           ? null
           : 'Only a recorded receipt can be edited — this one has cleared.',
     },
-    { label: 'Bounced', onSelect: bounce },
+    { label: 'Bounced', onSelect: () => setConfirming(true) },
   ];
 
   return (
@@ -366,6 +363,24 @@ export function ReceiptRowActions({ receipt }: { receipt: ReceiptListItem }) {
         busy={pending}
         disabledReason={settled}
       />
+
+      {confirming && (
+        <ConfirmDialog
+          title={`Mark ${receipt.receiptNumber} as bounced?`}
+          description="The amount goes back onto the customer's balance and the invoice reverts to unpaid or part paid. The receipt stays on the list, reversed."
+          details={[
+            { label: 'Customer', value: receipt.customerName },
+            { label: 'Invoice', value: receipt.invoiceNumber },
+            { label: 'Amount', value: receipt.amount },
+            { label: 'Received on', value: formatDate(receipt.receiptDate) },
+          ]}
+          reason={{ label: 'Reason', hint: 'Optional. Kept with the receipt.' }}
+          confirmLabel="Mark bounced"
+          pending={pending}
+          onConfirm={bounce}
+          onClose={() => setConfirming(false)}
+        />
+      )}
 
       {error && (
         <p role="alert" className="mt-2 max-w-xs text-xs text-red-700">

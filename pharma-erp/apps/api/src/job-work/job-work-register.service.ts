@@ -66,21 +66,35 @@ export class JobWorkRegisterService {
 
     const orderIds = orders.map((order) => order.id);
 
-    const [received, consumed, dispatched] = await Promise.all([
-      this.prisma.scoped.jobWorkMaterialReceipt.groupBy({
-        by: ['jobWorkOrderId'],
-        where: { jobWorkOrderId: { in: orderIds }, deletedAt: null },
-        _sum: { receivedQuantity: true },
+    const [received, consumed, dispatched, produced, invoices] = await Promise.all([
+      // No groupBy: what was received now lives on the receipt's LINES, one
+      // join below the order key. Read and folded in memory, which is one round
+      // trip and exact; a groupBy here would need a raw query that bypasses the
+      // RLS-scoped client.
+      this.prisma.scoped.jobWorkMaterialReceiptLine.findMany({
+        where: {
+          deletedAt: null,
+          receipt: { jobWorkOrderId: { in: orderIds }, deletedAt: null },
+        },
+        select: { receivedQuantity: true, receipt: { select: { jobWorkOrderId: true } } },
       }),
-      // No groupBy: the grouping key lives three joins away, on the receipt
-      // behind the lot behind the line. Reading the lines with their receipt
-      // and folding in memory is one round trip and exact; a groupBy here would
-      // need a raw query that bypasses the RLS-scoped client.
+      // The same shape one level deeper: the grouping key is three joins away,
+      // on the receipt behind the line behind the lot.
       this.prisma.scoped.materialIssueLine.findMany({
-        where: { lot: { jobWorkMaterialReceipt: { jobWorkOrderId: { in: orderIds } } } },
+        where: {
+          lot: {
+            jobWorkMaterialReceiptLine: { receipt: { jobWorkOrderId: { in: orderIds } } },
+          },
+        },
         select: {
           quantityIssued: true,
-          lot: { select: { jobWorkMaterialReceipt: { select: { jobWorkOrderId: true } } } },
+          lot: {
+            select: {
+              jobWorkMaterialReceiptLine: {
+                select: { receipt: { select: { jobWorkOrderId: true } } },
+              },
+            },
+          },
         },
       }),
       this.prisma.scoped.jobWorkInvoice.groupBy({
@@ -88,23 +102,72 @@ export class JobWorkRegisterService {
         where: { jobWorkOrderId: { in: orderIds }, deletedAt: null },
         _sum: { dispatchedQuantity: true },
       }),
+      // WHAT WAS MADE AND PASSED THE GATE. Released batches only: a batch still
+      // under test, on hold or rejected has been manufactured but is not
+      // finished goods, and counting it here would overstate what the principal
+      // is owed.
+      this.prisma.scoped.batch.findMany({
+        where: {
+          deletedAt: null,
+          releaseStatus: 'RELEASED',
+          productionOrder: { jobWorkOrderId: { in: orderIds }, deletedAt: null },
+        },
+        select: {
+          actualQuantity: true,
+          productionOrder: { select: { jobWorkOrderId: true } },
+        },
+      }),
+      this.prisma.scoped.jobWorkInvoice.findMany({
+        where: { jobWorkOrderId: { in: orderIds }, deletedAt: null },
+        select: { jobWorkOrderId: true, invoiceNumber: true, totalValue: true },
+        orderBy: { createdAt: 'asc' },
+      }),
     ]);
 
-    const receivedBy = new Map(
-      received.map((row) => [row.jobWorkOrderId, row._sum.receivedQuantity ?? ZERO]),
-    );
     const dispatchedBy = new Map(
       dispatched.map((row) => [row.jobWorkOrderId, row._sum.dispatchedQuantity ?? ZERO]),
     );
 
+    const receivedBy = new Map<string, Prisma.Decimal>();
+
+    for (const line of received) {
+      const orderId = line.receipt.jobWorkOrderId;
+
+      receivedBy.set(orderId, (receivedBy.get(orderId) ?? ZERO).add(line.receivedQuantity));
+    }
+
     const consumedBy = new Map<string, Prisma.Decimal>();
 
     for (const line of consumed) {
-      const orderId = line.lot.jobWorkMaterialReceipt?.jobWorkOrderId;
+      const orderId = line.lot.jobWorkMaterialReceiptLine?.receipt.jobWorkOrderId;
 
       if (!orderId) continue;
 
       consumedBy.set(orderId, (consumedBy.get(orderId) ?? ZERO).add(line.quantityIssued));
+    }
+
+    const producedBy = new Map<string, Prisma.Decimal>();
+
+    for (const batch of produced) {
+      const orderId = batch.productionOrder.jobWorkOrderId;
+
+      if (!orderId) continue;
+
+      // A released batch always has an actual quantity — it cannot be released
+      // before the BMR records one — but the column is nullable for the window
+      // between raising a batch and recording it, so this stays defensive.
+      producedBy.set(orderId, (producedBy.get(orderId) ?? ZERO).add(batch.actualQuantity ?? ZERO));
+    }
+
+    const invoicedBy = new Map<string, { numbers: string[]; amount: Prisma.Decimal }>();
+
+    for (const invoice of invoices) {
+      const held = invoicedBy.get(invoice.jobWorkOrderId) ?? { numbers: [], amount: ZERO };
+
+      held.numbers.push(invoice.invoiceNumber);
+      held.amount = held.amount.add(invoice.totalValue);
+
+      invoicedBy.set(invoice.jobWorkOrderId, held);
     }
 
     const rows: JobWorkRegisterRow[] = orders.map((order) => {
@@ -114,6 +177,7 @@ export class JobWorkRegisterService {
       return {
         jobWorkOrderId: order.id,
         jobWorkOrderNumber: order.orderNumber,
+        createdAt: order.createdAt.toISOString(),
 
         principalId: order.principal.id,
         principalName: order.principal.name,
@@ -128,6 +192,7 @@ export class JobWorkRegisterService {
         orderedQuantity: order.quantity.toString(),
         materialReceived: materialReceived.toString(),
         quantityConsumed: quantityConsumed.toString(),
+        finishedGoodsProduced: (producedBy.get(order.id) ?? ZERO).toString(),
         finishedGoodsDispatched: (dispatchedBy.get(order.id) ?? ZERO).toString(),
         // US-JW-06's stated calculation, verbatim: received less consumed. The
         // dispatch column sits beside it as the third part of the trail rather
@@ -135,6 +200,9 @@ export class JobWorkRegisterService {
         // are not the same unit and subtracting one from the other would
         // produce a number that means nothing.
         closingBalance: materialReceived.sub(quantityConsumed).toString(),
+
+        invoiceNumbers: invoicedBy.get(order.id)?.numbers ?? [],
+        invoicedAmount: (invoicedBy.get(order.id)?.amount ?? ZERO).toString(),
       };
     });
 
@@ -157,8 +225,10 @@ export class JobWorkRegisterService {
         rows: [],
         totalMaterialReceived: '0',
         totalQuantityConsumed: '0',
+        totalFinishedGoodsProduced: '0',
         totalFinishedGoodsDispatched: '0',
         totalClosingBalance: '0',
+        totalInvoicedAmount: '0',
       };
 
       group.rows.push(row);
@@ -169,11 +239,17 @@ export class JobWorkRegisterService {
       group.totalQuantityConsumed = new Prisma.Decimal(group.totalQuantityConsumed)
         .add(row.quantityConsumed)
         .toString();
+      group.totalFinishedGoodsProduced = new Prisma.Decimal(group.totalFinishedGoodsProduced)
+        .add(row.finishedGoodsProduced)
+        .toString();
       group.totalFinishedGoodsDispatched = new Prisma.Decimal(group.totalFinishedGoodsDispatched)
         .add(row.finishedGoodsDispatched)
         .toString();
       group.totalClosingBalance = new Prisma.Decimal(group.totalClosingBalance)
         .add(row.closingBalance)
+        .toString();
+      group.totalInvoicedAmount = new Prisma.Decimal(group.totalInvoicedAmount)
+        .add(row.invoicedAmount)
         .toString();
 
       groups.set(key, group);

@@ -5,6 +5,7 @@ import { NumberingService } from '../procurement/numbering.service';
 import { JobWorkDispatchService } from './job-work-dispatch.service';
 import { JobWorkExecutionController } from './job-work-execution.controller';
 import { JobWorkOrdersService } from './job-work-orders.service';
+import { JobWorkReadinessService } from './job-work-readiness.service';
 import { JobWorkReceiptsService } from './job-work-receipts.service';
 import { JobWorkRegisterService } from './job-work-register.service';
 import { JobWorkController } from './job-work.controller';
@@ -38,10 +39,21 @@ import { JobWorkService } from './job-work.service';
     NumberingService,
     JobWorkService,
     JobWorkOrdersService,
+    JobWorkReadinessService,
     JobWorkReceiptsService,
     JobWorkDispatchService,
     JobWorkRegisterService,
   ],
-  exports: [JobWorkService, JobWorkOrdersService],
+  // JobWorkReadinessService is exported for the same reason as the orders
+  // service: ProductionService refuses a work order on its figures, and the
+  // Production screen shows the same figures as a table. One answer, two
+  // callers — which is the only way the screen and the refusal can agree.
+  exports: [
+    JobWorkService,
+    JobWorkOrdersService,
+    JobWorkReadinessService,
+    // Incoming QC keeps a challan’s status in step with its lots.
+    JobWorkReceiptsService,
+  ],
 })
 export class JobWorkModule {}

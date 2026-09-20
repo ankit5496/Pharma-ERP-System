@@ -372,41 +372,79 @@ const grnsBefore = (await api('/procurement/goods-receipts')).body.total;
 
 const challan = `DC-HW-${tag}`;
 
-const receiptFor = async (item, quantity, batch) =>
-  store('/job-work/material-receipts', {
-    method: 'POST',
-    body: {
-      jobWorkOrderId: order.id,
-      deliveryChallanNumber: challan,
+// THE WHOLE CHALLAN IN ONE REQUEST, which is how it arrives: three materials
+// on one document, recorded together or not at all.
+const delivered = [
+  [api1, '60', `HW-API-${tag}`],
+  [lactose, '40', `HW-LAC-${tag}`],
+  [magStearate, '2', `HW-MGS-${tag}`],
+];
+
+const challanResponse = await store('/job-work/material-receipts', {
+  method: 'POST',
+  body: {
+    jobWorkOrderId: order.id,
+    deliveryChallanNumber: challan,
+    receiptDate: iso(today),
+    // INSPECTED, which is the default and the point of this leg of the test:
+    // principal material now passes the same incoming gate a purchase does.
+    qcRequired: true,
+    lines: delivered.map(([item, quantity, batch]) => ({
       itemId: item.id,
       batchNumber: batch,
       receivedQuantity: quantity,
       manufacturingDate: iso(new Date(today.getFullYear(), today.getMonth() - 1, 1)),
       expiryDate: iso(plusYears(2)),
-    },
-  });
+    })),
+  },
+});
 
-const receipts = [];
-
-for (const [item, quantity, batch] of [
-  [api1, '60', `HW-API-${tag}`],
-  [lactose, '40', `HW-LAC-${tag}`],
-  [magStearate, '2', `HW-MGS-${tag}`],
-]) {
-  const r = await receiptFor(item, quantity, batch);
-
-  if (r.status >= 400) throw new Error(`receipt ${item.code}: ${r.status} ${JSON.stringify(r.body)}`);
-
-  receipts.push(r.body);
-  note(`received ${quantity} ${item.uom} ${item.name} on batch ${batch} (${r.body.receiptNumber})`);
+if (challanResponse.status >= 400) {
+  throw new Error(`challan: ${challanResponse.status} ${JSON.stringify(challanResponse.body)}`);
 }
 
-check('  three receipts were booked under one delivery challan',
-  receipts.length === 3 && receipts.every((r) => r.deliveryChallanNumber === challan),
-  JSON.stringify(receipts.map((r) => r.deliveryChallanNumber)));
+const receipt = challanResponse.body;
+
+for (const [item, quantity, batch] of delivered) {
+  note(`received ${quantity} ${item.uom} ${item.name} on batch ${batch}`);
+}
+
+check('  one receipt carries all three materials',
+  receipt.lines?.length === 3 && receipt.deliveryChallanNumber === challan,
+  JSON.stringify({ challan: receipt.deliveryChallanNumber, lines: receipt.lines?.length }));
+check('  and it is held for incoming QC',
+  receipt.qcRequired === true && receipt.status === 'PENDING_QC',
+  JSON.stringify({ qcRequired: receipt.qcRequired, status: receipt.status }));
+
+const receipts = receipt.lines ?? [];
+
+// The materials offered are the ones the formulation calls for — not the
+// whole item master, and not a list typed into the screen.
+const expected = (await api(`/job-work/orders/${order.id}/materials`)).body;
+
+check('  the order knows which materials it expects, from its own BOM',
+  Array.isArray(expected) && expected.length === delivered.length,
+  JSON.stringify(expected));
+check('  and they are exactly the ones received',
+  Array.isArray(expected) &&
+    delivered.every(([item]) => expected.some((m) => m.item.id === item.id)),
+  JSON.stringify(expected?.map?.((m) => m.item.code)));
+
+// A material the formulation does not list is refused, so the form's list is
+// a rule rather than a convenience.
+const strangerMaterial = await store('/job-work/material-receipts', {
+  method: 'POST',
+  body: {
+    jobWorkOrderId: order.id,
+    deliveryChallanNumber: `DC-HW-X-${tag}`,
+    lines: [{ itemId: healcure.id, batchNumber: `X-${tag}`, receivedQuantity: '1' }],
+  },
+});
+
+check("  a material outside the formulation is REFUSED", strangerMaterial.status === 400,
+  `${strangerMaterial.status} ${JSON.stringify(strangerMaterial.body)}`);
 check('  the receipt number is system-generated',
-  receipts.every((r) => /^[A-Z]+-\d{4}-\d+$/.test(r.receiptNumber ?? '')),
-  JSON.stringify(receipts.map((r) => r.receiptNumber)));
+  /^[A-Z]+-\d{4}-\d+$/.test(receipt.receiptNumber ?? ''), receipt.receiptNumber);
 
 // NOT A PURCHASE.
 check('  no purchase order was created',
@@ -436,6 +474,127 @@ check('  RULE 5/6 — the stock is PRINCIPAL_OWNED',
   apiLot?.ownership === 'PRINCIPAL_OWNED', JSON.stringify(apiLot?.ownership));
 check('  the lot carries the principal’s own batch number from the challan',
   apiLot?.vendorBatchNumber === `HW-API-${tag}`, JSON.stringify(apiLot?.vendorBatchNumber));
+
+// ---------------------------------------------------------------------------
+section('INCOMING QC — the principal\u2019s material passes the same gate');
+// ---------------------------------------------------------------------------
+
+const readiness = async (batchSize) =>
+  (await api(`/job-work/orders/${order.id}/readiness${batchSize ? `?batchSize=${batchSize}` : ''}`))
+    .body;
+
+const quarantined = await readiness();
+
+check('  every material arrived in quarantine',
+  principalLots.every((l) => l.status === 'QUARANTINE'),
+  JSON.stringify(principalLots.map((l) => l.status)));
+check('  so the readiness check says the order is NOT ready',
+  quarantined.ready === false, JSON.stringify(quarantined.ready));
+check('  and it says why: the quantity is awaiting QC, not missing',
+  quarantined.lines.every((line) => Number(line.quantityAwaitingQc) > 0),
+  JSON.stringify(quarantined.lines.map((l) => [l.item.code, l.quantityAwaitingQc])));
+check('  eligible is zero while it sits there',
+  quarantined.lines.every((line) => Number(line.eligibleQuantity) === 0),
+  JSON.stringify(quarantined.lines.map((l) => l.eligibleQuantity)));
+check('  but the received quantity is still reported',
+  quarantined.lines.every((line) => Number(line.receivedQuantity) > 0),
+  JSON.stringify(quarantined.lines.map((l) => l.receivedQuantity)));
+
+// A work order raised now must be refused, on those same figures.
+const tooEarly = await production(`/production/orders`, {
+  method: 'POST',
+  body: {
+    productId: healcure.id,
+    plannedQuantity: '100000',
+    jobWorkOrderId: order.id,
+    plannedStartOn: iso(today),
+  },
+});
+
+check('  a work order on quarantined material is REFUSED',
+  tooEarly.status >= 400, `${tooEarly.status}`);
+note(`refusal: ${JSON.stringify(tooEarly.body?.message)}`);
+
+// The principal\u2019s drums are on the incoming-QC queue, which used to show
+// purchased material only.
+// By id: the queue is paged and ordered first-expiry-first, so three lots
+// two years out are not on page one of a company holding hundreds.
+const mine = [];
+
+for (const lot of principalLots) {
+  const row = (await quality(`/procurement/qc/lots/${lot.id}`)).body;
+
+  if (row?.lot?.id) mine.push(row);
+}
+
+check('  the principal\u2019s material is reachable from incoming QC',
+  mine.length === 3, `${mine.length} of 3 found`);
+check('  each names the principal and the challan, not a vendor',
+  mine.length === 3 &&
+    mine.every((row) => row.jobWork?.principal?.name === 'HealWell Pharmaceuticals' &&
+      row.jobWork?.deliveryChallanNumber === challan && row.vendor === null),
+  JSON.stringify(mine.map((r) => [r.jobWork?.principal?.name, r.vendor])));
+
+// And it is findable on the queue by its lot number, which is how a Quality
+// Officer would actually reach it.
+const searched = rowsOf(
+  (await quality(`/procurement/qc/lots?search=${principalLots[0]?.lotNumber ?? ''}`)).body,
+);
+
+check('  and it is findable on the queue by lot number',
+  searched.some((row) => row.lot.id === principalLots[0]?.id),
+  JSON.stringify(searched.map((r) => r.lot.lotNumber)));
+
+// Released, one drum at a time, by the Quality Officer.
+for (const row of mine) {
+  const decided = await quality(`/procurement/qc/lots/${row.lot.id}/decision`, {
+    method: 'POST',
+    body: { decision: 'ACCEPTED', testReference: `COA-${tag}`, remarks: 'Conforms.' },
+  });
+
+  if (decided.status >= 400) {
+    throw new Error(`qc release: ${decided.status} ${JSON.stringify(decided.body)}`);
+  }
+}
+
+const afterQc = rowsOf((await api(`/job-work/material-receipts`)).body)
+  .find((r) => r.deliveryChallanNumber === challan);
+
+check('  releasing every drum releases the consignment',
+  afterQc?.status === 'RELEASED', JSON.stringify(afterQc?.status));
+check('  and every line now reports its lot usable',
+  afterQc?.lines?.every((line) => line.lotStatus === 'USABLE'),
+  JSON.stringify(afterQc?.lines?.map((l) => l.lotStatus)));
+
+const ready = await readiness();
+
+check('  the readiness check now says READY',
+  ready.ready === true, JSON.stringify(ready.blockedReason));
+check('  eligible matches what was received',
+  ready.lines.every((line) => Number(line.eligibleQuantity) === Number(line.receivedQuantity)),
+  JSON.stringify(ready.lines.map((l) => [l.item.code, l.receivedQuantity, l.eligibleQuantity])));
+check('  and nothing is short',
+  ready.lines.every((line) => Number(line.shortageQuantity) === 0),
+  JSON.stringify(ready.lines.map((l) => l.shortageQuantity)));
+
+// RULE 13: enough is enough, not exactly enough. Lactose was over-received
+// (40 kg against 30 required) and that is a pass, not a discrepancy.
+const lactoseLine = ready.lines.find((line) => line.item.id === lactose.id);
+
+check('  RULE 13 — an EXCESS receipt is ready, not a mismatch',
+  lactoseLine && Number(lactoseLine.eligibleQuantity) > Number(lactoseLine.requiredQuantity) &&
+    lactoseLine.ready === true,
+  JSON.stringify(lactoseLine));
+
+// And a batch size nothing could cover is short, on the same figures.
+const oversized = await readiness('1000000');
+
+check('  ten times the batch size is short on every material',
+  oversized.ready === false && oversized.lines.every((line) => Number(line.shortageQuantity) > 0),
+  JSON.stringify(oversized.lines.map((l) => [l.item.code, l.shortageQuantity])));
+check('  and the refusal names required, available and shortage',
+  /required .* available .* short /.test(oversized.blockedReason ?? ''),
+  JSON.stringify(oversized.blockedReason));
 
 // ---------------------------------------------------------------------------
 section('ABC-OWNED STOCK OF THE SAME MATERIAL (the bucket test needs both)');
@@ -658,13 +817,15 @@ check('  RULE 14 — dispatch before release is BLOCKED',
   earlyDispatch.status >= 400, `${earlyDispatch.status}`);
 note(`refusal: ${JSON.stringify(earlyDispatch.body?.message)}`);
 
-// Admin must not be able to release: the gate belongs to Quality.
-const adminRelease = await api(`/production/batches/${bmr.id}/release`, {
+// The store officer must not be able to release: the gate belongs to Quality.
+// ADMIN is deliberately allowed alongside them — the decision is audited and
+// attributed either way — so the admin is not the case that proves the rule.
+const storeRelease = await store(`/production/batches/${bmr.id}/release`, {
   method: 'POST',
   body: { decision: 'RELEASED' },
 });
 check('  RULE 11 — the gate is the existing one, and it is the Quality Officer’s',
-  adminRelease.status === 403, `${adminRelease.status}`);
+  storeRelease.status === 403, `${storeRelease.status}`);
 
 const released = await quality(`/production/batches/${bmr.id}/release`, {
   method: 'POST',

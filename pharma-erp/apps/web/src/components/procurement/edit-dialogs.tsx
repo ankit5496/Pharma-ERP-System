@@ -380,7 +380,7 @@ export function EditPurchaseOrderButton({
                   }))}
                   value={vendorId}
                   onChange={setVendorId}
-                  emptyLabel="Choose a vendor"
+                  emptyLabel="Select vendor"
                   className="field"
                 />
               </Field>

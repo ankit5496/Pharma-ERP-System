@@ -231,7 +231,7 @@ export function BookReceiptForm({
                 }))}
                 value={orderId}
                 onChange={setOrderId}
-                emptyLabel="Choose an order"
+                emptyLabel="Select purchase order"
               />
             </Field>
           </div>
