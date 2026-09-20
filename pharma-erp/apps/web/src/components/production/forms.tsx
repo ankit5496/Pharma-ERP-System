@@ -411,17 +411,16 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
           <SearchableSelect
             id="productId"
             options={productOptions}
-            placeholder={null}
+            required
             value={productId}
             onChange={setProductId}
-            required
           />
           <input type="hidden" name="productId" value={productId} />
         </div>
 
         <div>
           <label htmlFor="plannedQuantity" className={LABEL}>
-            Quantity to make
+            Quantity
           </label>
           <input
             id="plannedQuantity"
@@ -611,7 +610,7 @@ export function IssueMaterialForm({
               value: candidate.id,
               label: `${candidate.orderNumber} — ${candidate.product.code}`,
             }))}
-            placeholder={null}
+            required
             value={orderId}
             onChange={setOrderId}
           />
@@ -1036,10 +1035,9 @@ export function RecordBatchForm({ orders }: { orders: ProductionOrderSummary[] }
               value: candidate.id,
               label: `${candidate.orderNumber} — ${candidate.product.code}`,
             }))}
-            placeholder={null}
+            required
             value={orderId}
             onChange={setOrderId}
-            required
           />
           <input type="hidden" name="productionOrderId" value={orderId} />
         </div>
