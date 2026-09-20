@@ -94,7 +94,7 @@ export async function InvoicesPanel({
     apiFetch<DispatchListItem[]>('/api/v1/order-to-cash/dispatch', { authenticated: true }),
   ]);
 
-  const readyToInvoice = orders.ok
+  const dispatchedOrders = orders.ok
     ? orders.data.filter((order) =>
         ['ALLOCATED', 'PARTIALLY_ALLOCATED', 'DISPATCHED'].includes(order.status),
       )
@@ -120,6 +120,14 @@ export async function InvoicesPanel({
     }
   }
 
+  // ONLY ORDERS WITH SOMETHING LEFT TO BILL, so this reads as a work queue the
+  // way Awaiting stock does: raise the invoice and the row leaves. It listed
+  // every dispatched order before, including those already invoiced, which
+  // filled the table with rows whose only button was greyed out — and "Not
+  // dispatched yet" beside an order marked Dispatched read as a contradiction
+  // when it meant "its consignment has already been billed".
+  const readyToInvoice = dispatchedOrders.filter((order) => billableByOrder.has(order.id));
+
   // Status, payment state and the invoice date: a closed set, a closed set and
   // a range. What is typed — numbers, customer, GSTIN, the order it came from —
   // is answered by the API instead.
@@ -144,7 +152,7 @@ export async function InvoicesPanel({
           ) : readyToInvoice.length === 0 ? (
             <EmptyState
               title="Nothing is ready to invoice."
-              hint="An order appears here once batches have been reserved against it on the Allocation tab."
+              hint="An order appears here once a dispatch against it has been confirmed, and leaves once that consignment is invoiced."
             />
           ) : (
             <Table columns={READY_COLUMNS}>

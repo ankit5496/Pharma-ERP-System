@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache';
 
 import type {
+  AllocationRow,
   DispatchDetail,
   ItemListItem,
   PartySummary,
@@ -29,8 +30,6 @@ import { apiFetch, type ApiResult } from '@/lib/api';
  * ordinary outcome the screen has to render, not an exceptional condition.
  */
 
-const WORKFLOW_BASE = '/workflows/order-to-cash';
-
 /** Result shape every action returns, so forms handle one thing. */
 export interface ActionResult<T = void> {
   ok: boolean;
@@ -44,9 +43,23 @@ function toResult<T>(result: ApiResult<T>): ActionResult<T> {
   return result.ok ? { ok: true, data: result.data } : { ok: false, error: result.error };
 }
 
-/** Refreshes one subtab after a write. */
-function revalidateStep(step: string): void {
-  revalidatePath(`${WORKFLOW_BASE}/${step}`);
+/**
+ * Refreshes one subtab after a write.
+ *
+ * THE ROUTE LITERAL, NOT THE RESOLVED URL. These screens are served by the
+ * dynamic route `/workflows/[workflow]/[step]`, and `revalidatePath` matches a
+ * concrete path like `/workflows/order-to-cash/allocation` against STATIC
+ * routes only — for a dynamic one it silently matches nothing and the write is
+ * never reflected. Passing the literal with type 'page' invalidates every
+ * rendering of that route, which is why the step argument is now only used to
+ * say which one asked.
+ *
+ * It silently did nothing, which is the worst kind of wrong: a reservation
+ * landed in the database and the table it belongs to kept showing the list
+ * from before it existed until the page was reloaded by hand.
+ */
+function revalidateStep(_step: string): void {
+  revalidatePath('/workflows/[workflow]/[step]', 'page');
 }
 
 /**
@@ -182,15 +195,25 @@ export async function cancelSalesOrderAction(
 // Allocation
 // ---------------------------------------------------------------------------
 
-export async function allocateOrderAction(salesOrderId: string): Promise<ActionResult> {
-  const result = await apiFetch<unknown>(
+/**
+ * Reserves stock against an order, FEFO.
+ *
+ * Returns the rows it created rather than a bare success, so the button can
+ * name the batches it took: "reserved" with nothing to show for it leaves
+ * someone scrolling a table of nineteen reservations looking for which two are
+ * theirs.
+ */
+export async function allocateOrderAction(
+  salesOrderId: string,
+): Promise<ActionResult<AllocationRow[]>> {
+  const result = await apiFetch<AllocationRow[]>(
     `/api/v1/order-to-cash/allocation/${salesOrderId}`,
     { method: 'POST', authenticated: true, timeoutMs: 30_000 },
   );
 
   if (result.ok) revalidateFlow();
 
-  return result.ok ? { ok: true } : { ok: false, error: result.error };
+  return toResult(result);
 }
 
 export async function releaseAllocationAction(allocationId: string): Promise<ActionResult> {

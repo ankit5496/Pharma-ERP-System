@@ -245,19 +245,16 @@ export class SalesOrdersService {
     // order may proceed — `runCheck` records its verdict exactly as before. An
     // order the gate blocks is left BLOCKED and unallocated, which is the
     // correct outcome rather than a failure to report.
-    const checked = await this.runCheck(created.id);
+    await this.runCheck(created.id);
 
-    if (checked.check.passed) {
-      try {
-        await this.allocation.commit(created.id);
-      } catch {
-        // The stock was there a moment ago, so this is a race: someone took the
-        // last of it between the pre-check and here. The order stands as
-        // APPROVED with nothing reserved, which the Allocation tab can retry
-        // from. Nothing is half-written — `commit` is itself one transaction,
-        // so either every reservation landed or none did.
-      }
-    }
+    // STOCK IS NOT RESERVED HERE. Creating an order and reserving batches
+    // against it are two decisions, and this one is the first: the order lands
+    // APPROVED with nothing allocated, appears on the Allocation tab, and the
+    // batches are chosen when somebody presses Allocate (FEFO) there.
+    //
+    // The availability pre-check above still runs, so an order nobody could
+    // ever fill is still refused at the point of entry rather than discovered
+    // later. What is deferred is the reservation, not the check.
 
     return this.get(created.id);
   }
@@ -283,10 +280,33 @@ export class SalesOrdersService {
 
     if (!order) throw new NotFoundException('Sales order not found.');
 
-    if (order.status !== 'DRAFT') {
+    // WHAT MAY BE CHANGED DEPENDS ON WHAT HAS HAPPENED TO THE ORDER.
+    //
+    // Replacing the LINES is refused once any batch is reserved against them:
+    // the reservations point at order lines, and rewriting the lines under
+    // live reservations would leave stock held for quantities nobody ordered.
+    //
+    // Correcting the HEADER — the dates and the note — stays available while
+    // the order is still in play, because none of it is what stock was
+    // reserved against. A completed or cancelled order is closed to both.
+    const settled: SalesOrderStatus[] = ['COMPLETED', 'CANCELLED'];
+
+    if (settled.includes(order.status as SalesOrderStatus)) {
       throw new BadRequestException(
-        `Only a draft order can be edited — this one is ${order.status.toLowerCase().replace(/_/g, ' ')}. Cancel it and raise a new one.`,
+        `This order is ${order.status.toLowerCase()}, so it can no longer be edited.`,
       );
+    }
+
+    if (dto.items) {
+      const reserved = await this.prisma.scoped.batchAllocation.count({
+        where: { salesOrderId: id, status: { not: 'RELEASED_BACK' } },
+      });
+
+      if (reserved > 0) {
+        throw new BadRequestException(
+          'Stock is already reserved against this order, so its lines cannot be replaced. Release the allocation first, or cancel the order and raise a new one.',
+        );
+      }
     }
 
     const orderDate = dto.orderDate ? new Date(dto.orderDate) : order.orderDate;

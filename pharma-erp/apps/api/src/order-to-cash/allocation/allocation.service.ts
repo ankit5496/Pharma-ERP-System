@@ -115,6 +115,11 @@ export class AllocationService {
       }
 
       const lots = await this.eligibleLots(line.itemId);
+
+      // Only needed to explain a shortfall, so it is read once per line rather
+      // than folded into the FEFO query every allocation runs.
+      const reserved =
+        lots.length === 0 ? await this.reservedElsewhere(line.itemId) : new Prisma.Decimal(0);
       const picks: AllocationPlanPick[] = [];
       let remaining = outstanding;
 
@@ -161,7 +166,9 @@ export class AllocationService {
         picks,
         note: shortfall.greaterThan(0)
           ? picks.length === 0
-            ? 'No released, in-date stock is available for this product.'
+            ? reserved.greaterThan(0)
+              ? `Every released, in-date unit of this product — ${reserved.toFixed(3)} — is already reserved against other orders.`
+              : 'No released, in-date stock is available for this product.'
             : 'Not enough released, in-date stock to cover the line in full.'
           : null,
       });
@@ -193,8 +200,29 @@ export class AllocationService {
     const plan = await this.plan(salesOrderId);
 
     if (plan.blockedReason) throw new BadRequestException(plan.blockedReason);
-    if (!plan.canAllocate) {
-      throw new BadRequestException('There is no released, in-date stock to allocate to this order.');
+
+    // ALL OR NOTHING. Reserving what happens to be on the shelf and leaving the
+    // rest outstanding left orders sitting half-held: stock locked away for a
+    // customer who cannot be shipped in full, and unavailable to anyone who
+    // could be. If the whole order cannot be covered, nothing is reserved and
+    // the shortfall is named, so the decision — chase stock, split the order,
+    // or reduce it — stays with the person rather than being made by default.
+    if (plan.anyShort) {
+      // Each line says which problem it has: no stock at all, all of it
+      // reserved elsewhere, or simply not enough. A bare "no stock available"
+      // sent people looking for a bug when the shelf was full.
+      const shortfalls = plan.lines
+        .filter((line) => line.isShort)
+        .map(
+          (line) =>
+            `${line.itemCode} short by ${line.shortfall} of ${line.quantityOutstanding}` +
+            (line.note ? ` (${line.note})` : ''),
+        )
+        .join('; ');
+
+      throw new BadRequestException(
+        `Nothing has been reserved: this order cannot be allocated in full. ${shortfalls}`,
+      );
     }
 
     await this.prisma.transaction(async (tx) => {
@@ -555,6 +583,46 @@ export class AllocationService {
         ),
       }))
       .filter((lot) => lot.available.greaterThan(0));
+  }
+
+  /**
+   * How much released, in-date stock of an item is RESERVED for other orders.
+   *
+   * Only ever used to explain a refusal. "No released, in-date stock is
+   * available" is true but misleading when the shelf is full and every unit of
+   * it is already promised to someone else — those are two different problems
+   * with two different answers (make or buy more, versus release an order that
+   * is not going to ship).
+   */
+  private async reservedElsewhere(itemId: string): Promise<Prisma.Decimal> {
+    const today = startOfUtcDay(new Date());
+
+    const lots = await this.prisma.scoped.finishedGoodsLot.findMany({
+      where: {
+        itemId,
+        expiryDate: { gte: today },
+        quantityAvailable: { gt: 0 },
+        batch: { releaseStatus: 'RELEASED', deletedAt: null },
+      },
+      select: { batchId: true },
+    });
+
+    if (lots.length === 0) return new Prisma.Decimal(0);
+
+    const held = await this.prisma.scoped.batchAllocation.aggregate({
+      where: {
+        batchId: { in: lots.map((lot) => lot.batchId) },
+        status: { in: ['ALLOCATED', 'PARTIALLY_DISPATCHED'] },
+      },
+      _sum: { quantityAllocated: true, quantityDispatched: true },
+    });
+
+    return Prisma.Decimal.max(
+      (held._sum.quantityAllocated ?? new Prisma.Decimal(0)).sub(
+        held._sum.quantityDispatched ?? new Prisma.Decimal(0),
+      ),
+      0,
+    );
   }
 }
 
