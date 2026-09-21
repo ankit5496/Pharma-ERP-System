@@ -542,18 +542,21 @@ export function EditPurchaseOrderButton({
                   />
                 </Field>
 
-                <Field label="Tax %" htmlFor={`lt-${line.id}`}>
+                {/* READ-ONLY EVEN ON A DRAFT. The order service reads the rate
+                    off the item master when it saves, so typing one here would
+                    change the arithmetic on screen and then be overwritten —
+                    the figure shown would be a number the order never had.
+                    Change the rate on the item master and it follows here. */}
+                <Field
+                  label="Tax %"
+                  htmlFor={`lt-${line.id}`}
+                  hint={isDraft ? 'From the item master.' : undefined}
+                >
                   <input
                     id={`lt-${line.id}`}
-                    name={`taxRatePercent_${line.id}`}
-                    disabled={!isDraft}
-                    type="number"
-                    step="any"
-                    min="0"
-                    max="100"
-                    {...noWheelChange}
+                    disabled
+                    readOnly
                     value={figureFor(line).taxRatePercent}
-                    onChange={(event) => setFigure(line.id, 'taxRatePercent', event.target.value)}
                     className="field"
                   />
                 </Field>

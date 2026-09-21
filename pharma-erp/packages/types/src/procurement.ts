@@ -45,11 +45,22 @@ export const SCHEDULE_LABELS: Record<ScheduleClassification, string> = {
   G: 'Schedule G',
 };
 
+/**
+ * What each item type is called on screen.
+ *
+ * TITLE CASE, because these read as the names of categories rather than as
+ * prose — "Raw Material" is what the shelf label and the GRN say, and a table
+ * cell reading "Raw material" mid-column looked like a sentence fragment.
+ *
+ * The one place the words are defined. Every screen that shows a type reads
+ * them from here, which is what stops the low-stock table and the item master
+ * drifting into two spellings of the same category.
+ */
 export const ITEM_TYPE_LABELS: Record<ItemType, string> = {
-  RAW_MATERIAL: 'Raw material',
-  PACKING_MATERIAL: 'Packing material',
-  SEMI_FINISHED: 'Semi-finished',
-  FINISHED_GOOD: 'Finished good',
+  RAW_MATERIAL: 'Raw Material',
+  PACKING_MATERIAL: 'Packing Material',
+  SEMI_FINISHED: 'Semi-Finished',
+  FINISHED_GOOD: 'Finished Good',
 };
 
 export const PARTY_TYPES = ['VENDOR', 'CUSTOMER', 'JOB_WORK_PRINCIPAL'] as const;

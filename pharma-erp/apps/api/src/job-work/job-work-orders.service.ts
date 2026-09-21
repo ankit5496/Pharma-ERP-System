@@ -125,11 +125,13 @@ export class JobWorkOrdersService {
       orderBy: { createdAt: 'desc' },
     });
 
-    return Promise.all(orders.map((order) => this.toSummary(order)));
+    const progress = await this.progressFor(orders.map((order) => order.id));
+
+    return orders.map((order) => this.toSummary(order, progress.get(order.id)));
   }
 
   async findOne(id: string): Promise<JobWorkOrderSummary> {
-    return this.toSummary(await this.requireOrder(id));
+    return this.summarise(await this.requireOrder(id));
   }
 
   /**
@@ -228,7 +230,7 @@ export class JobWorkOrdersService {
       });
     });
 
-    return this.toSummary(created);
+    return this.summarise(created);
   }
 
   /**
@@ -268,7 +270,7 @@ export class JobWorkOrdersService {
     if (dto.deliveryDate !== undefined) data.deliveryDate = fromIsoDate(dto.deliveryDate);
     if (dto.notes !== undefined) data.notes = dto.notes?.trim() || null;
 
-    if (Object.keys(data).length === 0) return this.toSummary(order);
+    if (Object.keys(data).length === 0) return this.summarise(order);
 
     const updated = await this.prisma.transaction(async (tx) => {
       await tx.jobWorkOrder.update({ where: { id: order.id }, data });
@@ -276,7 +278,7 @@ export class JobWorkOrdersService {
       return tx.jobWorkOrder.findFirstOrThrow({ where: { id: order.id }, include: ORDER_INCLUDE });
     });
 
-    return this.toSummary(updated);
+    return this.summarise(updated);
   }
 
   /**
@@ -351,33 +353,127 @@ export class JobWorkOrdersService {
    * Four aggregates rather than four stored counters, for US-JW-06's reason:
    * a figure that is computed cannot drift from the transactions it describes.
    */
-  private async toSummary(order: OrderWithRelations): Promise<JobWorkOrderSummary> {
-    const [received, consumed, dispatched, productionOrderCount] = await Promise.all([
-      // What arrived is on the receipt's LINES now, one join below the order.
-      this.prisma.scoped.jobWorkMaterialReceiptLine.aggregate({
-        where: {
-          deletedAt: null,
-          receipt: { jobWorkOrderId: order.id, deletedAt: null },
-        },
-        _sum: { receivedQuantity: true },
+  /**
+   * One order, with its own figures fetched.
+   *
+   * The single-order path. `list` batches instead — see `progressFor` —
+   * because four queries per order is what made the Job Work screens take
+   * seventeen seconds to draw a table.
+   */
+  private async summarise(order: OrderWithRelations): Promise<JobWorkOrderSummary> {
+    const progress = await this.progressFor([order.id]);
+
+    return this.toSummary(order, progress.get(order.id));
+  }
+
+  /**
+   * What has happened against each of these orders, in four queries total.
+   *
+   * NOT FOUR PER ORDER. The same aggregates as before — received, consumed,
+   * dispatched, work orders raised — grouped by order rather than filtered to
+   * one, because the list screen asks for all of them at once and a round trip
+   * to Oregon costs the same whether it answers for one order or sixty.
+   *
+   * Consumption has no groupBy: its key is three joins away, on the receipt
+   * behind the line behind the lot. Read and folded in memory, which is one
+   * round trip and exact.
+   */
+  private async progressFor(orderIds: readonly string[]): Promise<Map<string, OrderProgress>> {
+    const byOrder = new Map<string, OrderProgress>();
+
+    if (orderIds.length === 0) return byOrder;
+
+    const ids = [...orderIds];
+
+    const [received, consumed, dispatched, workOrders] = await Promise.all([
+      this.prisma.scoped.jobWorkMaterialReceiptLine.findMany({
+        where: { deletedAt: null, receipt: { jobWorkOrderId: { in: ids }, deletedAt: null } },
+        select: { receivedQuantity: true, receipt: { select: { jobWorkOrderId: true } } },
       }),
-      // Consumption is counted off the ISSUE LINES that drew from this order's
-      // principal-owned lots — the same rows that answer a recall — rather than
-      // off anything stored on the order.
-      this.prisma.scoped.materialIssueLine.aggregate({
+      this.prisma.scoped.materialIssueLine.findMany({
         where: {
-          lot: { jobWorkMaterialReceiptLine: { receipt: { jobWorkOrderId: order.id } } },
+          lot: { jobWorkMaterialReceiptLine: { receipt: { jobWorkOrderId: { in: ids } } } },
         },
-        _sum: { quantityIssued: true },
+        select: {
+          quantityIssued: true,
+          lot: {
+            select: {
+              jobWorkMaterialReceiptLine: {
+                select: { receipt: { select: { jobWorkOrderId: true } } },
+              },
+            },
+          },
+        },
       }),
-      this.prisma.scoped.jobWorkInvoice.aggregate({
-        where: { jobWorkOrderId: order.id, deletedAt: null },
+      this.prisma.scoped.jobWorkInvoice.groupBy({
+        by: ['jobWorkOrderId'],
+        where: { jobWorkOrderId: { in: ids }, deletedAt: null },
         _sum: { dispatchedQuantity: true },
       }),
-      this.prisma.scoped.productionOrder.count({
-        where: { jobWorkOrderId: order.id, deletedAt: null },
+      this.prisma.scoped.productionOrder.groupBy({
+        by: ['jobWorkOrderId'],
+        where: { jobWorkOrderId: { in: ids }, deletedAt: null },
+        _count: { _all: true },
       }),
     ]);
+
+    const blank = (): OrderProgress => ({
+      received: ZERO,
+      consumed: ZERO,
+      dispatched: ZERO,
+      productionOrderCount: 0,
+    });
+
+    const held = (id: string): OrderProgress => {
+      const existing = byOrder.get(id) ?? blank();
+
+      byOrder.set(id, existing);
+
+      return existing;
+    };
+
+    for (const line of received) {
+      held(line.receipt.jobWorkOrderId).received = held(
+        line.receipt.jobWorkOrderId,
+      ).received.add(line.receivedQuantity);
+    }
+
+    for (const line of consumed) {
+      const id = line.lot.jobWorkMaterialReceiptLine?.receipt.jobWorkOrderId;
+
+      if (!id) continue;
+
+      held(id).consumed = held(id).consumed.add(line.quantityIssued);
+    }
+
+    for (const row of dispatched) {
+      held(row.jobWorkOrderId).dispatched = row._sum.dispatchedQuantity ?? ZERO;
+    }
+
+    for (const row of workOrders) {
+      // Nullable on the model — a production order need not be job work — but
+      // the query filtered to these ids, so this is a type formality.
+      if (row.jobWorkOrderId) held(row.jobWorkOrderId).productionOrderCount = row._count._all;
+    }
+
+    return byOrder;
+  }
+
+  /**
+   * The order plus its derived progress.
+   *
+   * The figures are passed in rather than fetched: the list computes them for
+   * every order in one go, and fetching here would put the round trips back.
+   * Omitted means nothing has happened against this order yet, which is a zero
+   * rather than a missing value.
+   */
+  private toSummary(order: OrderWithRelations, progress?: OrderProgress): JobWorkOrderSummary {
+    const figures = progress ?? {
+      received: ZERO,
+      consumed: ZERO,
+      dispatched: ZERO,
+      productionOrderCount: 0,
+    };
 
     const billingModel = order.billingModel as BillingModel;
 
@@ -407,10 +503,10 @@ export class JobWorkOrdersService {
       createdAt: order.createdAt.toISOString(),
       createdBy: order.createdBy?.fullName ?? null,
 
-      materialReceivedQuantity: (received._sum.receivedQuantity ?? ZERO).toString(),
-      materialConsumedQuantity: (consumed._sum.quantityIssued ?? ZERO).toString(),
-      dispatchedQuantity: (dispatched._sum.dispatchedQuantity ?? ZERO).toString(),
-      productionOrderCount,
+      materialReceivedQuantity: figures.received.toString(),
+      materialConsumedQuantity: figures.consumed.toString(),
+      dispatchedQuantity: figures.dispatched.toString(),
+      productionOrderCount: figures.productionOrderCount,
     };
   }
 }
@@ -418,6 +514,14 @@ export class JobWorkOrdersService {
 // -----------------------------------------------------------------------------
 // Shapes and helpers
 // -----------------------------------------------------------------------------
+
+/** What has happened against one order, so the mapper need not ask. */
+interface OrderProgress {
+  received: Prisma.Decimal;
+  consumed: Prisma.Decimal;
+  dispatched: Prisma.Decimal;
+  productionOrderCount: number;
+}
 
 const MAPPING_INCLUDE = {
   bom: {

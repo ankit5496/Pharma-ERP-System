@@ -190,21 +190,38 @@ export function CreatePoDialog({
             />
           </Field>
 
+          {/* NOT AN INPUT, AND NOT POSTED. The order service reads the rate
+              off the item master — the same place the invoice raised against
+              this order reads it — so a box here would be one whose contents
+              are discarded, which is worse than no box. Shown because a buyer
+              needs to see the tax they are committing to.
+
+              An item with no rate is refused when the order is placed, not
+              billed at zero: a missing input-tax figure is a filing error. It
+              is stated here so that refusal is not a surprise. */}
           <Field
             label="GST %"
             htmlFor="po-tax"
             hint={
               requisition.item.gstRate
-                ? `The item master says ${requisition.item.gstRate}%.`
-                : 'No rate on the item master.'
+                ? 'From the item master. Change it there, not here.'
+                : 'Set a GST rate on this item before placing the order.'
             }
           >
             <input
               id="po-tax"
-              name="taxRatePercent"
-              inputMode="decimal"
-              defaultValue={state.values?.taxRatePercent ?? requisition.item.gstRate ?? '0'}
-              className="field-sm w-full"
+              disabled
+              readOnly
+              value={
+                requisition.item.gstRate !== null && requisition.item.gstRate !== undefined
+                  ? `${requisition.item.gstRate}%`
+                  : 'No rate on the item master'
+              }
+              className={`field-sm w-full ${
+                requisition.item.gstRate === null || requisition.item.gstRate === undefined
+                  ? 'text-red-700'
+                  : ''
+              }`}
             />
           </Field>
 

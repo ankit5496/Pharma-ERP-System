@@ -4,6 +4,8 @@ import { revalidatePath } from 'next/cache';
 
 import type {
   JobWorkInvoiceView,
+  JobWorkMaterialReadiness,
+  JobWorkOrderMaterial,
   JobWorkMaterialReceiptView,
   JobWorkOrderSummary,
 } from '@pharma-erp/types';
@@ -177,6 +179,59 @@ export async function withdrawJobWorkOrderAction(
 // ---------------------------------------------------------------------------
 // US-JW-02 — the principal's material
 // ---------------------------------------------------------------------------
+
+/**
+ * Whether one job-work order could be manufactured, and if not, why not.
+ *
+ * FETCHED WHEN THE FORM OPENS. The same call the work-order service makes when
+ * the button is pressed, so the table and the refusal cannot disagree — but
+ * made once, for the order somebody is actually looking at, rather than once
+ * per row of the list.
+ *
+ * Null when the check itself could not be run. The form says so and leaves the
+ * button enabled: the API re-decides regardless, and refusing to let somebody
+ * try because a preview failed would be the wrong way round.
+ */
+export async function loadJobWorkReadinessAction(
+  jobWorkOrderId: string,
+  batchSize?: string,
+): Promise<JobWorkMaterialReadiness | null> {
+  if (!jobWorkOrderId) return null;
+
+  const query = batchSize ? `?batchSize=${encodeURIComponent(batchSize)}` : '';
+
+  const result = await apiFetch<JobWorkMaterialReadiness>(
+    `/api/v1/job-work/orders/${jobWorkOrderId}/readiness${query}`,
+    { authenticated: true },
+  );
+
+  return result.ok ? result.data : null;
+}
+
+/**
+ * What one job-work order's masters call for.
+ *
+ * A SERVER ACTION RATHER THAN A PAGE FETCH. The receipt form needs the material
+ * list of whichever order is chosen, which is not known until it is chosen —
+ * and pre-loading every order's list to have it ready cost a call each and made
+ * the screen take half a minute to draw.
+ *
+ * Returns an empty list when the order has no usable formulation. The API says
+ * so with a 400 and the form turns that absence into its own message, which is
+ * the same thing it did when the list arrived with the page.
+ */
+export async function loadJobWorkMaterialsAction(
+  jobWorkOrderId: string,
+): Promise<JobWorkOrderMaterial[]> {
+  if (!jobWorkOrderId) return [];
+
+  const result = await apiFetch<JobWorkOrderMaterial[]>(
+    `/api/v1/job-work/orders/${jobWorkOrderId}/materials`,
+    { authenticated: true },
+  );
+
+  return result.ok ? result.data : [];
+}
 
 /**
  * Records material the principal supplied, against their delivery challan.

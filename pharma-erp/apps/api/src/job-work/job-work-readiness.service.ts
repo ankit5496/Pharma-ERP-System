@@ -139,6 +139,34 @@ export class JobWorkReadinessService {
       };
     }
 
+    // US-MD-06, and the third thing ProductionService checks. A product needs
+    // both a recipe and a pack before anyone starts making it: without this the
+    // batch reaches the packing line with no specification to work to, and the
+    // work order is refused at the point of saving — after this screen has said
+    // it was ready.
+    // Counted here rather than asked of PackagingService: that module imports
+    // ProcurementModule, which imports this one, so importing it back closes a
+    // ring Nest refuses to start. The predicate is PackagingService's own,
+    // verbatim — if that one changes, this has to change with it.
+    const packSpecifications = await this.prisma.scoped.packagingRequirement.count({
+      where: { productId: product.id, isActive: true, deletedAt: null },
+    });
+
+    if (packSpecifications === 0) {
+      return {
+        ...base,
+        bomId: bom.id,
+        bomVersion: bom.version,
+        bomOutputQuantity: bom.outputQuantity.toString(),
+        lines: [],
+        ready: false,
+        blockedReason:
+          `${product.name} has no active packaging requirement, so the batch would reach the ` +
+          'packing line with no pack specification to work to. Add one under Master data → ' +
+          'Packaging Requirement, and make sure it is active.',
+      };
+    }
+
     if (order.agreement.billingModel !== billingModel) {
       // The order froze its model; the agreement has since been renegotiated.
       // Worth saying out loud rather than silently measuring the wrong pool.

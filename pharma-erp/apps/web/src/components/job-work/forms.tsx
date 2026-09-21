@@ -15,7 +15,7 @@ import {
   type JobWorkOrderMaterial,
   type JobWorkOrderSummary,
 } from '@pharma-erp/types';
-import { useMemo, useState } from 'react';
+import { startTransition, useMemo, useState } from 'react';
 
 import {
   Disclosure,
@@ -31,6 +31,8 @@ import {
   createJobWorkOrderAction,
   createJobWorkProductionOrderAction,
   createJobWorkReceiptAction,
+  loadJobWorkMaterialsAction,
+  loadJobWorkReadinessAction,
   updateJobWorkOrderAction,
 } from './actions';
 
@@ -530,19 +532,9 @@ export function ViewJobWorkReceiptButton({
  */
 export function CreateJobWorkReceiptButton({
   orders,
-  materialsByOrder,
   ownProcurementOrderCount = 0,
 }: {
   orders: readonly JobWorkOrderSummary[];
-  /**
-   * What each order's formulation calls for, keyed by order.
-   *
-   * Resolved on the server with the rest of the screen so choosing an order is
-   * instant and needs no second round trip. An order missing from the map has
-   * no usable BOM behind it — the form says so instead of offering an empty
-   * list of materials to fill in.
-   */
-  materialsByOrder: Readonly<Record<string, readonly JobWorkOrderMaterial[]>>;
   /**
    * How many job-work orders exist on the OTHER billing model.
    *
@@ -559,8 +551,36 @@ export function CreateJobWorkReceiptButton({
   // choice, and everything else on the form follows from it.
   const [receiptOrderId, setReceiptOrderId] = useState('');
 
-  const materials = receiptOrderId ? (materialsByOrder[receiptOrderId] ?? []) : [];
+  /**
+   * The chosen order's materials, fetched when it is chosen.
+   *
+   * Not brought with the page: the form needs one order's list and the page
+   * would have had to load every order's to have it ready, which is what made
+   * this screen take thirty-four seconds to draw.
+   */
+  const [materials, setMaterials] = useState<readonly JobWorkOrderMaterial[]>([]);
+  const [loadingMaterials, setLoadingMaterials] = useState(false);
+
   const orderChosen = receiptOrderId.length > 0;
+
+  const chooseOrder = (id: string) => {
+    setReceiptOrderId(id);
+    setMaterials([]);
+
+    if (!id) return;
+
+    setLoadingMaterials(true);
+
+    // The lookup is synchronous to the user; the fetch settles behind it. A
+    // second choice made while the first is in flight wins, because the state
+    // it sets is the state the last call writes.
+    startTransition(async () => {
+      const loaded = await loadJobWorkMaterialsAction(id);
+
+      setMaterials(loaded);
+      setLoadingMaterials(false);
+    });
+  };
 
   return (
     <Disclosure
@@ -618,7 +638,7 @@ export function CreateJobWorkReceiptButton({
                     hint: `${order.principalName} (${order.product.principalBrandName})`,
                   }))}
                   value={receiptOrderId}
-                  onChange={setReceiptOrderId}
+                  onChange={chooseOrder}
                   emptyLabel="Select job-work order"
                   className="field h-10"
                 />
@@ -690,6 +710,10 @@ export function CreateJobWorkReceiptButton({
               {!orderChosen ? (
                 <p className="sm:col-span-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
                   Choose the job-work order above and its materials will be listed here.
+                </p>
+              ) : loadingMaterials ? (
+                <p className="sm:col-span-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                  Loading the materials for that order…
                 </p>
               ) : materials.length === 0 ? (
                 <div className="sm:col-span-2 space-y-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
@@ -858,22 +882,39 @@ function MaterialReceiptRow({
  * the batch size and when it starts.
  *
  * THE MATERIAL READINESS TABLE IS THE POINT OF THE FORM. It is the same
- * arithmetic the API refuses on — fetched with the screen, not computed here
- * — so a shortage is visible before the button is pressed rather than
- * afterwards as a sentence. The button follows it; the API re-checks anyway,
- * because a disabled control is a courtesy and not a rule.
+ * arithmetic the API refuses on — asked of the API, not computed here — so a
+ * shortage is visible before the button is pressed rather than afterwards as a
+ * sentence. The button follows it; the API re-checks anyway, because a disabled
+ * control is a courtesy and not a rule.
+ *
+ * FETCHED WHEN THE FORM OPENS. The answer costs several round trips to the
+ * database, and the list used to ask for one per row — sixty-one of them to
+ * draw a page, which took the screen forty-four seconds. It is asked once, for
+ * the order somebody is actually looking at.
  */
-export function RaiseJobWorkProductionButton({
-  order,
-  readiness,
-}: {
-  order: JobWorkOrderSummary;
-  /** Null when the check could not be loaded; the form then says so. */
-  readiness: JobWorkMaterialReadiness | null;
-}) {
+export function RaiseJobWorkProductionButton({ order }: { order: JobWorkOrderSummary }) {
   const [state, formAction] = useAction(createJobWorkProductionOrderAction);
 
+  const [open, setOpen] = useState(false);
+  const [readiness, setReadiness] = useState<JobWorkMaterialReadiness | null>(null);
+  const [checking, setChecking] = useState(false);
+
   const principalOwned = order.stockBucket === 'PRINCIPAL_OWNED';
+
+  const openForm = (next: boolean) => {
+    setOpen(next);
+
+    // Asked each time it opens rather than cached: material moves, QC decisions
+    // are taken, and a stale "Ready" is the failure this table exists to stop.
+    if (!next) return;
+
+    setChecking(true);
+
+    startTransition(async () => {
+      setReadiness(await loadJobWorkReadinessAction(order.id));
+      setChecking(false);
+    });
+  };
 
   return (
     <Disclosure
@@ -882,6 +923,8 @@ export function RaiseJobWorkProductionButton({
       subtitle="This raises the SAME production work order own-brand batches use, tagged to this principal. Material will be drawn from the bucket the billing model chose."
       closeWhen={state.status === 'success'}
       width="60rem"
+      isOpen={open}
+      onOpenChange={openForm}
     >
       {(close) => (
         <form action={formAction} className="grid gap-4 sm:grid-cols-2">
@@ -939,11 +982,20 @@ export function RaiseJobWorkProductionButton({
           </Field>
 
           <div className="sm:col-span-2">
-            <MaterialReadinessTable readiness={readiness} principalOwned={principalOwned} />
+            {checking ? (
+              <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                Checking what material is available for this order…
+              </p>
+            ) : (
+              <MaterialReadinessTable readiness={readiness} principalOwned={principalOwned} />
+            )}
           </div>
 
           <FormFooter onCancel={close} className="sm:col-span-2">
-            <SubmitButton pendingLabel="Raising…" disabled={readiness ? !readiness.ready : false}>
+            <SubmitButton
+              pendingLabel="Raising…"
+              disabled={checking || (readiness ? !readiness.ready : false)}
+            >
               Raise work order
             </SubmitButton>
           </FormFooter>

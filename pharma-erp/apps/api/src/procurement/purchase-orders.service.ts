@@ -242,10 +242,12 @@ export class PurchaseOrdersService {
         // and zero is the only figure that leaves the total honest until they
         // have one.
         const rate = parseNonNegative(line.rate ?? (asDraft ? '0' : ''), `Rate for ${item.code}`);
-        const taxRatePercent = parseNonNegative(
-          line.taxRatePercent ?? (asDraft ? '0' : ''),
-          `Tax rate for ${item.code}`,
-        );
+
+        // GST COMES OFF THE ITEM MASTER, never off the request. It sits next to
+        // the HSN code on the item, and the invoice raised against this order
+        // reads it from exactly there — so reading it anywhere else is how an
+        // order and its invoice come to disagree about the tax on one delivery.
+        const taxRatePercent = this.gstRateFor(item, asDraft);
 
         // US-PUR-02: "A Purchase Order can only be created from an Approved
         // Purchase Requisition." Every line must cite one — there is no path
@@ -431,10 +433,11 @@ export class PurchaseOrdersService {
               const item = await this.requireItem(line.itemId);
               const quantity = parsePositive(line.quantity ?? '', `Quantity for ${item.code}`);
               const rate = parseNonNegative(line.rate ?? '0', `Rate for ${item.code}`);
-              const taxRatePercent = parseNonNegative(
-                line.taxRatePercent ?? '0',
-                `Tax rate for ${item.code}`,
-              );
+              // Off the master here too. An edit that could set its own rate
+              // would be a way round the rule the create path now enforces,
+              // and the draft allowance travels with it: a draft being edited
+              // is still a draft.
+              const taxRatePercent = this.gstRateFor(item, before.status === 'DRAFT');
 
               if (!line.requisitionId) {
                 throw new BadRequestException(
@@ -781,10 +784,38 @@ export class PurchaseOrdersService {
     return vendor;
   }
 
+  /**
+   * The GST rate for an item, off the master.
+   *
+   * REFUSED RATHER THAN GUESSED when the master has none: a missing input-tax
+   * figure is a filing error, and zero is the one answer certain to be wrong.
+   * The wording matches InvoicesService's, because it is the same rule and a
+   * buyer should not have to learn it twice.
+   *
+   * A DRAFT MAY CARRY A BLANK. A draft is an order still being assembled, and
+   * refusing to save one because a master is incomplete would make drafts
+   * useless for the job they exist to do. The rate is read again — and the
+   * refusal applies — the moment the order is placed.
+   */
+  private gstRateFor(item: { code: string; gstRate: Prisma.Decimal | null }, asDraft: boolean) {
+    if (item.gstRate === null) {
+      if (asDraft) return new Prisma.Decimal(0);
+
+      throw new BadRequestException(
+        `${item.code} has no GST rate on the item master. Set one before ordering it — GST is ` +
+          'read from the item, never entered on the order.',
+      );
+    }
+
+    return new Prisma.Decimal(item.gstRate);
+  }
+
   private async requireItem(itemId: string) {
     const item = await this.prisma.scoped.item.findFirst({
       where: { id: itemId, deletedAt: null },
-      select: { id: true, code: true },
+      // gstRate travels with the item: the order reads it from here rather than
+      // accepting one from the request. See gstRateFor.
+      select: { id: true, code: true, gstRate: true },
     });
 
     if (!item) throw new NotFoundException('Item not found.');

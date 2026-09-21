@@ -8,10 +8,8 @@ import {
   type JobWorkAgreementSummary,
   type JobWorkDispatchableBatch,
   type JobWorkInvoiceView,
-  type JobWorkMaterialReadiness,
   type JobWorkMaterialReceiptView,
   type JobWorkOrderablePrincipal,
-  type JobWorkOrderMaterial,
   type JobWorkOrderSummary,
   type JobWorkRegisterGroup,
 } from '@pharma-erp/types';
@@ -539,24 +537,6 @@ export async function InwardMaterialsPanel(query: StepQuery) {
     ? orders.data.filter((order) => order.billingModel === 'OWN_PROCUREMENT').length
     : 0;
 
-  // WHAT EACH ORDER'S FORMULATION CALLS FOR, resolved here rather than in the
-  // browser so choosing an order on the form lays its materials out at once.
-  // An order whose BOM is missing or empty is left out of the map on purpose —
-  // the API says so with a 400, and the form turns that absence into the
-  // message rather than an empty list of rows to fill in.
-  const materialsByOrder: Record<string, JobWorkOrderMaterial[]> = {};
-
-  await Promise.all(
-    conversionOrders.map(async (order) => {
-      const materials = await apiFetch<JobWorkOrderMaterial[]>(
-        `/api/v1/job-work/orders/${order.id}/materials`,
-        { authenticated: true },
-      );
-
-      if (materials.ok) materialsByOrder[order.id] = materials.data;
-    }),
-  );
-
   const search = param(query, 'search');
   const principalId = param(query, 'principalId');
 
@@ -594,7 +574,6 @@ export async function InwardMaterialsPanel(query: StepQuery) {
           {orders.ok ? (
             <CreateJobWorkReceiptButton
               orders={conversionOrders}
-              materialsByOrder={materialsByOrder}
               ownProcurementOrderCount={ownProcurementOrders}
             />
           ) : null}
@@ -763,23 +742,6 @@ export async function JobWorkProductionPanel(query: StepQuery) {
     authenticated: true,
   });
 
-  // WHETHER EACH ORDER COULD BE MANUFACTURED, resolved here with the list so
-  // the form opens on a filled-in table rather than a spinner. The same call
-  // the work-order service makes when the button is pressed, which is what
-  // stops the screen and the refusal disagreeing.
-  const readinessByOrder: Record<string, JobWorkMaterialReadiness> = {};
-
-  await Promise.all(
-    (orders.ok ? orders.data : []).map(async (order) => {
-      const readiness = await apiFetch<JobWorkMaterialReadiness>(
-        `/api/v1/job-work/orders/${order.id}/readiness`,
-        { authenticated: true },
-      );
-
-      if (readiness.ok) readinessByOrder[order.id] = readiness.data;
-    }),
-  );
-
   const search = param(query, 'search');
   const principalId = param(query, 'principalId');
   const billingModel = param(query, 'billingModel');
@@ -844,7 +806,6 @@ export async function JobWorkProductionPanel(query: StepQuery) {
                 <Th>Stock bucket</Th>
                 <Th align="right">Ordered</Th>
                 <Th align="right">Material available</Th>
-                <Th>Material readiness</Th>
                 <Th align="right">Work orders</Th>
                 <Th>Raise production</Th>
               </tr>
@@ -897,40 +858,10 @@ export async function JobWorkProductionPanel(query: StepQuery) {
                       )}
                     </Td>
 
-                    <Td valign="top">
-                      {/* THE ANSWER THE BUTTON WILL GIVE, before it is pressed.
-                          Short by how much, and on which material — the detail
-                          is in the form, but the verdict belongs on the row. */}
-                      {(() => {
-                        const readiness = readinessByOrder[order.id];
-
-                        if (!readiness) return <Blank />;
-                        if (readiness.ready) return <Pill tone="ok">Ready</Pill>;
-
-                        const short = readiness.lines.filter((line) => !line.ready);
-
-                        return (
-                          <>
-                            <Pill tone="warn">
-                              {short.length > 0 ? `Short ${short.length}` : 'Blocked'}
-                            </Pill>
-                            <span className="mt-0.5 block max-w-[16rem] text-[10px] text-slate-500">
-                              {short.length > 0
-                                ? short.map((line) => line.item.code).join(', ')
-                                : readiness.blockedReason}
-                            </span>
-                          </>
-                        );
-                      })()}
-                    </Td>
-
                     <Td align="right">{order.productionOrderCount}</Td>
 
                     <Td>
-                      <RaiseJobWorkProductionButton
-                        order={order}
-                        readiness={readinessByOrder[order.id] ?? null}
-                      />
+                      <RaiseJobWorkProductionButton order={order} />
                     </Td>
                   </tr>
                 );

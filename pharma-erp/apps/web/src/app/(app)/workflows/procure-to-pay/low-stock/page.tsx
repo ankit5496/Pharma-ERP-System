@@ -1,5 +1,10 @@
 import type { Metadata } from 'next';
-import { DEFAULT_PAGE_SIZE, PROCUREMENT_ROUTES, type LowStockItem } from '@pharma-erp/types';
+import {
+  DEFAULT_PAGE_SIZE,
+  ITEM_TYPE_LABELS,
+  PROCUREMENT_ROUTES,
+  type LowStockItem,
+} from '@pharma-erp/types';
 
 import { AutoCreationToggle } from '@/components/procurement/auto-creation-toggle';
 import {
@@ -137,7 +142,10 @@ export default async function LowStockPage({
 
                     <Td>
                       <span className="text-xs text-slate-600">
-                        {row.item.type.replace(/_/g, ' ').toLowerCase()}
+                        {/* The shared label map, not a lowercased enum: this
+                            column read "raw material" while the item master two
+                            screens away called the same thing "Raw material". */}
+                        {ITEM_TYPE_LABELS[row.item.type]}
                       </span>
                     </Td>
 
