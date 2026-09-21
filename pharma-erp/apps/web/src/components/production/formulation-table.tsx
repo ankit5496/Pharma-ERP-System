@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
-import type { BomView } from '@pharma-erp/types';
+import { ITEM_TYPE_LABELS, type BomView } from '@pharma-erp/types';
 
 import { Quantity } from './shared';
 import { RegisterPager, RegisterToolbar, useRegisterView } from './register-toolbar';
@@ -324,7 +324,10 @@ function MaterialTable({ bom }: { bom: BomView }) {
                 <span className="text-slate-800">{line.item.name}</span>
               </td>
               <td className="px-4 py-2 text-slate-600">
-                {line.item.type === 'PACKING_MATERIAL' ? 'Packing' : 'Raw material'}
+                {/* The shared labels, not a two-way guess: a formulation can
+                    list a semi-finished intermediate, which this called a raw
+                    material because it was not packing. */}
+                {ITEM_TYPE_LABELS[line.item.type]}
               </td>
               <td className="px-4 py-2 text-right">
                 <Quantity value={line.quantityPer} uom={line.item.uom} />

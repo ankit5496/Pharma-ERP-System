@@ -104,10 +104,11 @@ export type PriceControlType = (typeof PRICE_CONTROL_TYPES)[number];
 export const O2C_ITEM_TYPES = ['RAW_MATERIAL', 'PACKAGING', 'FINISHED_GOOD', 'CONSUMABLE'] as const;
 export type O2cItemType = (typeof O2C_ITEM_TYPES)[number];
 
+/** Title case, matching ITEM_TYPE_LABELS — same vocabulary, different list. */
 export const O2C_ITEM_TYPE_LABELS: Record<O2cItemType, string> = {
-  RAW_MATERIAL: 'Raw material',
+  RAW_MATERIAL: 'Raw Material',
   PACKAGING: 'Packaging',
-  FINISHED_GOOD: 'Finished product',
+  FINISHED_GOOD: 'Finished Product',
   CONSUMABLE: 'Consumable',
 };
 

@@ -6,9 +6,11 @@ import { useActionToast } from '@/components/toast';
 import { useRouter } from 'next/navigation';
 import {
   GST_RATES,
+  ITEM_TYPE_LABELS,
   SCHEDULE_CLASSIFICATION_HINTS,
   SCHEDULE_CLASSIFICATION_LABELS,
   type ItemSummary,
+  type ItemType,
   type ScheduleClassification,
 } from '@pharma-erp/types';
 
@@ -31,12 +33,18 @@ import {
  * first. It is also the only one wired to a real endpoint today.
  */
 
-const CATEGORY_OPTIONS = [
-  { value: 'RAW_MATERIAL', label: 'Raw material' },
-  { value: 'PACKING_MATERIAL', label: 'Packing material' },
-  { value: 'SEMI_FINISHED', label: 'Semi-finished' },
-  { value: 'FINISHED_GOOD', label: 'Finished good' },
-] as const;
+/**
+ * Built from ITEM_TYPE_LABELS rather than spelled out again.
+ *
+ * This list used to be its own copy of the same four categories, which is how
+ * the item master came to say "Raw material" while everything reading the
+ * shared map said something else. One definition, in the types package, so a
+ * change to the wording reaches every screen at once.
+ */
+const CATEGORY_OPTIONS = (Object.keys(ITEM_TYPE_LABELS) as ItemType[]).map((value) => ({
+  value,
+  label: ITEM_TYPE_LABELS[value],
+}));
 
 const SCHEDULE_OPTIONS = (
   Object.keys(SCHEDULE_CLASSIFICATION_LABELS) as ScheduleClassification[]
