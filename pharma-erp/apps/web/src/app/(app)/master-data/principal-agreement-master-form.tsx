@@ -58,6 +58,16 @@ const RATE_BASIS_OPTIONS = (Object.keys(CONVERSION_RATE_BASIS_LABELS) as Convers
   (key) => ({ value: key, label: CONVERSION_RATE_BASIS_LABELS[key] }),
 );
 
+/** The fields this form marks; see FormError in ./form-kit. */
+const MARKED_FIELDS = [
+  'principalId',
+  'billingModel',
+  'conversionChargeRate',
+  'conversionRateBasis',
+  'validFrom',
+  'validTo',
+] as const;
+
 const INITIAL: ActionResult = { ok: false };
 
 export function PrincipalAgreementMasterForm({
@@ -178,7 +188,11 @@ export function PrincipalAgreementMasterForm({
   return (
     <form action={formAction} className="flex flex-col gap-8" noValidate>
       {!state.ok && state.message && (
-        <FormError message={state.message} fieldErrors={state.fieldErrors} />
+        <FormError
+          message={state.message}
+          fieldErrors={state.fieldErrors}
+          shownFields={MARKED_FIELDS}
+        />
       )}
 
       {(noPrincipals || noBoms) && (

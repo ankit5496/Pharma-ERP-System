@@ -319,23 +319,27 @@ export function SelectField({
     return (
       <Shell {...shell}>
         <div className={shell.compact ? 'mt-1' : 'mt-1.5'}>
+          {/* `name` is given, so the component posts the chosen value through
+              its own hidden input — no second one here, which would submit the
+              field twice. */}
           <SearchableSelect
             id={shell.name}
+            name={shell.name}
             options={options}
-            placeholder={placeholder}
+            // `placeholder` on a SelectField names the unchosen entry, which
+            // is this component's `emptyLabel`. Null there means the field's
+            // own options already include a "none" — Schedule classification
+            // is the case — so there is nothing extra to offer and the default
+            // stands in as a prompt only.
+            emptyLabel={placeholder ?? undefined}
             // Controlled only. An uncontrolled searchable select would have to
             // track the DOM's value to render its own text box, and the two
             // would disagree the moment React 19 reset the form.
             value={value ?? defaultValue ?? ''}
             onChange={(next) => onChange?.(next)}
             required={shell.required}
-            invalid={shell.error ? true : undefined}
-            describedBy={shell.error ? `${shell.name}-error` : undefined}
+            small={shell.compact}
           />
-          {/* The value the form actually submits. SearchableSelect's own
-              <select> carries no `name`, because it renders one per field and
-              a second named control would submit twice. */}
-          <input type="hidden" name={shell.name} value={value ?? defaultValue ?? ''} />
         </div>
       </Shell>
     );
@@ -618,10 +622,25 @@ export function SubmitActions({
 export function FormError({
   message,
   fieldErrors,
+  shownFields,
 }: {
   message: string;
   /** What is already marked inline; the banner hides when this covers it. */
   fieldErrors?: Record<string, string>;
+  /**
+   * The field names this form actually renders an `error` for.
+   *
+   * WITHOUT IT THE BANNER HID ON TRUST. Any field error at all suppressed it,
+   * on the assumption that every message had reached a control — and a form
+   * that renders fifteen inputs but wires `error` to ten has five fields whose
+   * refusal reaches nothing. `shelfLifeMonths` is one: the API caps it at 120
+   * months, the item form never shows that message, and the save failed with
+   * nothing on screen to say why.
+   *
+   * Given this, the banner hides only when every named field is one the form
+   * can mark. Omit it to keep the old behaviour.
+   */
+  shownFields?: readonly string[];
 }) {
   // Anything marked on a control is already said where it can be acted on, so
   // the banner has nothing left to add. Hidden on the presence of field errors
@@ -633,7 +652,15 @@ export function FormError({
   // A refusal with no field attached still shows: a role check, an expired
   // session, a rule about the state of a document. Those have no control to
   // point at, which is exactly when a banner is the only place to put them.
-  if (fieldErrors && Object.keys(fieldErrors).length > 0) return null;
+  const named = fieldErrors ? Object.keys(fieldErrors) : [];
+
+  // Every refusal reached a control, so the banner has nothing left to add.
+  // When `shownFields` is absent this is the old test — any field error hides
+  // it — which is right for a form that wires every field it renders.
+  const allShown =
+    named.length > 0 && (!shownFields || named.every((field) => shownFields.includes(field)));
+
+  if (allShown) return null;
 
   return (
     <div
