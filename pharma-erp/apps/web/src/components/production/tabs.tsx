@@ -19,7 +19,7 @@ import { useState, type ReactNode } from 'react';
 export function ProductionTabs({
   tabs,
 }: {
-  tabs: readonly { key: string; label: string; panel: ReactNode }[];
+  tabs: readonly { key: string; label: string; badge?: string; panel: ReactNode }[];
 }) {
   const [activeKey, setActiveKey] = useState(tabs[0]?.key ?? '');
 
@@ -49,11 +49,21 @@ export function ProductionTabs({
                   : 'border-transparent font-medium text-slate-500 hover:border-slate-300 hover:text-slate-800'
               }`}
             >
-              {/* The label alone. A count pill here repeated what the register
-                  below already states — "10 dispensing records" under its own
-                  heading — and two counts for one list invite a comparison to
-                  check they agree. */}
               {tab.label}
+              {/* OPTIONAL, and the Production steps deliberately pass none: a
+                  count here repeated what the register below already states —
+                  "10 dispensing records" under its own heading — and two counts
+                  for one list invite a comparison to check they agree. Job work
+                  does use it, where the tab is the only place a count appears. */}
+              {tab.badge && (
+                <span
+                  className={`ml-2 rounded-full px-1.5 py-0.5 text-[11px] tabular-nums ${
+                    isActive ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'
+                  }`}
+                >
+                  {tab.badge}
+                </span>
+              )}
             </button>
           );
         })}
