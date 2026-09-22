@@ -11,12 +11,15 @@ import type {
   BillingModel,
   BomView,
   ItemSummary,
+  ItemType,
   ProductionOrderJobWorkTag,
   ProductionStockLot,
   ProductionOrderSummary,
   WorkOrderFeasibility,
 } from '@pharma-erp/types';
+import { ITEM_CODE_DIGITS, ITEM_CODE_PREFIXES } from '@pharma-erp/types';
 
+import { withCreatedBy } from '../common/created-by';
 import { fieldBadRequest, fieldConflict } from '../common/field-error';
 import { JobWorkOrdersService } from '../job-work/job-work-orders.service';
 import { PackagingService } from '../packaging/packaging.service';
@@ -36,12 +39,7 @@ import {
   stockBucketWhere,
   type StockBucketRule,
 } from './job-work-tagging';
-import {
-  issuableStockWhere,
-  toItemSummary,
-  toIsoDate,
-  type ItemRow,
-} from './production.mappers';
+import { issuableStockWhere, toItemSummary, toIsoDate, type ItemRow } from './production.mappers';
 
 /**
  * Master data and planning: items, stock lots, formulations and work orders.
@@ -72,10 +70,10 @@ export class ProductionService {
         deletedAt: null,
         ...(type ? { type: type as ItemRow['type'] } : {}),
       },
-      orderBy: [{ type: 'asc' }, { code: 'asc' }],
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     });
 
-    return items.map(toItemSummary);
+    return withCreatedBy(this.prisma, items, items.map(toItemSummary));
   }
 
   /**
@@ -94,31 +92,44 @@ export class ProductionService {
     const tenantId = this.tenantContext.requireTenantId();
 
     try {
-      const item = await this.prisma.scoped.item.create({
-        data: {
-          tenantId,
-          code: dto.code.trim(),
-          name: dto.name.trim(),
-          type: dto.type,
-          uom: dto.uom.trim(),
-          hsnCode: dto.hsnCode,
-          gstRate: dto.gstRate,
-          scheduleClassification: dto.scheduleClassification ?? 'NONE',
-          brandName: dto.brandName?.trim() || null,
-          genericName: dto.genericName?.trim() || null,
-          mrp: dto.mrp ?? null,
-          dpcoCeiling: dto.dpcoCeiling ?? false,
-          storageConditions: dto.storageConditions?.trim() || null,
-          shelfLifeMonths: dto.shelfLifeMonths ?? null,
-          reorderLevel: dto.reorderLevel ?? null,
-          reorderQuantity: dto.reorderQuantity ?? null,
-        },
-      });
+      // ALLOCATED, not accepted from the request. Inside the transaction that
+      // writes the item, so a code and the row it belongs to land together or
+      // not at all — and two people adding an item at once cannot be handed
+      // the same one, because the counter is incremented under a row lock.
+      const item = await this.prisma.transaction(async (tx) =>
+        tx.item.create({
+          data: {
+            tenantId,
+            createdById: this.tenantContext.getUserId(),
+            code: await nextItemCode(tx, tenantId, dto.type),
+            name: dto.name.trim(),
+            type: dto.type,
+            uom: dto.uom.trim(),
+            hsnCode: dto.hsnCode,
+            gstRate: dto.gstRate,
+            scheduleClassification: dto.scheduleClassification ?? 'NONE',
+            brandName: dto.brandName?.trim() || null,
+            genericName: dto.genericName?.trim() || null,
+            mrp: dto.mrp ?? null,
+            dpcoCeiling: dto.dpcoCeiling ?? false,
+            storageConditions: dto.storageConditions?.trim() || null,
+            shelfLifeMonths: dto.shelfLifeMonths ?? null,
+            reorderLevel: dto.reorderLevel ?? null,
+            reorderQuantity: dto.reorderQuantity ?? null,
+          },
+        }),
+      );
 
       return toItemSummary(item);
     } catch (error) {
       if (isUniqueViolation(error)) {
-        throw fieldConflict('code', `An item with code "${dto.code.trim()}" already exists.`);
+        // Not something a caller can now cause — the code is allocated from a
+        // per-tenant counter — but the unique index stays the backstop, and a
+        // collision would mean the counter has drifted behind the data.
+        throw fieldConflict(
+          'code',
+          'That item code is already in use. The code sequence may be out of step with the register.',
+        );
       }
 
       // The database also enforces `dpco_ceiling` requiring an MRP. The DTO
@@ -134,6 +145,34 @@ export class ProductionService {
 
       throw error;
     }
+  }
+
+  /**
+   * The code the next item of this category would take.
+   *
+   * A PREDICTION, not a reservation: the real code is allocated inside the
+   * create transaction, so a colleague who saves first takes this one and the
+   * next moves on. Nothing is held, which is why this reads the counter rather
+   * than incrementing it.
+   *
+   * It reads the same row `nextItemCode` writes. Keyed differently, a preview
+   * does not drift visibly — it just shows the same first code forever, which
+   * is how the material-issue preview sat at MI-2026-0001 for weeks.
+   */
+  async previewItemCode(type: ItemType): Promise<{ code: string }> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const prefix = ITEM_CODE_PREFIXES[type];
+
+    const sequence = await this.prisma.scoped.documentSequence.findUnique({
+      where: { tenantId_docType_year: { tenantId, docType: prefix, year: ITEM_CODE_YEAR } },
+      select: { nextValue: true },
+    });
+
+    // No row yet means none of this category has been added, and the first
+    // takes 1.
+    return {
+      code: `${prefix}-${String(sequence?.nextValue ?? 1).padStart(ITEM_CODE_DIGITS, '0')}`,
+    };
   }
 
   /**
@@ -296,8 +335,7 @@ export class ProductionService {
       quantityReceived: lot.quantityReceived.toString(),
       item: toItemSummary(lot.item),
       ownership: lot.ownership,
-      principalName:
-        lot.jobWorkMaterialReceiptLine?.receipt.jobWorkOrder.principal.name ?? null,
+      principalName: lot.jobWorkMaterialReceiptLine?.receipt.jobWorkOrder.principal.name ?? null,
       vendorBatchNumber: lot.vendorBatchNumber,
     }));
   }
@@ -313,11 +351,14 @@ export class ProductionService {
         product: true,
         lines: { include: { item: true }, orderBy: { item: { code: 'asc' } } },
       },
-      orderBy: [{ product: { code: 'asc' } }, { version: 'desc' }],
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     });
 
-    return boms.map((bom) => ({
+    const views = boms.map((bom) => ({
+      // Filled in by the register that lists these; see PeopleService.
+      createdBy: null,
       id: bom.id,
+      createdAt: bom.createdAt.toISOString(),
       version: bom.version,
       isActive: bom.isActive,
       outputQuantity: bom.outputQuantity.toString(),
@@ -331,6 +372,8 @@ export class ProductionService {
         notes: line.notes,
       })),
     }));
+
+    return withCreatedBy(this.prisma, boms, views);
   }
 
   /**
@@ -428,6 +471,7 @@ export class ProductionService {
       const created = await tx.bom.create({
         data: {
           tenantId,
+          createdById: this.tenantContext.getUserId(),
           productId: dto.productId,
           version,
           outputQuantity: dto.outputQuantity,
@@ -449,7 +493,10 @@ export class ProductionService {
       });
 
       return {
+        // Filled in by the register that lists these; see PeopleService.
+        createdBy: null,
         id: created.id,
+        createdAt: created.createdAt.toISOString(),
         version: created.version,
         isActive: created.isActive,
         outputQuantity: created.outputQuantity.toString(),
@@ -558,7 +605,10 @@ export class ProductionService {
       });
 
       return {
+        // Filled in by the register that lists these; see PeopleService.
+        createdBy: null,
         id: saved.id,
+        createdAt: saved.createdAt.toISOString(),
         version: saved.version,
         isActive: saved.isActive,
         outputQuantity: saved.outputQuantity.toString(),
@@ -1153,6 +1203,47 @@ interface OrderNumberReader {
       select: { orderNumber: true };
     }): Promise<{ orderNumber: string } | null>;
   };
+}
+
+/**
+ * Item codes are not year-scoped, so they park on year 0.
+ *
+ * `document_sequences` keys on (tenant, docType, year) because every series it
+ * was built for restarts each January — PR-2026-0001 begins again as
+ * PR-2027-0001. An item code does not: RM-00412 is the four-hundred-and-
+ * twelfth raw material this company has ever recorded, and restarting it
+ * annually would hand out a code that already exists.
+ *
+ * 0 is the sentinel for "not year-scoped". It cannot collide with a real year.
+ */
+const ITEM_CODE_YEAR = 0;
+
+/**
+ * The next code for a category, allocated inside the caller's transaction.
+ *
+ * ONE ATOMIC UPSERT, not a read-then-write. Two items created in the same
+ * instant would both read the same highest number and compute the same next
+ * one; the unique index would then refuse the loser with a failure nobody
+ * could act on. An UPDATE ... RETURNING takes a row lock, so the second caller
+ * waits and gets the following value instead.
+ */
+async function nextItemCode(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  type: ItemType,
+): Promise<string> {
+  const prefix = ITEM_CODE_PREFIXES[type];
+
+  const sequence = await tx.documentSequence.upsert({
+    where: { tenantId_docType_year: { tenantId, docType: prefix, year: ITEM_CODE_YEAR } },
+    create: { tenantId, docType: prefix, year: ITEM_CODE_YEAR, nextValue: 2 },
+    update: { nextValue: { increment: 1 } },
+    select: { nextValue: true },
+  });
+
+  // `create` sets nextValue to 2 and this item takes 1; `update` returns the
+  // already-incremented value, so the number just used is one less.
+  return `${prefix}-${String(sequence.nextValue - 1).padStart(ITEM_CODE_DIGITS, '0')}`;
 }
 
 function isUniqueViolation(error: unknown): boolean {

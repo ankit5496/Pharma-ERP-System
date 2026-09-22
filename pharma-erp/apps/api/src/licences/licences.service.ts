@@ -15,6 +15,7 @@ import type {
 import { LICENCE_NUMBER_RULES } from '@pharma-erp/types';
 
 import { fieldBadRequest } from '../common/field-error';
+import { withCreatedBy } from '../common/created-by';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
@@ -53,9 +54,16 @@ export class LicencesService {
     const [licences, tenant] = await Promise.all([
       this.prisma.scoped.licence.findMany({
         where: { deletedAt: null },
-        // Soonest to lapse first: the register and the alert are looking at
-        // the same problem, so they are ordered the same way.
-        orderBy: [{ expiryDate: 'asc' }, { licenceNumber: 'asc' }],
+        // Newest first, like every other master-data register: the row
+        // somebody wants is usually the one just added.
+        //
+        // THIS CHANGED FROM SOONEST-TO-LAPSE, and `expiring` below filters
+        // this same list — so the dashboard's alert is no longer in expiry
+        // order either. It groups expired ahead of expiring, which is the
+        // distinction that actually drives action, but within each group the
+        // order is now arbitrary. Worth sorting there if the alert ever grows
+        // past a handful of rows.
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       }),
       this.prisma.scoped.tenant.findFirst({
         where: { id: tenantId },
@@ -66,7 +74,11 @@ export class LicencesService {
     const alertLeadDays = tenant?.licenceAlertLeadDays ?? DEFAULT_LEAD_DAYS;
 
     return {
-      licences: licences.map((licence) => toLicenceSummary(licence, alertLeadDays)),
+      licences: await withCreatedBy(
+        this.prisma,
+        licences,
+        licences.map((licence) => toLicenceSummary(licence, alertLeadDays)),
+      ),
       alertLeadDays,
     };
   }
@@ -98,6 +110,7 @@ export class LicencesService {
       const licence = await this.prisma.scoped.licence.create({
         data: {
           tenantId,
+          createdById: this.tenantContext.getUserId(),
           licenceType: dto.licenceType,
           licenceNumber: dto.licenceNumber.trim(),
           issuingAuthority: dto.issuingAuthority.trim(),
@@ -350,7 +363,10 @@ export function toLicenceSummary(licence: Licence, alertLeadDays: number): Licen
     daysUntilExpiry < 0 ? 'EXPIRED' : daysUntilExpiry <= alertLeadDays ? 'EXPIRING' : 'VALID';
 
   return {
+    // Filled in by the register that lists these; see PeopleService.
+    createdBy: null,
     id: licence.id,
+    createdAt: licence.createdAt.toISOString(),
     licenceType: licence.licenceType as LicenceType,
     licenceNumber: licence.licenceNumber,
     issuingAuthority: licence.issuingAuthority,

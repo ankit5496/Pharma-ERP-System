@@ -29,6 +29,69 @@ export interface FilterOption {
 }
 
 /**
+ * "Created date" and "Created by", for a register that records both.
+ *
+ * ONE HELPER, used by every Production register that has the data, so the
+ * wording and behaviour cannot drift between five copies. The names differ by
+ * register — a dispensing record is `issuedAt` / `issuedBy`, a work order
+ * `createdAt` / `createdBy` — so the caller passes the values it holds and
+ * this only builds the controls.
+ *
+ * `people` is built FROM THE ROWS rather than from a user list: the register
+ * holds every row it can show, so the distinct names among them are exactly
+ * the answers worth offering, and a filter listing everyone in the company
+ * would offer names matching nothing here.
+ */
+export function createdFilters(
+  people: readonly string[],
+  /**
+   * The date filter's label. Batches are looked up by the day they were MADE,
+   * which is the date on the carton — not by when the row was inserted.
+   */
+  dateLabel = 'Created date',
+): FilterField[] {
+  // NO "Created by" WHEN NOBODY CAN BE NAMED. Batches record no creator, so
+  // offering the control there would be a permanently empty picklist — a
+  // different thing from Master Data, where the column exists and is simply
+  // unfilled on older rows.
+  if (people.length === 0) return [{ name: 'created', label: dateLabel, kind: 'dateRange' }];
+
+  return [
+    { name: 'created', label: dateLabel, kind: 'dateRange' },
+    {
+      name: 'createdBy',
+      label: 'Created by',
+      // Searchable, because this grows with the company: fine as a dropdown
+      // for three users and a scroll for thirty.
+      kind: 'searchable',
+      options: people.map((name) => ({ value: name, label: name })),
+      allLabel: 'All Users',
+    },
+  ];
+}
+
+/**
+ * Whether a row falls inside the chosen range, or was created by the chosen
+ * person.
+ *
+ * COMPARED AS CALENDAR DAYS. The timestamp is a full ISO string and the date
+ * inputs give YYYY-MM-DD, so comparing them directly would put a record made
+ * at 14:30 outside a "to" of its own date — the whole day is meant.
+ */
+export function matchesCreated(
+  createdAt: string,
+  createdBy: string | null,
+  name: string,
+  value: string,
+): boolean {
+  if (name === 'createdFrom') return createdAt.slice(0, 10) >= value;
+  if (name === 'createdTo') return createdAt.slice(0, 10) <= value;
+  if (name === 'createdBy') return createdBy === value;
+
+  return true;
+}
+
+/**
  * The state a register needs, with the paging arithmetic done.
  *
  * A hook rather than a wrapper component: each register lays its rows out
@@ -110,6 +173,21 @@ export function useRegisterView<Row>({
       setPage(1);
     },
     clearFields: () => {
+      setFieldValues({});
+      setPage(1);
+    },
+    /**
+     * Back to the unfiltered first page — every control at once.
+     *
+     * For the case where a register must SHOW a particular row: a record just
+     * created is not necessarily among the visible ones, because a search, a
+     * status filter or simply being on page 2 can all exclude it. Moving the
+     * selection without clearing what hides it selects a row that is not on
+     * screen, which reads as the selection having been ignored.
+     */
+    reset: () => {
+      setQuery('');
+      setFilter('ALL');
       setFieldValues({});
       setPage(1);
     },

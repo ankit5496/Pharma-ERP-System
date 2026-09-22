@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import type { MaterialIssueView, ProductionStockLot } from '@pharma-erp/types';
 import {
   STOCK_LOT_STATUS_LABELS,
@@ -9,7 +9,13 @@ import {
 } from '@pharma-erp/types';
 
 import { DateCell, ExpiryHint, Quantity } from './shared';
-import { RegisterPager, RegisterToolbar, useRegisterView } from './register-toolbar';
+import {
+  createdFilters,
+  matchesCreated,
+  RegisterPager,
+  RegisterToolbar,
+  useRegisterView,
+} from './register-toolbar';
 
 /** Dispensing records, searchable by issue number, order, material or lot. */
 export function IssueTable({ issues }: { issues: MaterialIssueView[] }) {
@@ -26,7 +32,24 @@ export function IssueTable({ issues }: { issues: MaterialIssueView[] }) {
     [],
   );
 
-  const view = useRegisterView({ rows: issues, searchText });
+  const matchesField = useCallback(
+    (issue: MaterialIssueView, name: string, value: string) =>
+      matchesCreated(issue.issuedAt, issue.issuedBy, name, value),
+    [],
+  );
+
+  // Dispensing records carry `issuedAt` / `issuedBy` rather than createdAt and
+  // createdBy — the act IS the issue — so those are what the Created filters
+  // read. No new columns were needed here; the register already showed both.
+  const people = useMemo(
+    () =>
+      [...new Set(issues.map((i) => i.issuedBy).filter((n): n is string => !!n))].sort((a, b) =>
+        a.localeCompare(b),
+      ),
+    [issues],
+  );
+
+  const view = useRegisterView({ rows: issues, searchText, matchesField });
 
   return (
     <>
@@ -36,6 +59,10 @@ export function IssueTable({ issues }: { issues: MaterialIssueView[] }) {
         onQuery={view.setQuery}
         placeholder="Search issue, order, material or lot…"
         noun="dispensing records"
+        fields={createdFilters(people)}
+        fieldValues={view.fieldValues}
+        onField={view.setField}
+        onClearFields={view.clearFields}
         shown={view.filtered.length}
         total={view.total}
       />

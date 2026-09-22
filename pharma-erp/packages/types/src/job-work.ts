@@ -104,6 +104,8 @@ export interface JobWorkAgreementSummary {
 
   /** When the agreement was recorded. ISO 8601. Orders the picklists. */
   createdAt: string;
+  /** Who entered it, by name. Null for a record created before this was kept. */
+  createdBy: string | null;
 }
 
 /** One line of the product-to-brand mapping, as sent. */

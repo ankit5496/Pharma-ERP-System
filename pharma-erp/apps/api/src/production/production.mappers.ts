@@ -17,6 +17,10 @@ export type ItemRow = Item;
 export function toItemSummary(item: ItemRow): ItemSummary {
   return {
     id: item.id,
+    // Resolved by the register that lists these; a bare mapper has no name
+    // lookup, and threading one through sixteen call sites for a field only
+    // Master Data shows would be a poor trade.
+    createdBy: null,
     createdAt: item.createdAt.toISOString(),
     code: item.code,
     name: item.name,

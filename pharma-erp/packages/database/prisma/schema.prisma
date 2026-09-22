@@ -1220,6 +1220,8 @@ model Item {
 
   hsnCode String? @map("hsn_code") @db.VarChar(16)
 
+  /// Who entered it. A UUID, not a relation — see the schema header.
+  createdById String? @map("created_by_id") @db.Uuid
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
@@ -1339,6 +1341,8 @@ model Bom {
   isActive      Boolean  @default(false) @map("is_active")
   effectiveFrom DateTime @default(now()) @map("effective_from") @db.Date
 
+  /// Who entered it. A UUID, not a relation — see the schema header.
+  createdById String? @map("created_by_id") @db.Uuid
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
@@ -1432,6 +1436,8 @@ model Party {
 
   notes String? @db.VarChar(1000)
 
+  /// Who entered it. A UUID, not a relation — see the schema header.
+  createdById String? @map("created_by_id") @db.Uuid
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
@@ -1602,6 +1608,8 @@ model Licence {
 
   notes String? @db.VarChar(1000)
 
+  /// Who entered it. A UUID, not a relation — see the schema header.
+  createdById String? @map("created_by_id") @db.Uuid
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   /// Soft delete. A licence that covered a batch made last year is part of that
@@ -1669,6 +1677,8 @@ model JobWorkAgreement {
 
   notes String? @db.VarChar(1000)
 
+  /// Who entered it. A UUID, not a relation — see the schema header.
+  createdById String? @map("created_by_id") @db.Uuid
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   /// Soft delete. An agreement that governed a batch made last year is part of
@@ -2038,6 +2048,8 @@ model PackagingRequirement {
 
   notes String? @db.VarChar(1000)
 
+  /// Who entered it. A UUID, not a relation — see the schema header.
+  createdById String? @map("created_by_id") @db.Uuid
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   /// Soft delete. The specification a batch was packed to is part of that

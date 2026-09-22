@@ -5,6 +5,7 @@ import type { PartySummary, PartyStatus, PartyType } from '@pharma-erp/types';
 import { PARTY_TYPE_LABELS } from '@pharma-erp/types';
 
 import { fieldConflict } from '../common/field-error';
+import { withCreatedBy } from '../common/created-by';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
@@ -47,7 +48,11 @@ export class PartiesService {
       include: { _count: { select: { documents: { where: { deletedAt: null } } } } },
     });
 
-    return parties.map((party) => toPartySummary(party, party._count.documents));
+    return withCreatedBy(
+      this.prisma,
+      parties,
+      parties.map((party) => toPartySummary(party, party._count.documents)),
+    );
   }
 
   async create(dto: CreatePartyDto): Promise<PartySummary> {
@@ -65,6 +70,7 @@ export class PartiesService {
       const party = await this.prisma.scoped.party.create({
         data: {
           tenantId,
+          createdById: this.tenantContext.getUserId(),
           code: dto.code.trim(),
           name: dto.name.trim(),
           partyType: dto.partyType,
@@ -260,6 +266,8 @@ export function toPartySummary(party: Party, documentCount = 0): PartySummary {
   const validTo = party.drugLicenceValidTo ? toIsoDate(party.drugLicenceValidTo) : null;
 
   return {
+    // Filled in by the register that lists these; see PeopleService.
+    createdBy: null,
     id: party.id,
     createdAt: party.createdAt.toISOString(),
     code: party.code,

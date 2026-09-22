@@ -4,6 +4,7 @@ import { useActionState, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   LICENCE_NUMBER_RULES,
+  UNTYPED_LICENCE_NUMBER_RULE,
   LICENCE_TYPE_LABELS,
   type LicenceSummary,
   type LicenceType,
@@ -94,11 +95,14 @@ export function LicenceComplianceMasterForm({
   const errorFor = (field: string) => state.fieldErrors?.[field];
 
   // What the number field is called and what it accepts, for the chosen type.
-  // Falls back to the manufacturing rule before a type is picked, so the field
-  // has a label rather than appearing blank — it is replaced the moment the
-  // type is chosen, and the API judges the value against the real rule anyway.
+  //
+  // Before a type is picked it reads simply "Number". It used to fall back to
+  // the MANUFACTURING rule, which labelled the field "Licence number" on a
+  // form where the answer might just as well be a GST number — naming one of
+  // the three before the question had been asked. The real label arrives the
+  // moment the type is chosen.
   const numberRule =
-    LICENCE_NUMBER_RULES[licenceType as LicenceType] ?? LICENCE_NUMBER_RULES.MANUFACTURING;
+    LICENCE_NUMBER_RULES[licenceType as LicenceType] ?? UNTYPED_LICENCE_NUMBER_RULE;
 
   return (
     <form action={formAction} className="flex flex-col gap-8" noValidate>

@@ -14,6 +14,7 @@ import type {
   JobWorkMappingView,
 } from '@pharma-erp/types';
 
+import { withCreatedBy } from '../common/created-by';
 import { PrismaService } from '../prisma/prisma.service';
 import { NumberingService } from '../procurement/numbering.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
@@ -68,10 +69,10 @@ export class JobWorkService {
       include: AGREEMENT_INCLUDE,
       // Soonest to lapse first, open-ended agreements last: the register and
       // the question "what needs renegotiating" are the same question.
-      orderBy: [{ validTo: { sort: 'asc', nulls: 'last' } }, { createdAt: 'desc' }],
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     });
 
-    return agreements.map(toAgreementSummary);
+    return withCreatedBy(this.prisma, agreements, agreements.map(toAgreementSummary));
   }
 
   async create(dto: CreateJobWorkAgreementDto): Promise<JobWorkAgreementSummary> {
@@ -108,6 +109,7 @@ export class JobWorkService {
         const created = await tx.jobWorkAgreement.create({
           data: {
             tenantId,
+            createdById: this.tenantContext.getUserId(),
             principalId: dto.principalId,
             billingModel: dto.billingModel,
             // ALLOCATED HERE, not accepted from the request. The reference used
@@ -520,6 +522,8 @@ function toMappingView(mapping: AgreementWithRelations['mappings'][number]): Job
 
 export function toAgreementSummary(agreement: AgreementWithRelations): JobWorkAgreementSummary {
   return {
+    // Filled in by the register that lists these; see PeopleService.
+    createdBy: null,
     id: agreement.id,
     principalId: agreement.principalId,
     principalCode: agreement.principal.code,
