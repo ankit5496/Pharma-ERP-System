@@ -154,6 +154,10 @@ model Tenant {
   jobWorkOrders           JobWorkOrder[]
   jobWorkMaterialReceipts     JobWorkMaterialReceipt[]
   jobWorkMaterialReceiptLines JobWorkMaterialReceiptLine[]
+  jobWorkProductionOrders     JobWorkProductionOrder[]
+  jobWorkMaterialIssues       JobWorkMaterialIssue[]
+  jobWorkMaterialIssueLines   JobWorkMaterialIssueLine[]
+  jobWorkBatches              JobWorkBatch[]
   jobWorkInvoices         JobWorkInvoice[]
 
   // Packaging: what each pack presentation consumes.
@@ -280,7 +284,13 @@ model User {
 
   // Job work
   jobWorkOrdersCreated   JobWorkOrder[]           @relation("JobWorkOrderCreatedBy")
-  jobWorkReceiptsMade    JobWorkMaterialReceipt[] @relation("JobWorkReceiptReceivedBy")
+  jobWorkReceiptsMade      JobWorkMaterialReceipt[] @relation("JobWorkReceiptReceivedBy")
+  jobWorkReceiptsSubmitted JobWorkMaterialReceipt[] @relation("JobWorkReceiptSubmittedBy")
+  jobWorkReceiptsDecided   JobWorkMaterialReceipt[] @relation("JobWorkReceiptDecidedBy")
+  jobWorkProductionOrders  JobWorkProductionOrder[] @relation("JobWorkProductionOrderCreatedBy")
+  jobWorkIssuesMade        JobWorkMaterialIssue[]   @relation("JobWorkIssueIssuedBy")
+  jobWorkBatchesRecorded   JobWorkBatch[]           @relation("JobWorkBatchRecordedBy")
+  jobWorkBatchesReleased   JobWorkBatch[]           @relation("JobWorkBatchReleaseDecidedBy")
   jobWorkInvoicesCreated JobWorkInvoice[]         @relation("JobWorkInvoiceCreatedBy")
   salesOrdersCreated     SalesOrder[]
   allocationsMade        BatchAllocation[]        @relation("AllocationAllocatedBy")
@@ -418,12 +428,31 @@ enum PartyStatus {
 /// Where a work order has reached. Ordered as the process runs.
 /// Where a principal's delivery stands.
 ///
-/// RELEASED is the resting state for a consignment that needed no inspection,
-/// which is why it is the default: a receipt booked with qcRequired false is
-/// available to production the moment it is saved.
+/// DRAFT is the default because a receipt is assembled rather than booked: the
+/// store adds materials as they are unloaded, and the delivery is not a
+/// document to be inspected until somebody says it is complete. "Send for
+/// approval" is that statement, and it is the only way out of DRAFT.
+///
+/// APPROVED is what makes the material issuable. Nothing before it does.
+/// Where a job-work production order stands.
+///
+/// Its own list rather than ProductionOrderStatus, because the two workflows
+/// are separate and a shared enum is a shared meaning: READY_FOR_BATCH_RELEASE
+/// has no counterpart in internal production, and PACKED has none here.
+enum JobWorkProductionOrderStatus {
+  DRAFT
+  READY_FOR_PRODUCTION
+  IN_PRODUCTION
+  PRODUCTION_COMPLETED
+  READY_FOR_BATCH_RELEASE
+  BATCH_RELEASED
+  CANCELLED
+}
+
 enum JobWorkReceiptStatus {
-  PENDING_QC
-  RELEASED
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
   ON_HOLD
   REJECTED
 }
@@ -1298,7 +1327,8 @@ model Item {
   // stock table, shared with Procure-to-Pay.
   productionOrders  ProductionOrder[]
   issueLines        MaterialIssueLine[]
-  jobWorkReceiptLines JobWorkMaterialReceiptLine[]
+  jobWorkReceiptLines   JobWorkMaterialReceiptLine[]
+  jobWorkIssueLines     JobWorkMaterialIssueLine[]
   finishedGoodsLots FinishedGoodsLot[]
   salesOrderItems   SalesOrderItem[]
   salesInvoiceItems SalesInvoiceItem[]
@@ -1791,6 +1821,12 @@ model JobWorkOrder {
   createdBy User?                 @relation("JobWorkOrderCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
 
   materialReceipts JobWorkMaterialReceipt[]
+  /// The job-work production orders raised against this instruction.
+  jobWorkProductionOrders JobWorkProductionOrder[]
+
+  /// The internal production orders tagged to this job-work order under the
+  /// earlier design, kept so nothing already manufactured loses its trail.
+  /// New job-work manufacturing goes through jobWorkProductionOrders.
   productionOrders ProductionOrder[]
   invoices         JobWorkInvoice[]
 
@@ -1833,28 +1869,29 @@ model JobWorkMaterialReceipt {
 
   jobWorkOrderId String @map("job_work_order_id") @db.Uuid
 
-  /// The principal's own document number. Deliberately free text and NOT
-  /// unique: it is their numbering, not ours, and two principals may well use
-  /// the same series. Named `delivery_challan_number` and never `invoice`.
-  deliveryChallanNumber String @map("delivery_challan_number") @db.VarChar(64)
-
-  /// The date on the challan, which is not always the day it was keyed in.
+  /// The date the receipt was opened. The challan dates sit on the lines.
   receiptDate DateTime @map("receipt_date") @db.Date
 
-  /// Whether this consignment has to clear incoming QC before it may be
-  /// issued to production.
-  ///
-  /// DEFAULTS FROM THE ITEM MASTER, decided by the service when the receipt is
-  /// booked: if any material on the challan is marked as requiring incoming
-  /// QC, the consignment does. Stored rather than re-derived so a later change
-  /// to an item master cannot retrospectively put a released consignment back
-  /// into quarantine.
+  /// Retained and always true: every inward receipt now passes through the
+  /// approval workflow, so this is no longer a choice made per consignment.
+  /// Kept rather than dropped because the quality record of an older receipt
+  /// should still say an inspection was required of it.
   qcRequired Boolean @default(true) @map("qc_required")
 
-  /// Where the consignment stands, derived from its lines and kept in step by
-  /// the service: PENDING_QC while any line is quarantined, ON_HOLD if one is
-  /// held, REJECTED if one is rejected, RELEASED when all are usable.
-  status JobWorkReceiptStatus @default(RELEASED)
+  /// Where the receipt stands. Advanced by the service, never set from a
+  /// request: DRAFT while materials are still being added, PENDING_APPROVAL
+  /// once submitted, and APPROVED / ON_HOLD / REJECTED once a quality user has
+  /// decided. The lots follow it — nothing is issuable before APPROVED.
+  status JobWorkReceiptStatus @default(DRAFT)
+
+  /// Who said the delivery was completely recorded, and when.
+  submittedById String?   @map("submitted_by_id") @db.Uuid
+  submittedAt   DateTime? @map("submitted_at") @db.Timestamptz(6)
+
+  /// Who decided it, when, and why — the quality record for the consignment.
+  decidedById   String?   @map("decided_by_id") @db.Uuid
+  decidedAt     DateTime? @map("decided_at") @db.Timestamptz(6)
+  decisionNotes String?   @map("decision_notes") @db.VarChar(1000)
 
   notes String? @db.VarChar(500)
 
@@ -1868,13 +1905,202 @@ model JobWorkMaterialReceipt {
   tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   jobWorkOrder JobWorkOrder @relation(fields: [jobWorkOrderId], references: [id], onDelete: Restrict)
   receivedBy   User?        @relation("JobWorkReceiptReceivedBy", fields: [receivedById], references: [id], onDelete: Restrict)
+  submittedBy  User?        @relation("JobWorkReceiptSubmittedBy", fields: [submittedById], references: [id], onDelete: Restrict)
+  decidedBy    User?        @relation("JobWorkReceiptDecidedBy", fields: [decidedById], references: [id], onDelete: Restrict)
 
-  lines JobWorkMaterialReceiptLine[]
+  lines            JobWorkMaterialReceiptLine[]
+  productionOrders JobWorkProductionOrder[]
 
   @@unique([tenantId, receiptNumber])
   @@index([tenantId, jobWorkOrderId])
   @@index([tenantId, status])
   @@map("job_work_material_receipts")
+}
+
+/// Manufacturing a principal's batch — the operational record.
+///
+/// SEPARATE FROM ProductionOrder ON PURPOSE. See the note on
+/// JobWorkProductionOrderStatus: job work manufactures on the principal's
+/// licence from the principal's material, and sharing a table with internal
+/// production meant every rule had to be read twice.
+///
+/// IT OWNS NO MATERIAL. Everything about what will be consumed is already on
+/// the receipt this points at — its lines carry the drum, the batch marking,
+/// the quantity and the expiry — so this holds a reference and not a copy. The
+/// product, principal, agreement and billing model come the same way, through
+/// the job-work order.
+///
+/// RAISED ONLY FROM AN APPROVED RECEIPT, enforced by the service: the quality
+/// decision on the consignment is what makes the material issuable, and a
+/// production order against unapproved material is a promise the store cannot
+/// keep.
+model JobWorkProductionOrder {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// JWPO-2026-0001. Its own series — see DocumentPrefix.
+  orderNumber String @map("order_number") @db.VarChar(32)
+
+  /// The commercial instruction this manufactures against.
+  jobWorkOrderId String @map("job_work_order_id") @db.Uuid
+
+  /// The approved consignment whose material this will consume. Carries the
+  /// quality decision too: a receipt is APPROVED or the order cannot exist.
+  materialReceiptId String @map("material_receipt_id") @db.Uuid
+
+  status JobWorkProductionOrderStatus @default(DRAFT)
+
+  /// What is to be made, in the product's own unit.
+  plannedQuantity Decimal @map("planned_quantity") @db.Decimal(14, 3)
+
+  plannedStartOn      DateTime? @map("planned_start_on") @db.Date
+  plannedCompletionOn DateTime? @map("planned_completion_on") @db.Date
+
+  notes String? @db.VarChar(1000)
+
+  createdById String?  @map("created_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant          Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  jobWorkOrder    JobWorkOrder           @relation(fields: [jobWorkOrderId], references: [id], onDelete: Restrict)
+  materialReceipt JobWorkMaterialReceipt @relation(fields: [materialReceiptId], references: [id], onDelete: Restrict)
+
+  materialIssues JobWorkMaterialIssue[]
+  batches        JobWorkBatch[]
+  createdBy       User?                  @relation("JobWorkProductionOrderCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, orderNumber])
+  @@index([tenantId, jobWorkOrderId])
+  @@index([tenantId, materialReceiptId])
+  @@index([tenantId, status])
+  @@map("job_work_production_orders")
+}
+
+/// Material issued from the principal's stock to a job-work batch.
+///
+/// Modelled on MaterialIssue, and deliberately not it: the two workflows are
+/// separate, and an issue drawing on a principal's quarantine-released drums is
+/// governed by a different approval than one drawing on stock we bought.
+///
+/// IT REFERENCES THE LOT, so the drum, its batch marking and its expiry are
+/// read from the record of arrival rather than copied here.
+model JobWorkMaterialIssue {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  jobWorkProductionOrderId String @map("job_work_production_order_id") @db.Uuid
+
+  /// JWMI-2026-0001. Its own series.
+  issueNumber String @map("issue_number") @db.VarChar(32)
+
+  issuedAt   DateTime @default(now()) @map("issued_at") @db.Timestamptz(6)
+  issuedById String?  @map("issued_by_id") @db.Uuid
+
+  notes String? @db.VarChar(500)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant             Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  productionOrder    JobWorkProductionOrder @relation(fields: [jobWorkProductionOrderId], references: [id], onDelete: Restrict)
+  issuedBy           User?                  @relation("JobWorkIssueIssuedBy", fields: [issuedById], references: [id], onDelete: Restrict)
+
+  lines JobWorkMaterialIssueLine[]
+
+  @@unique([tenantId, issueNumber])
+  @@index([tenantId, jobWorkProductionOrderId])
+  @@map("job_work_material_issues")
+}
+
+/// One drum drawn against a job-work batch.
+model JobWorkMaterialIssueLine {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  issueId String @map("issue_id") @db.Uuid
+  itemId  String @map("item_id") @db.Uuid
+
+  /// The lot the principal's receipt created. The line holds no batch marking
+  /// or expiry of its own — those are facts about the drum, and the drum has a
+  /// record already.
+  lotId String @map("lot_id") @db.Uuid
+
+  /// The receipt line the lot came from, so a batch traces to the challan in
+  /// one hop rather than three.
+  receiptLineId String? @map("receipt_line_id") @db.Uuid
+
+  quantityIssued Decimal @map("quantity_issued") @db.Decimal(14, 3)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  tenant      Tenant                      @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  issue       JobWorkMaterialIssue        @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  item        Item                        @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  lot         StockLot                    @relation("JobWorkIssueLotLines", fields: [lotId], references: [id], onDelete: Restrict)
+  receiptLine JobWorkMaterialReceiptLine? @relation(fields: [receiptLineId], references: [id], onDelete: Restrict)
+
+  @@index([tenantId, issueId])
+  @@index([tenantId, lotId])
+  @@map("job_work_material_issue_lines")
+}
+
+/// A batch manufactured for a principal, and its release decision.
+///
+/// Modelled on Batch, including keeping the release decision here rather than
+/// in a table of its own: a batch has exactly one, and splitting it would be a
+/// one-to-one join free to disagree with its parent.
+///
+/// The packing figures live here too, where Batch keeps them on a separate
+/// BatchPackingRecord. One table rather than two because job work has no second
+/// consumer of the packing record — the internal split exists so the packing
+/// line can own its own document, and job work's packing is recorded by the
+/// same person who records the batch.
+model JobWorkBatch {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  jobWorkProductionOrderId String @map("job_work_production_order_id") @db.Uuid
+
+  /// The batch marking that goes on the goods. JWB-2026-0001 unless the
+  /// principal's agreement dictates their own series.
+  batchNumber String @map("batch_number") @db.VarChar(32)
+
+  manufacturedOn DateTime @map("manufactured_on") @db.Date
+  expiryDate     DateTime @map("expiry_date") @db.Date
+
+  plannedQuantity Decimal  @map("planned_quantity") @db.Decimal(14, 3)
+  actualQuantity  Decimal? @map("actual_quantity") @db.Decimal(14, 3)
+
+  /// Packing, recorded against the same batch.
+  packedQuantity   Decimal?  @map("packed_quantity") @db.Decimal(14, 3)
+  rejectedQuantity Decimal   @default(0) @map("rejected_quantity") @db.Decimal(14, 3)
+  packVariant      String?   @map("pack_variant") @db.VarChar(128)
+  packedOn         DateTime? @map("packed_on") @db.Date
+
+  releaseStatus      BatchReleaseStatus @default(PENDING) @map("release_status")
+  releaseDecidedAt   DateTime?          @map("release_decided_at") @db.Timestamptz(6)
+  releaseDecidedById String?            @map("release_decided_by_id") @db.Uuid
+  releaseNotes       String?            @map("release_notes") @db.Text
+
+  notes String? @db.VarChar(1000)
+
+  recordedById String?   @map("recorded_by_id") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt    DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant           Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  productionOrder  JobWorkProductionOrder @relation(fields: [jobWorkProductionOrderId], references: [id], onDelete: Restrict)
+  recordedBy       User?                  @relation("JobWorkBatchRecordedBy", fields: [recordedById], references: [id], onDelete: Restrict)
+  releaseDecidedBy User?                  @relation("JobWorkBatchReleaseDecidedBy", fields: [releaseDecidedById], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, batchNumber])
+  @@index([tenantId, jobWorkProductionOrderId])
+  @@index([tenantId, releaseStatus])
+  @@map("job_work_batches")
 }
 
 /// One material on a delivery challan, and the lot it became.
@@ -1893,6 +2119,14 @@ model JobWorkMaterialReceiptLine {
   receiptId String @map("receipt_id") @db.Uuid
 
   itemId String @map("item_id") @db.Uuid
+
+  /// The principal's own document number, for the consignment THIS material
+  /// arrived on. Deliberately free text and NOT unique: it is their numbering,
+  /// not ours, and two principals may well use the same series. On the line
+  /// rather than the receipt because one draft receipt collects materials that
+  /// may arrive on several challans. Named `delivery_challan_number` and never
+  /// `invoice`.
+  deliveryChallanNumber String @map("delivery_challan_number") @db.VarChar(64)
 
   /// The principal's batch/lot marking on the container.
   batchNumber String @map("batch_number") @db.VarChar(64)
@@ -1917,8 +2151,12 @@ model JobWorkMaterialReceiptLine {
   /// creates exactly one, in the same transaction.
   stockLot StockLot?
 
+  /// What has been drawn from it into a job-work batch.
+  issueLines JobWorkMaterialIssueLine[]
+
   @@index([tenantId, receiptId])
   @@index([tenantId, itemId])
+  @@index([tenantId, deliveryChallanNumber])
   @@map("job_work_material_receipt_lines")
 }
 
@@ -2472,6 +2710,7 @@ model StockLot {
 
   qcResults             QcResult[]
   ledgerEntries         StockLedgerEntry[]
+  jobWorkIssueLines     JobWorkMaterialIssueLine[] @relation("JobWorkIssueLotLines")
   /// Production consumes the same stock Procure-to-Pay received; see the note
   /// on MaterialIssueLine.lot.
   issueLines            MaterialIssueLine[]

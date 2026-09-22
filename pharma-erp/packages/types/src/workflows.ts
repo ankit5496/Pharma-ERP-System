@@ -272,20 +272,27 @@ export const WORKFLOWS: readonly Workflow[] = [
       },
       {
         key: 'inward-materials',
-        label: 'Inward materials',
+        label: 'Material received from principal',
         purpose: 'Material supplied by the principal, held on their account rather than yours.',
         state: 'ready',
       },
       {
-        key: 'production',
-        label: 'Production',
-        purpose: 'Manufacturing against the order, kept separate from own-brand batches.',
+        key: 'quality-check',
+        label: 'Quality check',
+        purpose: "Approving what a principal sent, before any of it may be issued.",
         state: 'ready',
       },
       {
-        key: 'quality-release',
-        label: 'Quality & release',
-        purpose: 'Testing and release, with results shared back to the principal.',
+        // ONE STEP, FOUR SUB-TABS: production orders, material issue, batch
+        // record and batch release — the same four Production & Quality Gate
+        // has, against the job-work module's own tables. They were two separate
+        // steps until 2026-09-21; a principal's batch is followed from plan to
+        // release in one place, so the navigation now says so.
+        key: 'production-to-batch-release',
+        label: 'Production to batch release',
+        purpose:
+          'Manufacturing against the order and releasing the finished batch, kept separate ' +
+          'from own-brand production.',
         state: 'ready',
       },
       {

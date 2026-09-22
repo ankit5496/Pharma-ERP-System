@@ -3,9 +3,14 @@
 import { revalidatePath } from 'next/cache';
 
 import type {
+  JobWorkBatchView,
   JobWorkInvoiceView,
+  JobWorkIssuableMaterial,
+  JobWorkIssuePlan,
+  JobWorkMaterialIssueView,
   JobWorkMaterialReadiness,
   JobWorkOrderMaterial,
+  JobWorkProductionOrderView,
   JobWorkMaterialReceiptView,
   JobWorkOrderSummary,
 } from '@pharma-erp/types';
@@ -60,8 +65,8 @@ function revalidateFlow(): void {
     'principals',
     'job-work-orders',
     'inward-materials',
-    'production',
-    'quality-release',
+    'quality-check',
+    'production-to-batch-release',
     'outward-dispatch',
     'billing',
     'register',
@@ -181,6 +186,27 @@ export async function withdrawJobWorkOrderAction(
 // ---------------------------------------------------------------------------
 
 /**
+ * The receipts booked against one job-work order.
+ *
+ * FOR THE WORK-ORDER FORM, which shows what the principal actually sent rather
+ * than only what the formulation asks for. Read from the receipts because that
+ * is the record of arrival — a second list assembled from the lots would be a
+ * second answer to the same question.
+ */
+export async function loadJobWorkReceiptsAction(
+  jobWorkOrderId: string,
+): Promise<JobWorkMaterialReceiptView[]> {
+  if (!jobWorkOrderId) return [];
+
+  const result = await apiFetch<JobWorkMaterialReceiptView[]>(
+    `/api/v1/job-work/material-receipts?jobWorkOrderId=${jobWorkOrderId}`,
+    { authenticated: true },
+  );
+
+  return result.ok ? result.data : [];
+}
+
+/**
  * Whether one job-work order could be manufactured, and if not, why not.
  *
  * FETCHED WHEN THE FORM OPENS. The same call the work-order service makes when
@@ -254,12 +280,6 @@ export async function createJobWorkReceiptAction(
   const deliveryChallanNumber = text(form, 'deliveryChallanNumber');
   const receiptDate = text(form, 'receiptDate');
   const notes = text(form, 'notes');
-
-  // An unticked checkbox posts nothing at all, so its absence is the "no", and
-  // the API's own default of true only applies when the field is omitted
-  // entirely — which this form never does.
-  const qcRequired = form.get('qcRequired') !== null;
-
   if (!jobWorkOrderId) return { status: 'error', message: 'Choose the job-work order.' };
   if (!deliveryChallanNumber) {
     return { status: 'error', message: "Enter the principal's delivery challan number." };
@@ -288,7 +308,6 @@ export async function createJobWorkReceiptAction(
         jobWorkOrderId,
         deliveryChallanNumber,
         receiptDate,
-        qcRequired,
         ...(notes ? { notes } : {}),
         lines: lines.rows,
       },
@@ -302,11 +321,11 @@ export async function createJobWorkReceiptAction(
   return toState(
     result,
     recorded
-      ? `Receipt ${recorded.receiptNumber} recorded — ${recorded.lines.length} ` +
-          `material${recorded.lines.length === 1 ? '' : 's'} on challan ${deliveryChallanNumber}, ` +
-          (recorded.qcRequired
-            ? 'held in quarantine for incoming QC.'
-            : 'added to principal-owned stock.')
+      ? `${recorded.receiptNumber}: ${lines.rows.length} material${
+          lines.rows.length === 1 ? '' : 's'
+        } recorded on challan ${deliveryChallanNumber}. ` +
+          `The receipt now holds ${recorded.lines.length} in total, quarantined until it is ` +
+          'approved.'
       : '',
   );
 }
@@ -372,6 +391,188 @@ interface ReceiptLinePayload {
   expiryDate?: string;
   notes?: string;
 }
+/**
+ * Says the delivery is completely recorded, and asks for it to be approved.
+ *
+ * NOT THE APPROVAL. The store officer states that what is on the receipt is
+ * what arrived; the quality decision is somebody else's, on Quality check.
+ * Naming this action "Approve" would collapse the two, which is the one thing
+ * the stage exists to prevent.
+ */
+export async function submitJobWorkReceiptAction(
+  _state: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const id = text(form, 'receiptId');
+
+  if (!id) return { status: 'error', message: 'No receipt was identified.' };
+
+  const result = await apiFetch<JobWorkMaterialReceiptView>(
+    `/api/v1/job-work/material-receipts/${id}/submit`,
+    { method: 'POST', authenticated: true },
+  );
+
+  revalidateFlow();
+
+  return toState(
+    result,
+    result.ok
+      ? `${(result.data as JobWorkMaterialReceiptView).receiptNumber} sent for approval — it is ` +
+          'now waiting on Quality check.'
+      : '',
+  );
+}
+
+/**
+ * The quality decision on a whole consignment.
+ *
+ * One decision for the receipt, and every lot under it follows. A reason is
+ * required for anything but an approval, and the API refuses without one.
+ */
+export async function decideJobWorkReceiptAction(
+  _state: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const id = text(form, 'receiptId');
+  const decision = text(form, 'decision');
+
+  if (!id) return { status: 'error', message: 'No receipt was identified.' };
+  if (!decision) return { status: 'error', message: 'Choose approve, hold or reject.' };
+
+  const notes = text(form, 'notes');
+
+  if (decision !== 'APPROVED' && !notes) {
+    return {
+      status: 'error',
+      message: 'Record why the consignment is being held or rejected.',
+    };
+  }
+
+  const result = await apiFetch<JobWorkMaterialReceiptView>(
+    `/api/v1/job-work/material-receipts/${id}/decision`,
+    {
+      method: 'POST',
+      authenticated: true,
+      json: {
+        decision,
+        ...(text(form, 'testReference') ? { testReference: text(form, 'testReference') } : {}),
+        ...(notes ? { notes } : {}),
+      },
+    },
+  );
+
+  revalidateFlow();
+
+  return toState(
+    result,
+    result.ok
+      ? decision === 'APPROVED'
+        ? `${(result.data as JobWorkMaterialReceiptView).receiptNumber} approved — the material ` +
+            'is now issuable to production.'
+        : `${(result.data as JobWorkMaterialReceiptView).receiptNumber} recorded as ` +
+            `${decision === 'ON_HOLD' ? 'on hold' : 'rejected'}. None of it may be issued.`
+      : '',
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Job-work production orders — the module's own manufacturing record
+//
+// Deliberately separate from the internal production order: see the service.
+// ---------------------------------------------------------------------------
+
+/**
+ * The approved consignments an order could be manufactured from.
+ *
+ * Fetched when the form opens rather than with the page, for the same reason
+ * the readiness check is: one order's worth of receipts, asked for when there
+ * is something to ask it about.
+ */
+export async function loadEligibleReceiptsAction(
+  jobWorkOrderId: string,
+): Promise<JobWorkMaterialReceiptView[]> {
+  if (!jobWorkOrderId) return [];
+
+  const result = await apiFetch<JobWorkMaterialReceiptView[]>(
+    `/api/v1/job-work/orders/${jobWorkOrderId}/eligible-receipts`,
+    { authenticated: true },
+  );
+
+  return result.ok ? result.data : [];
+}
+
+/** Raises the production order against an approved consignment. */
+export async function raiseJobWorkProductionOrderAction(
+  _state: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const jobWorkOrderId = text(form, 'jobWorkOrderId');
+  const materialReceiptId = text(form, 'materialReceiptId');
+
+  if (!jobWorkOrderId) return { status: 'error', message: 'No job-work order was identified.' };
+
+  if (!materialReceiptId) {
+    return {
+      status: 'error',
+      message:
+        'Choose the approved material receipt this batch will be made from. If there is none, ' +
+        'the consignment has not passed Quality check yet.',
+    };
+  }
+
+  const result = await apiFetch<JobWorkProductionOrderView>('/api/v1/job-work/production-orders', {
+    method: 'POST',
+    authenticated: true,
+    json: {
+      jobWorkOrderId,
+      materialReceiptId,
+      ...(text(form, 'plannedQuantity') ? { plannedQuantity: text(form, 'plannedQuantity') } : {}),
+      ...(text(form, 'plannedStartOn') ? { plannedStartOn: text(form, 'plannedStartOn') } : {}),
+      ...(text(form, 'plannedCompletionOn')
+        ? { plannedCompletionOn: text(form, 'plannedCompletionOn') }
+        : {}),
+      ...(text(form, 'notes') ? { notes: text(form, 'notes') } : {}),
+    },
+  });
+
+  revalidateFlow();
+
+  return toState(
+    result,
+    result.ok
+      ? `Production order ${(result.data as JobWorkProductionOrderView).orderNumber} raised.`
+      : '',
+  );
+}
+
+/** Changes the plan, or moves the order to its next stage. */
+export async function updateJobWorkProductionOrderAction(
+  _state: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const id = text(form, 'id');
+
+  if (!id) return { status: 'error', message: 'No production order was identified.' };
+
+  const body: Record<string, unknown> = {};
+
+  if (text(form, 'plannedQuantity')) body.plannedQuantity = text(form, 'plannedQuantity');
+  if (text(form, 'status')) body.status = text(form, 'status');
+
+  body.plannedStartOn = text(form, 'plannedStartOn') || null;
+  body.plannedCompletionOn = text(form, 'plannedCompletionOn') || null;
+  body.notes = text(form, 'notes') || null;
+
+  const result = await apiFetch<JobWorkProductionOrderView>(
+    `/api/v1/job-work/production-orders/${id}`,
+    { method: 'PATCH', authenticated: true, json: body },
+  );
+
+  revalidateFlow();
+
+  return toState(result, 'Production order updated.');
+}
+
 // ---------------------------------------------------------------------------
 // US-JW-03 — manufacturing, through the EXISTING work order
 // ---------------------------------------------------------------------------
@@ -414,6 +615,229 @@ export async function createJobWorkProductionOrderAction(
       ? `Work order ${(result.data as { orderNumber: string }).orderNumber} raised against this ` +
           'job-work order.'
       : '',
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Material issue, batch record and batch release — the job-work module's own
+// ---------------------------------------------------------------------------
+
+/**
+ * The number a form is about to take, for the field that shows it.
+ *
+ * ADVISORY, and the API says so: nothing is reserved by asking, so two people
+ * with the same form open see the same number and one of them is wrong. The
+ * real number is allocated inside the transaction that writes the document.
+ *
+ * Null on failure rather than an error — a form whose number preview could not
+ * load should still be usable, and it says "Assigned automatically" instead.
+ */
+export async function nextJobWorkNumberAction(
+  document: 'production-order' | 'issue' | 'batch',
+): Promise<string | null> {
+  const path =
+    document === 'production-order'
+      ? '/api/v1/job-work/production-orders/next-number'
+      : document === 'issue'
+        ? '/api/v1/job-work/material-issues/next-number'
+        : '/api/v1/job-work/batches/next-number';
+
+  const result = await apiFetch<Record<string, string>>(path, { authenticated: true });
+
+  if (!result.ok) return null;
+
+  return (
+    result.data.orderNumber ?? result.data.issueNumber ?? result.data.batchNumber ?? null
+  );
+}
+
+/**
+ * What issuing this order would consume, and out of which drums.
+ *
+ * The plan the dispensing form opens on. Its refusal travels as a message
+ * rather than being swallowed: "this consignment has not passed Quality check"
+ * is the answer somebody needs, and an empty table does not say it.
+ */
+export async function jobWorkIssuePlanAction(
+  productionOrderId: string,
+): Promise<{ ok: true; data: JobWorkIssuePlan } | { ok: false; message: string }> {
+  if (!productionOrderId) return { ok: false, message: 'No production order was identified.' };
+
+  const result = await apiFetch<JobWorkIssuePlan>(
+    `/api/v1/job-work/production-orders/${productionOrderId}/issue-plan`,
+    { authenticated: true },
+  );
+
+  return result.ok ? { ok: true, data: result.data } : { ok: false, message: result.error };
+}
+
+/**
+ * The drums this production order may still draw on.
+ *
+ * FROM THE INWARD RECEIPT, not from a copy of it. The API subtracts what has
+ * already been issued, so the form offers each drum's remainder.
+ */
+export async function loadIssuableMaterialAction(productionOrderId: string) {
+  if (!productionOrderId) return [];
+
+  const result = await apiFetch<JobWorkIssuableMaterial[]>(
+    `/api/v1/job-work/production-orders/${productionOrderId}/issuable-material`,
+    { authenticated: true },
+  );
+
+  return result.ok ? result.data : [];
+}
+
+/**
+ * Issues the principal's material to a batch.
+ *
+ * The lines arrive as `quantity:<lotId>` fields — one per drum on the form —
+ * and blank ones are dropped here rather than sent as zeros, because a zero is
+ * a quantity and an empty box is somebody not dispensing from that drum.
+ */
+export async function recordJobWorkIssueAction(
+  _state: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const jobWorkProductionOrderId = text(form, 'jobWorkProductionOrderId');
+
+  if (!jobWorkProductionOrderId) {
+    return { status: 'error', message: 'No production order was identified.' };
+  }
+
+  const lines: { lotId: string; quantityIssued: string }[] = [];
+
+  for (const [key, value] of form.entries()) {
+    if (!key.startsWith('quantity:')) continue;
+    if (typeof value !== 'string' || !value.trim()) continue;
+
+    lines.push({ lotId: key.slice('quantity:'.length), quantityIssued: value.trim() });
+  }
+
+  if (lines.length === 0) {
+    return {
+      status: 'error',
+      message: 'Enter a quantity against at least one drum before issuing.',
+    };
+  }
+
+  const result = await apiFetch<JobWorkMaterialIssueView>('/api/v1/job-work/material-issues', {
+    method: 'POST',
+    authenticated: true,
+    json: {
+      jobWorkProductionOrderId,
+      lines,
+      ...(text(form, 'notes') ? { notes: text(form, 'notes') } : {}),
+    },
+  });
+
+  revalidateFlow();
+
+  return toState(
+    result,
+    result.ok
+      ? `Material issue ${(result.data as JobWorkMaterialIssueView).issueNumber} recorded.`
+      : '',
+  );
+}
+
+/** Opens the batch record against a production order material has gone to. */
+export async function recordJobWorkBatchAction(
+  _state: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const jobWorkProductionOrderId = text(form, 'jobWorkProductionOrderId');
+  const manufacturedOn = text(form, 'manufacturedOn');
+  const expiryDate = text(form, 'expiryDate');
+
+  if (!jobWorkProductionOrderId) {
+    return { status: 'error', message: 'No production order was identified.' };
+  }
+
+  if (!manufacturedOn) return { status: 'error', message: 'Enter the date of manufacture.' };
+  if (!expiryDate) return { status: 'error', message: 'Enter the expiry date.' };
+
+  const result = await apiFetch<JobWorkBatchView>('/api/v1/job-work/batches', {
+    method: 'POST',
+    authenticated: true,
+    json: {
+      jobWorkProductionOrderId,
+      manufacturedOn,
+      expiryDate,
+      ...(text(form, 'actualQuantity') ? { actualQuantity: text(form, 'actualQuantity') } : {}),
+      ...(text(form, 'notes') ? { notes: text(form, 'notes') } : {}),
+    },
+  });
+
+  revalidateFlow();
+
+  return toState(
+    result,
+    result.ok ? `Batch ${(result.data as JobWorkBatchView).batchNumber} opened.` : '',
+  );
+}
+
+/** Adds the packing figures to a batch already recorded. */
+export async function recordJobWorkPackingAction(
+  _state: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const id = text(form, 'batchId');
+
+  if (!id) return { status: 'error', message: 'No batch was identified.' };
+
+  const body: Record<string, unknown> = {};
+
+  for (const field of ['actualQuantity', 'packedQuantity', 'rejectedQuantity', 'packVariant', 'packedOn', 'notes']) {
+    const value = text(form, field);
+
+    if (value) body[field] = value;
+  }
+
+  const result = await apiFetch<JobWorkBatchView>(`/api/v1/job-work/batches/${id}`, {
+    method: 'PATCH',
+    authenticated: true,
+    json: body,
+  });
+
+  revalidateFlow();
+
+  return toState(result, 'Packing recorded.');
+}
+
+/**
+ * The release decision on a finished batch.
+ *
+ * A reason is required for anything but a release — checked here so the person
+ * sees it immediately, and again by the API, which is what actually enforces
+ * it.
+ */
+export async function decideJobWorkBatchAction(
+  _state: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const id = text(form, 'batchId');
+  const decision = text(form, 'decision');
+  const notes = text(form, 'notes');
+
+  if (!id) return { status: 'error', message: 'No batch was identified.' };
+  if (!decision) return { status: 'error', message: 'Choose a decision.' };
+
+  if (decision !== 'RELEASED' && !notes) {
+    return { status: 'error', message: 'Give the reason for holding or rejecting this batch.' };
+  }
+
+  const result = await apiFetch<JobWorkBatchView>(`/api/v1/job-work/batches/${id}/release`, {
+    method: 'POST',
+    authenticated: true,
+    json: { decision, ...(notes ? { notes } : {}) },
+  });
+
+  revalidateFlow();
+
+  return toState(
+    result,
+    decision === 'RELEASED' ? 'Batch released.' : 'Decision recorded.',
   );
 }
 
