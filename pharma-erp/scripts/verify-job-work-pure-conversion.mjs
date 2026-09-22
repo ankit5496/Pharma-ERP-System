@@ -386,9 +386,9 @@ const challanResponse = await store('/job-work/material-receipts', {
     jobWorkOrderId: order.id,
     deliveryChallanNumber: challan,
     receiptDate: iso(today),
-    // INSPECTED, which is the default and the point of this leg of the test:
-    // principal material now passes the same incoming gate a purchase does.
-    qcRequired: true,
+    // NO qcRequired FIELD. Every consignment now passes the incoming gate —
+    // the checkbox that used to make it optional was withdrawn on 2026-09-21,
+    // and the API rejects the field rather than ignoring it.
     lines: delivered.map(([item, quantity, batch]) => ({
       itemId: item.id,
       batchNumber: batch,
@@ -410,11 +410,11 @@ for (const [item, quantity, batch] of delivered) {
 }
 
 check('  one receipt carries all three materials',
-  receipt.lines?.length === 3 && receipt.deliveryChallanNumber === challan,
-  JSON.stringify({ challan: receipt.deliveryChallanNumber, lines: receipt.lines?.length }));
-check('  and it is held for incoming QC',
-  receipt.qcRequired === true && receipt.status === 'PENDING_QC',
-  JSON.stringify({ qcRequired: receipt.qcRequired, status: receipt.status }));
+  receipt.lines?.length === 3 && receipt.lines.every((line) => line.deliveryChallanNumber === challan),
+  JSON.stringify({ challans: receipt.lines?.map((l) => l.deliveryChallanNumber), lines: receipt.lines?.length }));
+check('  and it starts as a draft, awaiting the store’s submission',
+  receipt.status === 'DRAFT',
+  JSON.stringify({ status: receipt.status }));
 
 const receipts = receipt.lines ?? [];
 
@@ -422,10 +422,11 @@ const receipts = receipt.lines ?? [];
 // whole item master, and not a list typed into the screen.
 const expected = (await api(`/job-work/orders/${order.id}/materials`)).body;
 
-check('  the order knows which materials it expects, from its own BOM',
-  Array.isArray(expected) && expected.length === delivered.length,
-  JSON.stringify(expected));
-check('  and they are exactly the ones received',
+check('  the order knows which materials it expects, from its own BOM and pack',
+  Array.isArray(expected) && expected.length >= delivered.length &&
+    expected.some((m) => m.kind === 'RAW') && expected.some((m) => m.kind === 'PACKING'),
+  JSON.stringify(expected?.map?.((m) => [m.item.code, m.kind])));
+check('  and every material received is one of them',
   Array.isArray(expected) &&
     delivered.every(([item]) => expected.some((m) => m.item.id === item.id)),
   JSON.stringify(expected?.map?.((m) => m.item.code)));
@@ -515,56 +516,60 @@ check('  a work order on quarantined material is REFUSED',
   tooEarly.status >= 400, `${tooEarly.status}`);
 note(`refusal: ${JSON.stringify(tooEarly.body?.message)}`);
 
-// The principal\u2019s drums are on the incoming-QC queue, which used to show
-// purchased material only.
-// By id: the queue is paged and ordered first-expiry-first, so three lots
-// two years out are not on page one of a company holding hundreds.
-const mine = [];
+// JOB WORK HAS ITS OWN GATE. The consignment used to be cleared drum by drum
+// on the procurement incoming-QC queue; since 2026-09-21 the store says the
+// delivery is completely recorded ("Send for approval") and a quality user
+// approves or refuses the whole consignment. The rule being tested is the
+// same one: nothing the principal sent may be used until quality has cleared
+// it.
+const findReceipt = async () =>
+  rowsOf((await api('/job-work/material-receipts')).body).find((r) => r.id === receipt.id);
 
-for (const lot of principalLots) {
-  const row = (await quality(`/procurement/qc/lots/${lot.id}`)).body;
+// The quality user cannot approve what the store has not submitted.
+const undecided = await quality(`/job-work/material-receipts/${receipt.id}/decision`, {
+  method: 'POST',
+  body: { decision: 'APPROVED', testReference: `COA-${tag}` },
+});
 
-  if (row?.lot?.id) mine.push(row);
+check('  a consignment cannot be approved before it is submitted',
+  undecided.status >= 400, `${undecided.status}`);
+
+const submitted = await store(`/job-work/material-receipts/${receipt.id}/submit`, {
+  method: 'POST',
+});
+
+if (submitted.status >= 400) {
+  throw new Error(`submit: ${submitted.status} ${JSON.stringify(submitted.body)}`);
 }
 
-check('  the principal\u2019s material is reachable from incoming QC',
-  mine.length === 3, `${mine.length} of 3 found`);
-check('  each names the principal and the challan, not a vendor',
-  mine.length === 3 &&
-    mine.every((row) => row.jobWork?.principal?.name === 'HealWell Pharmaceuticals' &&
-      row.jobWork?.deliveryChallanNumber === challan && row.vendor === null),
-  JSON.stringify(mine.map((r) => [r.jobWork?.principal?.name, r.vendor])));
+check('  the store sends the consignment for approval',
+  submitted.body?.status === 'PENDING_APPROVAL', JSON.stringify(submitted.body?.status));
 
-// And it is findable on the queue by its lot number, which is how a Quality
-// Officer would actually reach it.
-const searched = rowsOf(
-  (await quality(`/procurement/qc/lots?search=${principalLots[0]?.lotNumber ?? ''}`)).body,
-);
+// SENDING FOR APPROVAL IS NOT APPROVING. The material is still quarantined.
+const stillHeld = await readiness();
 
-check('  and it is findable on the queue by lot number',
-  searched.some((row) => row.lot.id === principalLots[0]?.id),
-  JSON.stringify(searched.map((r) => r.lot.lotNumber)));
+check('  submitting it does not release the material',
+  stillHeld.ready === false, JSON.stringify(stillHeld.blockedReason));
 
-// Released, one drum at a time, by the Quality Officer.
-for (const row of mine) {
-  const decided = await quality(`/procurement/qc/lots/${row.lot.id}/decision`, {
-    method: 'POST',
-    body: { decision: 'ACCEPTED', testReference: `COA-${tag}`, remarks: 'Conforms.' },
-  });
+const decided = await quality(`/job-work/material-receipts/${receipt.id}/decision`, {
+  method: 'POST',
+  body: { decision: 'APPROVED', testReference: `COA-${tag}`, notes: 'Conforms.' },
+});
 
-  if (decided.status >= 400) {
-    throw new Error(`qc release: ${decided.status} ${JSON.stringify(decided.body)}`);
-  }
+if (decided.status >= 400) {
+  throw new Error(`decision: ${decided.status} ${JSON.stringify(decided.body)}`);
 }
 
-const afterQc = rowsOf((await api(`/job-work/material-receipts`)).body)
-  .find((r) => r.deliveryChallanNumber === challan);
+const afterQc = await findReceipt();
 
-check('  releasing every drum releases the consignment',
-  afterQc?.status === 'RELEASED', JSON.stringify(afterQc?.status));
+check('  approving the consignment clears it',
+  afterQc?.status === 'APPROVED', JSON.stringify(afterQc?.status));
 check('  and every line now reports its lot usable',
   afterQc?.lines?.every((line) => line.lotStatus === 'USABLE'),
   JSON.stringify(afterQc?.lines?.map((l) => l.lotStatus)));
+check('  the decision is attributed and dated',
+  Boolean(afterQc?.decidedBy) && Boolean(afterQc?.decidedAt),
+  JSON.stringify({ by: afterQc?.decidedBy, at: afterQc?.decidedAt }));
 
 const ready = await readiness();
 

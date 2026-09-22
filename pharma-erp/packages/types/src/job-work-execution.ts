@@ -230,21 +230,32 @@ export interface JobWorkOrderMaterial {
 }
 
 /**
- * Where a principal's delivery stands.
+ * Where a receipt stands.
  *
- * PENDING_QC while any material on it is still quarantined, ON_HOLD or
- * REJECTED if a decision went that way, RELEASED when everything on the
- * challan is usable. Derived from the lines by the API, never set by hand.
+ * DRAFT while the store is still adding what arrived, PENDING_APPROVAL once
+ * somebody says the delivery is completely recorded, and then whatever the
+ * quality user decided. Advanced by the API, never set from a request.
  */
-export const JOB_WORK_RECEIPT_STATUSES = ['PENDING_QC', 'RELEASED', 'ON_HOLD', 'REJECTED'] as const;
+export const JOB_WORK_RECEIPT_STATUSES = [
+  'DRAFT',
+  'PENDING_APPROVAL',
+  'APPROVED',
+  'ON_HOLD',
+  'REJECTED',
+] as const;
 export type JobWorkReceiptStatus = (typeof JOB_WORK_RECEIPT_STATUSES)[number];
 
 export const JOB_WORK_RECEIPT_STATUS_LABELS: Record<JobWorkReceiptStatus, string> = {
-  PENDING_QC: 'QC pending',
-  RELEASED: 'Released',
+  DRAFT: 'Draft',
+  PENDING_APPROVAL: 'Pending approval',
+  APPROVED: 'Approved',
   ON_HOLD: 'On hold',
   REJECTED: 'Rejected',
 };
+
+/** The decisions a quality user may record against a consignment. */
+export const JOB_WORK_RECEIPT_DECISIONS = ['APPROVED', 'ON_HOLD', 'REJECTED'] as const;
+export type JobWorkReceiptDecision = (typeof JOB_WORK_RECEIPT_DECISIONS)[number];
 
 /**
  * One material on a delivery challan, and the lot it became.
@@ -256,6 +267,10 @@ export const JOB_WORK_RECEIPT_STATUS_LABELS: Record<JobWorkReceiptStatus, string
 export interface JobWorkMaterialReceiptLineView {
   id: string;
   item: ItemSummary;
+  /** Which of the two sections this belongs in, off the item master. */
+  kind: JobWorkMaterialKind;
+  /** The principal's document for the consignment THIS material arrived on. */
+  deliveryChallanNumber: string;
   batchNumber: string;
   receivedQuantity: string;
   manufacturingDate: string | null;
@@ -287,17 +302,35 @@ export interface JobWorkMaterialReceiptView {
   principalId: string;
   principalName: string;
 
-  deliveryChallanNumber: string;
-  /** YYYY-MM-DD, off the challan. */
+  /** The product this receipt is against. One order, one product. */
+  productName: string;
+  productCode: string;
+  principalBrandName: string;
+
+  /** YYYY-MM-DD: when the receipt was opened. Challan dates sit on the lines. */
   receiptDate: string;
 
-  /**
-   * Whether this consignment has to clear incoming QC before it may be
-   * issued. Decided when the receipt is booked and then fixed, so a later
-   * change of policy cannot put released material back into quarantine.
-   */
-  qcRequired: boolean;
   status: JobWorkReceiptStatus;
+
+  /** Who said the delivery was completely recorded, and when. */
+  submittedBy: string | null;
+  submittedAt: string | null;
+
+  /** The quality decision: who, when and why. */
+  decidedBy: string | null;
+  decidedAt: string | null;
+  decisionNotes: string | null;
+
+  /**
+   * The challans this receipt gathered, for a list that has no room for the
+   * lines. One draft collects whatever arrives against the order, so there may
+   * be several.
+   */
+  deliveryChallanNumbers: string[];
+
+  /** Counted for the register, which shows how many of each rather than all. */
+  rawMaterialCount: number;
+  packingMaterialCount: number;
 
   notes: string | null;
 
@@ -515,6 +548,312 @@ export interface JobWorkMaterialReadiness {
    */
   blockedReason: string | null;
 }
+
+/**
+ * Where a job-work production order stands.
+ *
+ * Its own list rather than the internal one: the two workflows are separate,
+ * and READY_FOR_BATCH_RELEASE has no counterpart in internal production while
+ * PACKED has none here.
+ */
+export const JOB_WORK_PRODUCTION_STATUSES = [
+  'DRAFT',
+  'READY_FOR_PRODUCTION',
+  'IN_PRODUCTION',
+  'PRODUCTION_COMPLETED',
+  'READY_FOR_BATCH_RELEASE',
+  'BATCH_RELEASED',
+  'CANCELLED',
+] as const;
+export type JobWorkProductionStatus = (typeof JOB_WORK_PRODUCTION_STATUSES)[number];
+
+export const JOB_WORK_PRODUCTION_STATUS_LABELS: Record<JobWorkProductionStatus, string> = {
+  DRAFT: 'Draft',
+  READY_FOR_PRODUCTION: 'Ready for production',
+  IN_PRODUCTION: 'In production',
+  PRODUCTION_COMPLETED: 'Production completed',
+  READY_FOR_BATCH_RELEASE: 'Ready for batch release',
+  BATCH_RELEASED: 'Batch released',
+  CANCELLED: 'Cancelled',
+};
+
+/**
+ * Manufacturing a principal's batch.
+ *
+ * SEPARATE FROM THE INTERNAL PRODUCTION ORDER, and holding no material of its
+ * own: what will be consumed is on the receipt it points at, whose lines carry
+ * every drum, batch marking, quantity and expiry date. The product, principal,
+ * agreement and billing model come the same way, through the job-work order.
+ */
+export interface JobWorkProductionOrderView {
+  id: string;
+  orderNumber: string;
+  status: JobWorkProductionStatus;
+
+  jobWorkOrderId: string;
+  jobWorkOrderNumber: string;
+
+  principalId: string;
+  principalName: string;
+
+  agreementId: string;
+  agreementReference: string | null;
+  billingModel: BillingModel;
+
+  product: ItemSummary;
+  principalBrandName: string;
+
+  /** What is to be made, in the product's own unit. */
+  plannedQuantity: string;
+
+  plannedStartOn: string | null;
+  plannedCompletionOn: string | null;
+
+  notes: string | null;
+
+  /**
+   * The approved consignment this will consume, with its lines.
+   *
+   * The whole receipt rather than a summary of it: the screens that open a
+   * production order ask what material is behind it, and answering from a
+   * second copy is how two records of one delivery come to disagree.
+   */
+  materialReceipt: JobWorkMaterialReceiptView;
+
+  /**
+   * The batch made against this order, once there is one.
+   *
+   * On the ORDER because the register's Batch column is read beside the status
+   * — "in production, no batch yet" and "in production, batch on hold" are
+   * different situations, and a column that needs a second screen to fill in
+   * does not say which is which.
+   */
+  batchNumber: string | null;
+  releaseStatus: BatchReleaseStatus | null;
+
+  /** How many issues have been recorded against it. */
+  issueCount: number;
+
+  createdAt: string;
+  createdBy: string | null;
+}
+
+/**
+ * A drum the issue form may draw on, with what is left of it.
+ *
+ * STRAIGHT FROM THE INWARD RECEIPT LINE. Nothing here is stored a second time —
+ * `quantityAvailable` is the lot's own balance and `alreadyIssued` is the sum
+ * of what earlier issues took, so a drum half-consumed offers its remainder.
+ */
+export interface JobWorkIssuableMaterial {
+  receiptLineId: string;
+  lotId: string;
+  lotNumber: string;
+
+  item: ItemSummary;
+  kind: JobWorkMaterialKind;
+
+  /** The principal's own marking on the drum. */
+  batchNumber: string;
+  deliveryChallanNumber: string | null;
+  manufacturingDate: string | null;
+  expiryDate: string | null;
+
+  receivedQuantity: string;
+  quantityAvailable: string;
+  alreadyIssued: string;
+
+  /** QUARANTINE until Quality check clears it; only USABLE may be issued. */
+  lotStatus: string;
+}
+
+/**
+ * What issuing a job-work order would consume, and out of which drums.
+ *
+ * THE SAME SHAPE AS MaterialIssuePlan, with one difference that matters: the
+ * allocations come from the drums the principal actually sent, not from company
+ * stock. The requirement is still the formulation scaled to the order, so a
+ * consignment that is short of what the batch needs says so here rather than at
+ * the moment somebody presses Dispense.
+ */
+export interface JobWorkIssuePlanLine {
+  item: ItemSummary;
+  kind: JobWorkMaterialKind;
+
+  /** Scaled from the BOM (or the pack specification) to the planned quantity. */
+  quantityRequired: string;
+  /** Sum of `allocations`; less than required when the consignment runs out. */
+  quantityAllocated: string;
+  /** Required minus allocated. "0" when fully covered. */
+  quantityShort: string;
+
+  allocations: {
+    lotId: string;
+    lotNumber: string;
+    receiptLineId: string;
+
+    /** The principal's own marking on the drum, and the challan it came on. */
+    batchNumber: string;
+    deliveryChallanNumber: string | null;
+
+    expiryDate: string | null;
+
+    /** What this plan would take from it. */
+    quantity: string;
+    /** What is left on it, after earlier issues. */
+    quantityAvailable: string;
+  }[];
+}
+
+export interface JobWorkIssuePlan {
+  productionOrderId: string;
+  orderNumber: string;
+  jobWorkOrderNumber: string;
+  principalName: string;
+  product: ItemSummary;
+
+  /** The consignment being drawn on. */
+  receiptNumber: string;
+
+  /** False when any line is short. The issue endpoint refuses in that case. */
+  canIssue: boolean;
+
+  /**
+   * Why it cannot be issued, when the reason is not a shortage — no active
+   * formulation, or a consignment that has not passed Quality check. Null when
+   * the only thing stopping it is quantity, which `lines` already explains.
+   */
+  blockedReason: string | null;
+
+  lines: JobWorkIssuePlanLine[];
+}
+
+/** Planned against actual consumption of one material on a job-work batch. */
+export interface JobWorkBatchMaterialVariance {
+  item: ItemSummary;
+  kind: JobWorkMaterialKind;
+  quantityPlanned: string;
+  quantityIssued: string;
+  variancePercent: string;
+  /** True when |variancePercent| exceeds the review threshold. */
+  flagged: boolean;
+}
+
+/** One drum drawn against a job-work batch. */
+export interface JobWorkMaterialIssueLineView {
+  id: string;
+  item: ItemSummary;
+  kind: JobWorkMaterialKind;
+
+  lotId: string;
+  lotNumber: string;
+  /** The principal's own marking on the drum. */
+  batchNumber: string;
+  expiryDate: string | null;
+
+  quantityIssued: string;
+
+  /** The challan it arrived on, straight through from the receipt line. */
+  deliveryChallanNumber: string | null;
+}
+
+/**
+ * Material issued from the principal's stock to a job-work batch.
+ *
+ * Its own record, not the internal material issue. The lines reference the
+ * lots the inward receipt created rather than restating them.
+ */
+export interface JobWorkMaterialIssueView {
+  id: string;
+  issueNumber: string;
+
+  productionOrderId: string;
+  productionOrderNumber: string;
+  jobWorkOrderNumber: string;
+  principalId: string;
+  principalName: string;
+  product: ItemSummary;
+
+  issuedAt: string;
+  issuedBy: string | null;
+  notes: string | null;
+
+  lines: JobWorkMaterialIssueLineView[];
+  totalQuantityIssued: string;
+}
+
+/**
+ * A batch manufactured for a principal, with its packing and release.
+ *
+ * One record for all three, matching what the internal flow splits across a
+ * batch and a packing record — job work has no second consumer of the packing
+ * figures, and a one-to-one join is a join that can disagree.
+ */
+export interface JobWorkBatchView {
+  id: string;
+  batchNumber: string;
+
+  productionOrderId: string;
+  productionOrderNumber: string;
+  jobWorkOrderNumber: string;
+  principalId: string;
+  principalName: string;
+  product: ItemSummary;
+  principalBrandName: string;
+
+  manufacturedOn: string;
+  expiryDate: string;
+
+  plannedQuantity: string;
+  actualQuantity: string | null;
+
+  packedQuantity: string | null;
+  rejectedQuantity: string;
+  packVariant: string | null;
+  packedOn: string | null;
+
+  releaseStatus: BatchReleaseStatus;
+  releaseDecidedAt: string | null;
+  releaseDecidedBy: string | null;
+  releaseNotes: string | null;
+
+  notes: string | null;
+
+  /**
+   * What the formulation called for against what was actually drawn.
+   *
+   * Computed, never stored: it is the BOM scaled to the order's planned
+   * quantity against the sum of the issue lines, and storing either side would
+   * be a second copy of a figure that can then disagree with its source.
+   */
+  materialVariances: JobWorkBatchMaterialVariance[];
+  /** Above this absolute percentage a variance is flagged for review. */
+  varianceThresholdPercent: number;
+
+  recordedBy: string | null;
+  createdAt: string;
+}
+
+/**
+ * The four stages of the job-work production workflow.
+ *
+ * One tab with four sub-tabs, mirroring Production & Quality Gate — which is
+ * the screen this was copied from, so the vocabulary is deliberately the same.
+ */
+export const JOB_WORK_PRODUCTION_STAGES = [
+  'production-orders',
+  'material-issue',
+  'batch-record',
+  'batch-release',
+] as const;
+export type JobWorkProductionStage = (typeof JOB_WORK_PRODUCTION_STAGES)[number];
+
+export const JOB_WORK_PRODUCTION_STAGE_LABELS: Record<JobWorkProductionStage, string> = {
+  'production-orders': 'Production orders',
+  'material-issue': 'Material issue',
+  'batch-record': 'Batch record',
+  'batch-release': 'Batch release',
+};
 
 export interface JobWorkRegisterRow {
   jobWorkOrderId: string;

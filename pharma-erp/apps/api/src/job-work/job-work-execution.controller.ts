@@ -13,11 +13,16 @@ import {
 } from '@nestjs/common';
 
 import type {
+  JobWorkBatchView,
   JobWorkDispatchableBatch,
   JobWorkInvoiceView,
+  JobWorkIssuableMaterial,
+  JobWorkIssuePlan,
+  JobWorkMaterialIssueView,
   JobWorkMaterialReadiness,
   JobWorkMaterialReceiptView,
   JobWorkOrderMaterial,
+  JobWorkProductionOrderView,
   JobWorkOrderablePrincipal,
   JobWorkOrderSummary,
   JobWorkRegisterGroup,
@@ -28,12 +33,27 @@ import { SkipAudit } from '../common/audit/audit.decorators';
 
 import { CreateJobWorkDispatchDto } from './dto/job-work-dispatch.dto';
 import { CreateJobWorkOrderDto, UpdateJobWorkOrderDto } from './dto/job-work-order.dto';
-import { CreateJobWorkMaterialReceiptDto } from './dto/job-work-receipt.dto';
+import {
+  CreateJobWorkProductionOrderDto,
+  UpdateJobWorkProductionOrderDto,
+} from './dto/job-work-production.dto';
+import {
+  CreateJobWorkMaterialReceiptDto,
+  DecideJobWorkReceiptDto,
+} from './dto/job-work-receipt.dto';
+import {
+  DecideJobWorkBatchDto,
+  RecordJobWorkBatchDto,
+  RecordJobWorkIssueDto,
+  RecordJobWorkPackingDto,
+} from './dto/job-work-workflow.dto';
 import { JobWorkDispatchService } from './job-work-dispatch.service';
 import { JobWorkOrdersService } from './job-work-orders.service';
+import { JobWorkProductionService } from './job-work-production.service';
 import { JobWorkReadinessService } from './job-work-readiness.service';
 import { JobWorkReceiptsService } from './job-work-receipts.service';
 import { JobWorkRegisterService } from './job-work-register.service';
+import { JobWorkWorkflowService } from './job-work-workflow.service';
 
 /**
  * Job-work execution — US-JW-01, US-JW-02, US-JW-05 and US-JW-06.
@@ -62,9 +82,11 @@ export class JobWorkExecutionController {
   constructor(
     private readonly orders: JobWorkOrdersService,
     private readonly readinessService: JobWorkReadinessService,
+    private readonly production: JobWorkProductionService,
     private readonly receipts: JobWorkReceiptsService,
     private readonly dispatch: JobWorkDispatchService,
     private readonly register: JobWorkRegisterService,
+    private readonly workflow: JobWorkWorkflowService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -174,6 +196,213 @@ export class JobWorkExecutionController {
     @Body() dto: CreateJobWorkMaterialReceiptDto,
   ): Promise<JobWorkMaterialReceiptView> {
     return this.receipts.create(dto);
+  }
+
+  /**
+   * Says the delivery is completely recorded, and asks for approval.
+   *
+   * THE STORE'S ACTION, not the quality user's — which is why it carries the
+   * store officer's role and not the quality one. It submits; it does not
+   * approve.
+   */
+  @Post('material-receipts/:id/submit')
+  @HttpCode(HttpStatus.OK)
+  @Roles('ADMIN', 'STORE_OFFICER')
+  async submitReceipt(
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<JobWorkMaterialReceiptView> {
+    return this.receipts.submit(id);
+  }
+
+  /**
+   * The quality decision on a consignment.
+   *
+   * QUALITY_OFFICER, with ADMIN — the same pair that decides a batch release,
+   * and deliberately NOT the store officer who booked the material in. One
+   * person doing both is the thing this stage exists to prevent.
+   */
+  @Post('material-receipts/:id/decision')
+  @HttpCode(HttpStatus.OK)
+  @Roles('ADMIN', 'QUALITY_OFFICER')
+  async decideReceipt(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: DecideJobWorkReceiptDto,
+  ): Promise<JobWorkMaterialReceiptView> {
+    return this.receipts.decide(id, dto);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Job-work production orders — the module's own manufacturing record
+  //
+  // Deliberately NOT the ProductionController's routes: the two workflows are
+  // separate, and Production & Quality Gate is untouched by any of this.
+  // ---------------------------------------------------------------------------
+
+  /** What the next JWPO number would be. Reserves nothing — see peek(). */
+  @Get('production-orders/next-number')
+  @SkipAudit('Reads a number; reserves nothing.')
+  async nextProductionNumber(): Promise<{ orderNumber: string }> {
+    return this.production.previewOrderNumber();
+  }
+
+  @Get('production-orders')
+  @SkipAudit('Read-only register.')
+  async listProduction(
+    @Query('jobWorkOrderId') jobWorkOrderId?: string,
+  ): Promise<JobWorkProductionOrderView[]> {
+    return this.production.list(jobWorkOrderId);
+  }
+
+  @Get('production-orders/:id')
+  @SkipAudit('Read-only register.')
+  async findProduction(
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<JobWorkProductionOrderView> {
+    return this.production.findOne(id);
+  }
+
+  /** The approved consignments an order could be manufactured from. */
+  @Get('orders/:id/eligible-receipts')
+  @SkipAudit('Read-only lookup for the production-order form.')
+  async eligibleReceipts(
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<JobWorkMaterialReceiptView[]> {
+    return this.production.eligibleReceipts(id);
+  }
+
+  /** Production plans the batch, so PRODUCTION_OFFICER — section 18. */
+  @Post('production-orders')
+  @HttpCode(HttpStatus.CREATED)
+  @Roles('ADMIN', 'PRODUCTION_OFFICER')
+  async createProduction(
+    @Body() dto: CreateJobWorkProductionOrderDto,
+  ): Promise<JobWorkProductionOrderView> {
+    return this.production.create(dto);
+  }
+
+  @Patch('production-orders/:id')
+  @Roles('ADMIN', 'PRODUCTION_OFFICER')
+  async updateProduction(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateJobWorkProductionOrderDto,
+  ): Promise<JobWorkProductionOrderView> {
+    return this.production.update(id, dto);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Material issue — drawing the principal's material into a batch
+  // ---------------------------------------------------------------------------
+
+  @Get('material-issues/next-number')
+  @SkipAudit('Reads a number; reserves nothing.')
+  async nextIssueNumber(): Promise<{ issueNumber: string }> {
+    return this.workflow.previewIssueNumber();
+  }
+
+  @Get('material-issues')
+  @SkipAudit('Read-only register.')
+  async listIssues(
+    @Query('productionOrderId') productionOrderId?: string,
+  ): Promise<JobWorkMaterialIssueView[]> {
+    return this.workflow.listIssues(productionOrderId);
+  }
+
+  @Get('material-issues/:id')
+  @SkipAudit('Read-only register.')
+  async findIssue(@Param('id', ParseUUIDPipe) id: string): Promise<JobWorkMaterialIssueView> {
+    return this.workflow.findIssue(id);
+  }
+
+  /**
+   * What is left to draw on, drum by drum.
+   *
+   * THE RECEIPT'S OWN LINES with what has already gone out taken off — not a
+   * copy of them. This is how Pure Conversion material reaches the issue form.
+   */
+  @Get('production-orders/:id/issuable-material')
+  @SkipAudit('Read-only lookup for the issue form.')
+  async issuableMaterial(
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<JobWorkIssuableMaterial[]> {
+    return this.workflow.issuableMaterial(id);
+  }
+
+  /**
+   * What issuing this order would consume, and out of which drums.
+   *
+   * The same shape the internal issue form works from, over the principal's
+   * own consignment — so a shortage is visible before anyone dispenses.
+   */
+  @Get('production-orders/:id/issue-plan')
+  @SkipAudit('Computes nothing persistent.')
+  async issuePlan(@Param('id', ParseUUIDPipe) id: string): Promise<JobWorkIssuePlan> {
+    return this.workflow.issuePlan(id);
+  }
+
+  /** The store hands material to production, so STORE_OFFICER — section 18. */
+  @Post('material-issues')
+  @HttpCode(HttpStatus.CREATED)
+  @Roles('ADMIN', 'STORE_OFFICER', 'PRODUCTION_OFFICER')
+  async recordIssue(@Body() dto: RecordJobWorkIssueDto): Promise<JobWorkMaterialIssueView> {
+    return this.workflow.recordIssue(dto);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Batch record, and the release decision on it
+  // ---------------------------------------------------------------------------
+
+  @Get('batches/next-number')
+  @SkipAudit('Reads a number; reserves nothing.')
+  async nextBatchNumber(): Promise<{ batchNumber: string }> {
+    return this.workflow.previewBatchNumber();
+  }
+
+  @Get('batches')
+  @SkipAudit('Read-only register.')
+  async listBatches(
+    @Query('productionOrderId') productionOrderId?: string,
+  ): Promise<JobWorkBatchView[]> {
+    return this.workflow.listBatches(productionOrderId);
+  }
+
+  @Get('batches/:id')
+  @SkipAudit('Read-only register.')
+  async findBatch(@Param('id', ParseUUIDPipe) id: string): Promise<JobWorkBatchView> {
+    return this.workflow.findBatch(id);
+  }
+
+  @Post('batches')
+  @HttpCode(HttpStatus.CREATED)
+  @Roles('ADMIN', 'PRODUCTION_OFFICER')
+  async recordBatch(@Body() dto: RecordJobWorkBatchDto): Promise<JobWorkBatchView> {
+    return this.workflow.recordBatch(dto);
+  }
+
+  /** The packing figures, added to a batch already recorded. */
+  @Patch('batches/:id')
+  @Roles('ADMIN', 'PRODUCTION_OFFICER')
+  async recordPacking(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: RecordJobWorkPackingDto,
+  ): Promise<JobWorkBatchView> {
+    return this.workflow.recordPacking(id, dto);
+  }
+
+  /**
+   * The quality gate on what was made.
+   *
+   * QUALITY_OFFICER and ADMIN, matching the incoming decision above and the
+   * internal batch release — and deliberately not the production officer who
+   * recorded the batch.
+   */
+  @Post('batches/:id/release')
+  @HttpCode(HttpStatus.OK)
+  @Roles('ADMIN', 'QUALITY_OFFICER')
+  async decideBatch(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: DecideJobWorkBatchDto,
+  ): Promise<JobWorkBatchView> {
+    return this.workflow.decideBatch(id, dto);
   }
 
   // ---------------------------------------------------------------------------
