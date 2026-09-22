@@ -1,12 +1,18 @@
 'use client';
 
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import type { ProductionOrderSummary } from '@pharma-erp/types';
 import { BILLING_MODEL_LABELS } from '@pharma-erp/types';
 import { PRODUCTION_ORDER_STATUS_LABELS, PRODUCTION_ORDER_STATUSES } from '@pharma-erp/types';
 
 import { OrderStatusBadge, Quantity, ReleaseBadge } from './shared';
-import { RegisterPager, RegisterToolbar, useRegisterView } from './register-toolbar';
+import {
+  createdFilters,
+  matchesCreated,
+  RegisterPager,
+  RegisterToolbar,
+  useRegisterView,
+} from './register-toolbar';
 
 /** Work orders, searchable by number, product or batch, and filtered by status. */
 export function OrderTable({ orders }: { orders: ProductionOrderSummary[] }) {
@@ -36,7 +42,22 @@ export function OrderTable({ orders }: { orders: ProductionOrderSummary[] }) {
     [],
   );
 
-  const view = useRegisterView({ rows: orders, searchText, matchesFilter });
+  const matchesField = useCallback(
+    (order: ProductionOrderSummary, name: string, value: string) =>
+      matchesCreated(order.createdAt, order.createdBy, name, value),
+    [],
+  );
+
+  // The people who actually appear in this register, sorted for reading.
+  const people = useMemo(
+    () =>
+      [
+        ...new Set(orders.map((order) => order.createdBy).filter((name): name is string => !!name)),
+      ].sort((a, b) => a.localeCompare(b)),
+    [orders],
+  );
+
+  const view = useRegisterView({ rows: orders, searchText, matchesFilter, matchesField });
 
   return (
     <>
@@ -51,6 +72,10 @@ export function OrderTable({ orders }: { orders: ProductionOrderSummary[] }) {
           value: status,
           label: PRODUCTION_ORDER_STATUS_LABELS[status],
         }))}
+        fields={createdFilters(people)}
+        fieldValues={view.fieldValues}
+        onField={view.setField}
+        onClearFields={view.clearFields}
         shown={view.filtered.length}
         total={view.total}
       />

@@ -67,10 +67,12 @@ const PERCENTAGE = /^(100(\.0{1,2})?|\d{1,2}(\.\d{1,2})?)$/;
 const MONEY = /^\d{1,10}(\.\d{1,2})?$/;
 
 export class CreateItemDto {
-  @IsString()
-  @MaxLength(64)
-  @Matches(/^\S(.*\S)?$/, { message: 'code must not start or end with whitespace' })
-  code!: string;
+  // NO `code`. It is allocated by the server as RM-00001 from a per-category
+  // counter — see nextItemCode — so accepting one here would let a caller pick
+  // a number out of the series, or collide with one about to be handed out.
+  //
+  // It used to be typed, and the register ended up holding "pcm-500",
+  // "PCM- 500", "PCM 500" and "PCM-500" as four separate items.
 
   @IsString()
   @MaxLength(255)

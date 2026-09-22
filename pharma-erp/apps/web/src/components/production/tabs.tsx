@@ -50,6 +50,11 @@ export function ProductionTabs({
               }`}
             >
               {tab.label}
+              {/* OPTIONAL, and the Production steps deliberately pass none: a
+                  count here repeated what the register below already states —
+                  "10 dispensing records" under its own heading — and two counts
+                  for one list invite a comparison to check they agree. Job work
+                  does use it, where the tab is the only place a count appears. */}
               {tab.badge && (
                 <span
                   className={`ml-2 rounded-full px-1.5 py-0.5 text-[11px] tabular-nums ${

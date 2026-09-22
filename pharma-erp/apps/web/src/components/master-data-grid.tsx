@@ -286,6 +286,44 @@ export function Grid<Row>({
   const [pageSize, setPageSize] = useState<number>(DEFAULT_PAGE_SIZE);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  /**
+   * The register's own filters, plus "Created by".
+   *
+   * BUILT FROM THE ROWS, not from a list of users. The register holds every
+   * row it can show, so the distinct creators among them are exactly the
+   * answers worth offering — and a filter that listed every user in the
+   * company would offer names that match nothing here.
+   *
+   * Sorted, because the order rows arrive in is creation order and a picklist
+   * of names is read alphabetically.
+   */
+  const allFilters = useMemo(() => {
+    const names = [
+      ...new Set(
+        rows
+          .map((row) => (row as { createdBy?: string | null }).createdBy)
+          .filter((name): name is string => !!name),
+      ),
+    ].sort((a, b) => a.localeCompare(b));
+
+    // SHOWN EVEN WHEN NOBODY IS NAMED. It used to be dropped when no row had a
+    // creator, which meant a register full of records entered before the column
+    // existed simply had no "Created by" — indistinguishable from the feature
+    // not being built. An empty picklist that says so is the honest answer.
+    return [
+      ...(filters ?? []),
+      {
+        name: 'createdBy',
+        label: 'Created by',
+        // Searchable, because this list grows with the company: a plain
+        // dropdown is fine for three users and a scroll for thirty.
+        kind: 'searchable' as const,
+        options: names.map((name) => ({ value: name, label: name })),
+        allLabel: names.length > 0 ? 'All Users' : 'Not recorded on any row yet',
+      },
+    ];
+  }, [filters, rows]);
+
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
 
@@ -297,10 +335,16 @@ export function Grid<Row>({
     if (!needle && active.length === 0) return rows;
 
     return rows.filter((row) => {
-      if (matchesField) {
-        for (const [name, value] of active) {
-          if (!matchesField(row, name, value)) return false;
+      for (const [name, value] of active) {
+        // Handled here rather than in six identical per-register predicates:
+        // every summary type carries `createdBy` as a plain name, so the test
+        // is the same everywhere and nothing is gained by repeating it.
+        if (name === 'createdBy') {
+          if ((row as { createdBy?: string | null }).createdBy !== value) return false;
+          continue;
         }
+
+        if (matchesField && !matchesField(row, name, value)) return false;
       }
 
       if (!needle) return true;
@@ -342,7 +386,7 @@ export function Grid<Row>({
           // page 4 of a result that has one page.
           setPage(1);
         }}
-        fields={filters ?? []}
+        fields={allFilters}
         values={fieldValues}
         onField={(name, value) => {
           setFieldValues((current) => ({ ...current, [name]: value }));
@@ -534,6 +578,38 @@ function trimQuantity(value: string): string {
 // Item / Product — real rows, from GET /production/items
 // ---------------------------------------------------------------------------
 
+/**
+ * "Created" — the same two columns on every register.
+ *
+ * Generic over the row, because all six summary types carry `createdAt` and
+ * `createdBy`; one definition means the date format and the em-dash for an
+ * unattributed row cannot drift between six copies.
+ *
+ * `createdBy` is null for a record entered before the column existed, and for
+ * one whose creating user has been hard-deleted — which the schema prevents,
+ * so in practice it means "before this was recorded". A dash says that without
+ * inventing a name.
+ */
+function createdColumns<
+  Row extends { createdAt: string; createdBy: string | null },
+>(): readonly GridColumn<Row>[] {
+  return [
+    {
+      key: 'createdAt',
+      label: 'Created',
+      // Sliced to the calendar day. `createdAt` is a full ISO timestamp and
+      // the time of entry is not what anybody reads a register for.
+      render: (row) => row.createdAt.slice(0, 10),
+    },
+    {
+      key: 'createdBy',
+      label: 'Created by',
+      render: (row) =>
+        row.createdBy ? <span className="text-slate-700">{row.createdBy}</span> : <Blank />,
+    },
+  ];
+}
+
 const ITEM_COLUMNS: readonly GridColumn<ItemSummary>[] = [
   { key: 'code', label: 'Code', render: (item) => <Code>{item.code}</Code> },
   {
@@ -655,6 +731,7 @@ const ITEM_COLUMNS: readonly GridColumn<ItemSummary>[] = [
         </>
       ),
   },
+  ...createdColumns<ItemSummary>(),
 ];
 
 /**
@@ -873,6 +950,43 @@ function RowActions({
 }
 
 /**
+ * "Created date" — the same filter on every register.
+ *
+ * Defined once and spread into each register's filters, so the wording cannot
+ * drift between six copies. It writes two values, `createdFrom` and
+ * `createdTo`; see `dateRangeKeys` in list-filters.
+ */
+const CREATED_FILTER: FilterField = {
+  name: 'created',
+  label: 'Created date',
+  kind: 'dateRange',
+};
+
+/**
+ * Whether a record was created inside the range.
+ *
+ * COMPARED AS CALENDAR DAYS, not instants. `createdAt` is an ISO timestamp and
+ * the inputs give YYYY-MM-DD, so comparing them directly would put a record
+ * created at 14:30 outside a To of its own date — the whole day is meant, not
+ * the midnight at the start of it. Slicing the timestamp to its date makes
+ * both ends inclusive, which is what "from the 1st to the 5th" means to
+ * everyone who is not a computer.
+ *
+ * The slice takes the date in UTC, which is how the API sends it. A user east
+ * of UTC filtering the last few hours of their day may see a record fall on
+ * the previous date; that is the same convention the rest of the registers
+ * already display, so the filter and the column agree.
+ */
+function matchesCreated(createdAt: string, name: string, value: string): boolean {
+  const day = createdAt.slice(0, 10);
+
+  if (name === 'createdFrom') return day >= value;
+  if (name === 'createdTo') return day <= value;
+
+  return true;
+}
+
+/**
  * Turns one of the shared label maps into filter options.
  *
  * The maps are the single source for what each code is CALLED, so building the
@@ -886,9 +1000,12 @@ function optionsFrom(labels: Record<string, string>) {
 const ITEM_FILTERS: readonly FilterField[] = [
   {
     name: 'type',
-    label: 'Item type',
+    // "Category" is what the Item form calls this field, and a filter that
+    // names it differently from the control that sets it reads as a second,
+    // unrelated thing to choose.
+    label: 'Category',
     options: optionsFrom(ITEM_TYPE_LABELS),
-    allLabel: 'Any type',
+    allLabel: 'Any category',
   },
   {
     name: 'schedule',
@@ -896,11 +1013,13 @@ const ITEM_FILTERS: readonly FilterField[] = [
     options: optionsFrom(SCHEDULE_CLASSIFICATION_LABELS),
     allLabel: 'Any schedule',
   },
+  CREATED_FILTER,
 ];
 
 function matchesItemField(item: ItemSummary, name: string, value: string): boolean {
   if (name === 'type') return item.type === value;
   if (name === 'schedule') return item.scheduleClassification === value;
+  if (name.startsWith('created')) return matchesCreated(item.createdAt, name, value);
 
   return true;
 }
@@ -1023,6 +1142,7 @@ const BOM_COLUMNS: readonly GridColumn<BomView>[] = [
       ),
   },
   { key: 'from', label: 'Effective', align: 'right', render: (bom) => bom.effectiveFrom },
+  ...createdColumns<BomView>(),
 ];
 
 /**
@@ -1033,17 +1153,19 @@ const BOM_COLUMNS: readonly GridColumn<BomView>[] = [
 const BOM_FILTERS: readonly FilterField[] = [
   {
     name: 'version',
-    label: 'Version',
+    label: 'Status',
     options: [
       { value: 'ACTIVE', label: 'Active only' },
       { value: 'SUPERSEDED', label: 'Superseded only' },
     ],
-    allLabel: 'Any version',
+    allLabel: 'Any status',
   },
+  CREATED_FILTER,
 ];
 
 function matchesBomField(bom: BomView, name: string, value: string): boolean {
   if (name === 'version') return value === 'ACTIVE' ? bom.isActive : !bom.isActive;
+  if (name.startsWith('created')) return matchesCreated(bom.createdAt, name, value);
 
   return true;
 }
@@ -1221,6 +1343,7 @@ const PARTY_COLUMNS: readonly GridColumn<PartySummary>[] = [
     label: 'Address',
     render: (party) => (party.address ? <Truncated text={party.address} /> : <Blank />),
   },
+  ...createdColumns<PartySummary>(),
 ];
 
 /**
@@ -1335,7 +1458,7 @@ function PartyDocumentsCell({ party }: { party: PartySummary }) {
 const PARTY_FILTERS: readonly FilterField[] = [
   {
     name: 'partyType',
-    label: 'Party type',
+    label: 'Type',
     options: optionsFrom(PARTY_TYPE_LABELS),
     allLabel: 'Any type',
   },
@@ -1345,11 +1468,13 @@ const PARTY_FILTERS: readonly FilterField[] = [
     options: optionsFrom(PARTY_STATUS_LABELS),
     allLabel: 'Any status',
   },
+  CREATED_FILTER,
 ];
 
 function matchesPartyField(party: PartySummary, name: string, value: string): boolean {
   if (name === 'partyType') return party.partyType === value;
   if (name === 'status') return party.status === value;
+  if (name.startsWith('created')) return matchesCreated(party.createdAt, name, value);
 
   return true;
 }
@@ -1504,6 +1629,7 @@ const LICENCE_COLUMNS: readonly GridColumn<LicenceSummary>[] = [
     label: 'Notes',
     render: (licence) => (licence.notes ? <Truncated text={licence.notes} /> : <Blank />),
   },
+  ...createdColumns<LicenceSummary>(),
 ];
 
 /**
@@ -1598,11 +1724,13 @@ const LICENCE_FILTERS: readonly FilterField[] = [
     options: optionsFrom(LICENCE_STATUS_LABELS),
     allLabel: 'Any status',
   },
+  CREATED_FILTER,
 ];
 
 function matchesLicenceField(licence: LicenceSummary, name: string, value: string): boolean {
   if (name === 'licenceType') return licence.licenceType === value;
   if (name === 'status') return licence.status === value;
+  if (name.startsWith('created')) return matchesCreated(licence.createdAt, name, value);
 
   return true;
 }
@@ -1819,6 +1947,7 @@ const AGREEMENT_COLUMNS: readonly GridColumn<JobWorkAgreementSummary>[] = [
     label: 'Notes',
     render: (agreement) => (agreement.notes ? <Truncated text={agreement.notes} /> : <Blank />),
   },
+  ...createdColumns<JobWorkAgreementSummary>(),
 ];
 
 const AGREEMENT_FILTERS: readonly FilterField[] = [
@@ -1834,6 +1963,7 @@ const AGREEMENT_FILTERS: readonly FilterField[] = [
     options: optionsFrom(AGREEMENT_STATUS_LABELS),
     allLabel: 'Any status',
   },
+  CREATED_FILTER,
 ];
 
 function matchesAgreementField(
@@ -1843,6 +1973,7 @@ function matchesAgreementField(
 ): boolean {
   if (name === 'billingModel') return agreement.billingModel === value;
   if (name === 'status') return agreement.status === value;
+  if (name.startsWith('created')) return matchesCreated(agreement.createdAt, name, value);
 
   return true;
 }
@@ -2023,6 +2154,7 @@ const PACKAGING_COLUMNS: readonly GridColumn<PackagingRequirementView>[] = [
     label: 'Notes',
     render: (row) => (row.notes ? <Truncated text={row.notes} /> : <Blank />),
   },
+  ...createdColumns<PackagingRequirementView>(),
 ];
 
 const PACKAGING_FILTERS: readonly FilterField[] = [
@@ -2035,6 +2167,7 @@ const PACKAGING_FILTERS: readonly FilterField[] = [
     ],
     allLabel: 'Any status',
   },
+  CREATED_FILTER,
 ];
 
 function matchesPackagingField(
@@ -2043,6 +2176,7 @@ function matchesPackagingField(
   value: string,
 ): boolean {
   if (name === 'active') return value === 'ACTIVE' ? row.isActive : !row.isActive;
+  if (name.startsWith('created')) return matchesCreated(row.createdAt, name, value);
 
   return true;
 }

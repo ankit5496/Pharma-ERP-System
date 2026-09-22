@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -23,6 +24,7 @@ import type {
   ProductionOrderSummary,
   WorkOrderFeasibility,
 } from '@pharma-erp/types';
+import { ITEM_TYPES, type ItemType } from '@pharma-erp/types';
 
 import { Roles } from '../auth/auth.decorators';
 import { Auditable, SkipAudit } from '../common/audit/audit.decorators';
@@ -85,6 +87,22 @@ export class ProductionController {
    * appear on every document that cites it, so who added it and when is part
    * of the record.
    */
+  /**
+   * The code the next item of a category would take, so the form can show it
+   * before saving. A prediction; nothing is reserved.
+   *
+   * Declared before any `items/:id` route so the literal segment matches first.
+   */
+  @Get('items/next-code')
+  @SkipAudit('Reads a number; reserves nothing.')
+  async nextItemCode(@Query('type') type: string): Promise<{ code: string }> {
+    if (!ITEM_TYPES.includes(type as ItemType)) {
+      throw new BadRequestException('Choose a category before asking for its next code.');
+    }
+
+    return this.production.previewItemCode(type as ItemType);
+  }
+
   @Post('items')
   @HttpCode(HttpStatus.CREATED)
   @Roles('ADMIN', 'PRODUCTION_OFFICER', 'QUALITY_OFFICER')

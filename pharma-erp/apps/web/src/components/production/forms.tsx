@@ -108,6 +108,23 @@ const FIELD =
 
 const LABEL = 'block text-xs font-medium uppercase tracking-wide text-slate-600';
 
+/**
+ * An asterisk carries the meaning; the text makes it audible.
+ *
+ * The same marker the master-data form kit uses, repeated here rather than
+ * imported: these forms build their own labels, and a required field that
+ * looks different between two sections of the application is one somebody has
+ * to learn twice.
+ */
+function RequiredMark() {
+  return (
+    <span className="text-red-600">
+      {' '}
+      *<span className="sr-only"> (required)</span>
+    </span>
+  );
+}
+
 const BUTTON =
   'rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400';
 
@@ -304,7 +321,11 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
     [products],
   );
 
-  const [productId, setProductId] = useState(products[0]?.id ?? '');
+  // EMPTY, not the first product. Opening a form with a product already
+  // chosen means the feasibility grid below is answering a question nobody
+  // asked, and a work order raised in haste is raised against whatever
+  // happened to sort first.
+  const [productId, setProductId] = useState('');
   const [quantity, setQuantity] = useState('');
   const [feasibility, setFeasibility] = useState<{
     checking: boolean;
@@ -405,13 +426,13 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
               the item register grows without limit, and the product somebody
               is raising a work order for is often one just added.
 
-              `placeholder={null}` because this field has no empty state — the
-              form opens with the first product already chosen, and the
-              feasibility check below is about whichever one that is. */}
+              It opens on NO product. `emptyLabel` gives it a row to sit on and
+              a word for the state — without one the box would be blank with no
+              way back to it once a product had been picked. */}
           <SearchableSelect
             id="productId"
             options={productOptions}
-            required
+            emptyLabel="--None--"
             value={productId}
             onChange={setProductId}
           />
@@ -450,7 +471,10 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
 
       <FeasibilityGrid state={feasibility} />
 
-      <button type="submit" disabled={pending || blockedByStock} className={BUTTON}>
+      {/* `!productId` because the picker now opens on nothing: the API would
+          refuse an empty one anyway, and a round trip to be told so is a worse
+          answer than a button that is plainly not ready yet. */}
+      <button type="submit" disabled={pending || !productId || blockedByStock} className={BUTTON}>
         {pending ? 'Raising…' : blockedByStock ? 'Not enough stock' : 'Raise work order'}
       </button>
     </form>
@@ -490,8 +514,9 @@ export function IssueMaterialForm({
   /** Every work order awaiting material. Never empty — the caller checks. */
   orders: ProductionOrderSummary[];
   /**
-   * The plan for `orders.at(-1)`, computed by the server so the form opens with
-   * something on screen. Null when that read failed; the form then fetches it.
+   * The plan for `orders[0]` — the NEWEST — computed by the server so the form
+   * opens with something on screen. Null when that read failed; the form then
+   * fetches it.
    */
   initialPlan?: MaterialIssuePlan | null;
   /** Stock on hand, for the lot pickers. Only USABLE lots can be dispensed. */
@@ -501,9 +526,16 @@ export function IssueMaterialForm({
 
   useReportOnSaved(state);
 
-  // Oldest first: the one most likely to be dispensed next, and the one the
-  // server preloaded a plan for.
-  const [orderId, setOrderId] = useState(orders.at(-1)?.id ?? '');
+  // THE NEWEST work order, which the orders endpoint returns first. It used to
+  // open on `orders.at(-1)` — the oldest — on the reasoning that the longest-
+  // waiting order is the one to dispense next. In practice somebody raises a
+  // work order and goes straight to dispensing against it, so the one just
+  // created is the one meant.
+  //
+  // Must stay in step with the plan the panel preloads, which is computed for
+  // the same order; picking a different one here would show a plan for an
+  // order the form is not on.
+  const [orderId, setOrderId] = useState(orders[0]?.id ?? '');
 
   const [planState, setPlanState] = useState<{
     loading: boolean;
@@ -1006,12 +1038,17 @@ export function RecordBatchForm({ orders }: { orders: ProductionOrderSummary[] }
   const effectiveDate = manufacturedOn || new Date().toISOString().slice(0, 10);
   const expiry = order ? previewExpiry(effectiveDate, order.product.shelfLifeMonths) : null;
 
+  // Reached whenever the button is pressed with nothing waiting — the register
+  // offers it unconditionally, so this is the explanation rather than a case
+  // that should never happen.
   if (orders.length === 0) {
     return (
-      <p className="px-6 py-5 text-sm text-slate-600">
-        No work order is waiting for a batch record. Issue material against an order first — a batch
-        record with no traceable inputs is not a batch record.
-      </p>
+      <div className="px-6 py-5">
+        <p className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          There is no material issued record. A batch record traces what went into the batch, so
+          material has to be dispensed against a work order before one can be opened.
+        </p>
+      </div>
     );
   }
 
@@ -1045,6 +1082,7 @@ export function RecordBatchForm({ orders }: { orders: ProductionOrderSummary[] }
         <div>
           <label htmlFor="actualQuantity" className={LABEL}>
             Actual quantity manufactured
+            <RequiredMark />
           </label>
           <input
             id="actualQuantity"
@@ -1185,6 +1223,7 @@ export function RecordPackingForm({
         <div>
           <label htmlFor={`packed-${batchId}`} className={LABEL}>
             Finished pack quantity
+            <RequiredMark />
           </label>
           <input
             id={`packed-${batchId}`}

@@ -76,6 +76,10 @@ export interface PackagingLineView {
 
 export interface PackagingRequirementView {
   id: string;
+  /** When the record was created — the register sorts on it and filters by it. */
+  createdAt: string;
+  /** Who entered it, by name. Null for a record created before this was kept. */
+  createdBy: string | null;
   product: ItemSummary;
   packVariant: string;
   /** How many units of the product one pack holds. Decimal as a string. */

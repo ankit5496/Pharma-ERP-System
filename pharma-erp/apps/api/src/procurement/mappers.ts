@@ -78,6 +78,8 @@ type ItemRow = {
 
 export function toItemSummary(row: ItemRow): ItemSummary {
   return {
+    // Filled in by the register that lists these; see PeopleService.
+    createdBy: null,
     id: row.id,
     createdAt: row.createdAt.toISOString(),
     code: row.code,
@@ -187,6 +189,8 @@ export function toPartySummary(row: PartyRow): PartySummary {
     // Always 0 here: Procure-to-Pay resolves a party as a vendor, and documents
     // are a customer's paperwork. The master-data listing is what counts them.
     documentCount: 0,
+    // Filled in by the register that lists these; see PeopleService.
+    createdBy: null,
     id: row.id,
     createdAt: row.createdAt.toISOString(),
     code: row.code,

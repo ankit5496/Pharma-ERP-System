@@ -2,6 +2,8 @@
 
 import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 
+import { SearchableSelect } from '@/components/searchable-select';
+
 /**
  * A Filter button and its collapsible panel, for a CLIENT-SIDE list.
  *
@@ -34,10 +36,27 @@ export interface FilterField {
   /** Key into the values object. */
   name: string;
   label: string;
-  options: readonly { value: string; label: string }[];
-  /** Shown as the empty choice — "Any status", "Anyone". */
-  allLabel: string;
+  /**
+   * What the control is. 'select' is the default and the common case.
+   *
+   * 'searchable' is for a list that grows with the data — every user who has
+   * created a record, every vendor — where a plain dropdown becomes a scroll.
+   * A fixed enum stays a 'select': a search box over four statuses is
+   * furniture.
+   *
+   * 'dateRange' renders two date inputs and writes TWO entries — `<name>From`
+   * and `<name>To` — because a range is two answers, and squeezing them into
+   * one string would mean parsing it back out at every call site.
+   */
+  kind?: 'select' | 'searchable' | 'dateRange';
+  /** Required for a 'select' or 'searchable'; ignored by a 'dateRange'. */
+  options?: readonly { value: string; label: string }[];
+  /** Shown as the empty choice — "Any status", "All Users". */
+  allLabel?: string;
 }
+
+/** The two keys a `dateRange` field writes into the values object. */
+export const dateRangeKeys = (name: string) => [`${name}From`, `${name}To`] as const;
 
 /** Nothing chosen: the value every field starts at and returns to. */
 export const ANY = '';
@@ -83,8 +102,16 @@ export function ListFilters({
   const panelId = useId();
   const [open, setOpen] = useState(false);
 
+  // A date range counts as ONE filter however many of its two ends are set:
+  // "created after the 1st" is one narrowing, and showing 2 on the badge for a
+  // single range would overstate how much is being hidden.
   const activeCount = useMemo(
-    () => fields.filter((field) => (values[field.name] ?? ANY) !== ANY).length,
+    () =>
+      fields.filter((field) =>
+        field.kind === 'dateRange'
+          ? dateRangeKeys(field.name).some((key) => (values[key] ?? ANY) !== ANY)
+          : (values[field.name] ?? ANY) !== ANY,
+      ).length,
     [fields, values],
   );
 
@@ -176,16 +203,36 @@ export function ListFilters({
           className={`${open ? 'block' : 'hidden'} border-b border-slate-200 bg-slate-50/60 px-5 py-4`}
         >
           <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
-            {fields.map((field) => (
-              <Select
-                key={field.name}
-                label={field.label}
-                value={values[field.name] ?? ANY}
-                options={field.options}
-                allLabel={field.allLabel}
-                onChange={(value) => onChange(field.name, value)}
-              />
-            ))}
+            {fields.map((field) =>
+              field.kind === 'dateRange' ? (
+                <DateRange
+                  key={field.name}
+                  label={field.label}
+                  from={values[`${field.name}From`] ?? ANY}
+                  to={values[`${field.name}To`] ?? ANY}
+                  onFrom={(value) => onChange(`${field.name}From`, value)}
+                  onTo={(value) => onChange(`${field.name}To`, value)}
+                />
+              ) : field.kind === 'searchable' ? (
+                <SearchableFilter
+                  key={field.name}
+                  label={field.label}
+                  value={values[field.name] ?? ANY}
+                  options={field.options ?? []}
+                  allLabel={field.allLabel ?? 'Any'}
+                  onChange={(value) => onChange(field.name, value)}
+                />
+              ) : (
+                <Select
+                  key={field.name}
+                  label={field.label}
+                  value={values[field.name] ?? ANY}
+                  options={field.options ?? []}
+                  allLabel={field.allLabel ?? 'Any'}
+                  onChange={(value) => onChange(field.name, value)}
+                />
+              ),
+            )}
           </div>
 
           {activeCount > 0 && (
@@ -202,6 +249,123 @@ export function ListFilters({
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * Two date inputs, From and To, as one filter.
+ *
+ * BOTH ENDS ARE OPTIONAL and mean what they say on their own: From alone is
+ * "on or after", To alone is "on or before", neither is "any time". That is
+ * why the two are separate values rather than one range object — a half-filled
+ * range is the normal case, not an incomplete one.
+ *
+ * `max` and `min` cross-bound the pair, so the browser refuses a To earlier
+ * than the From before anything is filtered and a range that can only ever
+ * match nothing cannot be entered.
+ */
+function DateRange({
+  label,
+  from,
+  to,
+  onFrom,
+  onTo,
+}: {
+  label: string;
+  from: string;
+  to: string;
+  onFrom: (value: string) => void;
+  onTo: (value: string) => void;
+}) {
+  const fromId = useId();
+  const toId = useId();
+
+  const field =
+    'mt-1 h-10 w-full rounded-md border border-slate-300 bg-white px-2 text-sm text-slate-900 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900';
+
+  return (
+    // Spans two cells of the four-column grid, because it holds two controls:
+    // squeezed into one, the date inputs are narrower than the dates in them.
+    <div className="sm:col-span-2">
+      <span className="block text-xs font-medium text-slate-600">{label}</span>
+      <div className="flex items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <label htmlFor={fromId} className="sr-only">
+            {label} from
+          </label>
+          <input
+            id={fromId}
+            type="date"
+            value={from}
+            max={to || undefined}
+            onChange={(event) => onFrom(event.target.value)}
+            className={field}
+          />
+        </div>
+        <span aria-hidden="true" className="mt-1 text-xs text-slate-400">
+          to
+        </span>
+        <div className="min-w-0 flex-1">
+          <label htmlFor={toId} className="sr-only">
+            {label} to
+          </label>
+          <input
+            id={toId}
+            type="date"
+            value={to}
+            min={from || undefined}
+            onChange={(event) => onTo(event.target.value)}
+            className={field}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A filter you can type into, for a list that grows with the data.
+ *
+ * The same lookup the forms use, so a picklist behaves identically whether it
+ * is choosing a value to save or narrowing a register. Labelled the way
+ * `Select` is, so the two line up in the panel's grid.
+ *
+ * `emptyLabel` carries `allLabel` because they are the same idea under two
+ * names: the row that means "no choice made", which for a filter is "do not
+ * narrow by this".
+ */
+function SearchableFilter({
+  label,
+  value,
+  options,
+  allLabel,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: readonly { value: string; label: string }[];
+  allLabel: string;
+  onChange: (value: string) => void;
+}) {
+  const id = useId();
+
+  return (
+    <div>
+      <label htmlFor={id} className="block text-xs font-medium text-slate-600">
+        {label}
+      </label>
+      <div className="mt-1">
+        <SearchableSelect
+          id={id}
+          options={options}
+          value={value}
+          onChange={onChange}
+          emptyLabel={allLabel}
+          placeholder="Type to search…"
+          className="field h-10 w-full"
+        />
+      </div>
+    </div>
   );
 }
 

@@ -24,6 +24,32 @@ export const ITEM_TYPES = [
 export type ItemType = (typeof ITEM_TYPES)[number];
 
 /**
+ * The code prefix each category takes, e.g. RM-00001.
+ *
+ * The code is ALLOCATED BY THE SERVER, not typed. It used to be free text, and
+ * the register ended up holding "pcm-500", "PCM- 500", "PCM 500" and "PCM-500"
+ * as four different items — plus bare numbers like 1001 and 1003 carrying no
+ * category at all. A code that appears on every document citing the item is
+ * not something to leave to typing.
+ *
+ * The prefixes follow what the data already used, so a new RM- code reads the
+ * same as the ones entered by hand before this.
+ *
+ * Declared here rather than in the API because the form shows the code before
+ * it is saved, and a second copy of this map is how the preview comes to
+ * disagree with what is actually allocated.
+ */
+export const ITEM_CODE_PREFIXES: Record<ItemType, string> = {
+  RAW_MATERIAL: 'RM',
+  PACKING_MATERIAL: 'PM',
+  SEMI_FINISHED: 'SF',
+  FINISHED_GOOD: 'FG',
+};
+
+/** Digits in the serial part of an item code: RM-00001. */
+export const ITEM_CODE_DIGITS = 5;
+
+/**
  * Unit of measure is FREE TEXT on the shared item master, not an enum.
  *
  * Looser than this module would have chosen — "kg" and "Kg" can both be
@@ -218,6 +244,8 @@ export interface ItemSummary {
    * for the forms, which are where somebody reaches for what they just added.
    */
   createdAt: string;
+  /** Who entered it, by name. Null for a record created before this was kept. */
+  createdBy: string | null;
   type: ItemType;
   /** Free text on the shared schema. */
   uom: string;
@@ -275,6 +303,8 @@ export interface PartySummary {
   name: string;
   /** See ItemSummary.createdAt — the newest few, for the forms' picklists. */
   createdAt: string;
+  /** Who entered it, by name. Null for a record created before this was kept. */
+  createdBy: string | null;
   partyType: PartyType;
   gstin: string | null;
   drugLicenceNumber: string | null;
