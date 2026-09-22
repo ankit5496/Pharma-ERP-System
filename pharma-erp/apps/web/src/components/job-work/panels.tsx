@@ -4,15 +4,23 @@ import {
   BILLING_MODEL_LABELS,
   CONVERSION_RATE_BASIS_LABELS,
   JOB_WORK_INVOICE_BASIS_LABELS,
+  JOB_WORK_PRODUCTION_STAGES,
+  JOB_WORK_PRODUCTION_STAGE_LABELS,
+  JOB_WORK_RECEIPT_STATUSES,
+  JOB_WORK_RECEIPT_STATUS_LABELS,
   STOCK_OWNERSHIP_LABELS,
   type JobWorkAgreementSummary,
+  type JobWorkBatchView,
   type JobWorkDispatchableBatch,
   type JobWorkInvoiceView,
-  type JobWorkMaterialReadiness,
+  type JobWorkIssuableMaterial,
+  type JobWorkIssuePlan,
+  type JobWorkMaterialIssueView,
   type JobWorkMaterialReceiptView,
   type JobWorkOrderablePrincipal,
-  type JobWorkOrderMaterial,
   type JobWorkOrderSummary,
+  type JobWorkProductionOrderView,
+  type JobWorkProductionStage,
   type JobWorkRegisterGroup,
 } from '@pharma-erp/types';
 
@@ -26,7 +34,6 @@ import {
   Panel,
   Pill,
   Qty,
-  RecordLink,
   StatusPill,
   TableWrap,
   Td,
@@ -36,7 +43,7 @@ import {
 } from '@/components/procurement/ui';
 import Link from 'next/link';
 
-import { apiFetch } from '@/lib/api';
+import { apiFetch, type ApiResult } from '@/lib/api';
 import { FilterButton, FilterPanel, SearchBox } from '@/components/procurement/filter-bar';
 
 import {
@@ -44,9 +51,40 @@ import {
   CreateJobWorkOrderButton,
   CreateJobWorkReceiptButton,
   EditJobWorkOrderButton,
-  RaiseJobWorkProductionButton,
+  JobWorkQualityCheckRowActions,
+  JobWorkProductionRowActions,
+  SendForApprovalButton,
   ViewJobWorkReceiptButton,
 } from './forms';
+// The Production & Quality Gate register, drawer, confirmation dialog and
+// sub-tab switcher, imported and used unchanged. That module is not modified by
+// any of this — see production-tables.tsx for why they are reused rather than
+// reimplemented.
+import { ProductionRegister } from '@/components/production/register';
+import {
+  EmptyState as ProductionEmptyState,
+  LoadError,
+  Panel as ProductionPanel,
+} from '@/components/production/shared';
+import { ProductionTabs } from '@/components/production/tabs';
+import { requireSession } from '@/lib/session';
+
+import {
+  IssueJobWorkMaterialForm,
+  JobWorkReleaseDecisionForm,
+  RaiseJobWorkProductionOrderForm,
+  RecordJobWorkBatchForm,
+  RecordJobWorkPackingForm,
+} from './production-forms';
+import {
+  JobWorkBatchRecords,
+  JobWorkDecidedTable,
+  JobWorkIssueTable,
+  JobWorkOrderTable,
+  JobWorkPendingReleaseList,
+  JobWorkReceivedMaterialTable,
+  JobWorkReleasedTable,
+} from './production-tables';
 
 /**
  * Job Work — the screens behind the fourth workflow tab.
@@ -59,25 +97,29 @@ import {
  * US-JW-03 and US-JW-04 say in as many words that no new record and no new
  * quality gate may be created.
  *
- * ONE VOCABULARY RUNS THROUGH ALL OF THEM (section 17): a value the system
- * decided carries a badge saying which kind of decision it was, so nobody has
- * to guess which fields they may change.
+ * A value the system decided is shown rather than hidden (section 17), so
+ * nobody has to guess what a record holds. Section 17 also asked for a badge
+ * naming the kind of decision — SYSTEM-DERIVED and the rest — and those were
+ * withdrawn at the product owner's request. The values are unchanged; only the
+ * technical label describing them is gone.
  */
 
-/** A system-decided value, shown with the badge that says why it is fixed. */
-function DerivedTag({
-  children,
-  badge,
-}: {
-  children: React.ReactNode;
-  badge: 'AUTO-INHERITED' | 'SYSTEM-DERIVED' | 'AUTO-DERIVED' | 'SYSTEM-SET' | 'READ-ONLY';
-}) {
+/**
+ * A system-decided value in a table cell.
+ *
+ * Named for what it holds rather than for the badge it used to carry: the
+ * SYSTEM-DERIVED / AUTO-INHERITED markers were withdrawn at the product
+ * owner's request, since a register is read for what the values are and not
+ * for how the system arrived at them.
+ *
+ * Kept as a component because it is the one place these cells' spacing and
+ * type size are decided, and because the values inside it are still derived —
+ * only the label describing that is gone.
+ */
+function DerivedValue({ children }: { children: React.ReactNode }) {
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5">
       <span className="text-sm text-slate-800">{children}</span>
-      <span className="rounded border border-slate-300 bg-slate-50 px-1 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-slate-500">
-        {badge}
-      </span>
     </span>
   );
 }
@@ -102,6 +144,17 @@ const PATH: Record<string, { label: string; tone: 'warn' | 'info'; detail: strin
 
 /** The query as Next hands it over, once awaited. */
 export type StepQuery = Record<string, string | string[] | undefined>;
+
+/**
+ * An authenticated read, with the timeout the Production panels use.
+ *
+ * The caller’s own bearer token, so the API’s role checks apply to the read as
+ * well as to the write: a step a role cannot read renders the refusal rather
+ * than an empty table, because an empty table is a claim and a wrong claim is
+ * worse than a visible gap.
+ */
+const get = <T,>(path: string): Promise<ApiResult<T>> =>
+  apiFetch<T>(path, { authenticated: true, timeoutMs: 20_000 });
 
 /** One value for a key, ignoring the repeated-parameter case nothing writes. */
 const param = (query: StepQuery, key: string): string | undefined =>
@@ -232,7 +285,7 @@ export async function PrincipalsPanel(query: StepQuery) {
       <FilterPanel
         principals={principalOptions(all, (row) => row.createdAt)}
         billingModels={BILLING_MODEL_OPTIONS}
-        showDates={false}
+        showDates={false}
       />
 
       {!agreements.ok ? (
@@ -403,7 +456,7 @@ export async function JobWorkOrdersPanel(query: StepQuery) {
       <FilterPanel
         principals={principalOptions(all, (row) => row.createdAt)}
         billingModels={BILLING_MODEL_OPTIONS}
-        showDates={false}
+        showDates={false}
       />
 
       {!orders.ok ? (
@@ -466,17 +519,17 @@ export async function JobWorkOrdersPanel(query: StepQuery) {
                   </Td>
 
                   <Td valign="top">
-                    <DerivedTag badge="AUTO-INHERITED">
+                    <DerivedValue>
                       <Pill tone={PATH[order.billingModel]?.tone ?? 'neutral'}>
                         {BILLING_MODEL_LABELS[order.billingModel]}
                       </Pill>
-                    </DerivedTag>
+                    </DerivedValue>
                   </Td>
 
                   <Td valign="top">
-                    <DerivedTag badge="SYSTEM-DERIVED">
+                    <DerivedValue>
                       {STOCK_OWNERSHIP_LABELS[order.stockBucket]}
-                    </DerivedTag>
+                    </DerivedValue>
                   </Td>
 
                   <Td align="right">
@@ -539,54 +592,34 @@ export async function InwardMaterialsPanel(query: StepQuery) {
     ? orders.data.filter((order) => order.billingModel === 'OWN_PROCUREMENT').length
     : 0;
 
-  // WHAT EACH ORDER'S FORMULATION CALLS FOR, resolved here rather than in the
-  // browser so choosing an order on the form lays its materials out at once.
-  // An order whose BOM is missing or empty is left out of the map on purpose —
-  // the API says so with a 400, and the form turns that absence into the
-  // message rather than an empty list of rows to fill in.
-  const materialsByOrder: Record<string, JobWorkOrderMaterial[]> = {};
-
-  await Promise.all(
-    conversionOrders.map(async (order) => {
-      const materials = await apiFetch<JobWorkOrderMaterial[]>(
-        `/api/v1/job-work/orders/${order.id}/materials`,
-        { authenticated: true },
-      );
-
-      if (materials.ok) materialsByOrder[order.id] = materials.data;
-    }),
-  );
-
   const search = param(query, 'search');
   const principalId = param(query, 'principalId');
 
   const allReceipts = receipts.ok ? receipts.data : [];
 
-  // ONE ROW PER MATERIAL, under the challan it arrived on. The register is
-  // read material by material — "have we got the lactose, and is it released"
-  // — so flattening here is what makes the table answer that question, while
-  // the receipt's own identity travels with every row.
+  // ONE ROW PER RECEIPT. The register answers "what has this principal sent
+  // us against this order, and where has it got to" — which is a question
+  // about the document. Searching still reaches the materials inside it, so a
+  // batch number or an item code finds the receipt that holds it.
   const rows = allReceipts
     .filter((receipt) => !principalId || receipt.principalId === principalId)
-    .flatMap((receipt) => receipt.lines.map((line) => ({ receipt, line })))
-    .filter(({ receipt, line }) =>
+    .filter((receipt) =>
       matches(
         search,
         receipt.receiptNumber,
-        receipt.deliveryChallanNumber,
         receipt.principalName,
         receipt.jobWorkOrderNumber,
-        line.item.name,
-        line.item.code,
-        line.batchNumber,
-        line.lotNumber,
+        ...receipt.deliveryChallanNumbers,
+        ...receipt.lines.map((line) => line.item.name),
+        ...receipt.lines.map((line) => line.item.code),
+        ...receipt.lines.map((line) => line.batchNumber),
       ),
     );
 
   return (
     <Panel
       title="Inward materials"
-      subtitle={receipts.ok ? countLabel(rows.length, 'material line') : undefined}
+      subtitle={receipts.ok ? countLabel(rows.length, 'receipt') : undefined}
       action={
         <>
           <SearchBox placeholder="Search by receipt, challan, principal, order, item or batch…" />
@@ -594,7 +627,6 @@ export async function InwardMaterialsPanel(query: StepQuery) {
           {orders.ok ? (
             <CreateJobWorkReceiptButton
               orders={conversionOrders}
-              materialsByOrder={materialsByOrder}
               ownProcurementOrderCount={ownProcurementOrders}
             />
           ) : null}
@@ -603,7 +635,7 @@ export async function InwardMaterialsPanel(query: StepQuery) {
     >
       <FilterPanel
         principals={principalOptions(allReceipts, (receipt) => receipt.receivedAt)}
-        showDates={false}
+        showDates={false}
       />
 
       {!receipts.ok ? (
@@ -628,30 +660,25 @@ export async function InwardMaterialsPanel(query: StepQuery) {
               <tr className="text-xs uppercase tracking-wide text-slate-500">
                 <Th>Receipt</Th>
                 <Th>Job-work order</Th>
-                <Th>Delivery challan</Th>
-                <Th>Material</Th>
-                <Th>Batch / lot</Th>
-                <Th align="right">Received</Th>
-                <Th align="right">Remaining</Th>
-                <Th>QC</Th>
-                <Th>Ownership</Th>
-                <Th>Expiry</Th>
+                <Th>Product</Th>
+                <Th align="right">Raw</Th>
+                <Th align="right">Packing</Th>
+                <Th>Challans</Th>
+                <Th>Status</Th>
                 <Th>Recorded</Th>
                 <Th>Action</Th>
               </tr>
             </thead>
             <tbody>
-              {rows.map(({ receipt, line }) => (
-                <tr key={line.id}>
+              {rows.map((receipt) => (
+                <tr key={receipt.id}>
                   <Td>
                     <p className="font-mono text-xs font-semibold text-slate-900">
                       <Code>{receipt.receiptNumber}</Code>
                     </p>
-                    {line.lotNumber && (
-                      <p className="font-mono text-[11px] text-slate-500">
-                        <Code>{line.lotNumber}</Code>
-                      </p>
-                    )}
+                    <p className="text-[11px] text-slate-500">
+                      <DateText value={receipt.receiptDate} />
+                    </p>
                   </Td>
 
                   <Td>
@@ -659,75 +686,47 @@ export async function InwardMaterialsPanel(query: StepQuery) {
                     <p className="text-[11px] text-slate-500"><Name>{receipt.principalName}</Name></p>
                   </Td>
 
-                  <Td>
-                    {/* Named as a challan everywhere it appears. US-JW-02 is
-                        explicit that it is not a purchase invoice. */}
-                    <span className="font-mono text-xs text-slate-800">
-                      {receipt.deliveryChallanNumber}
-                    </span>
-                    <span className="mt-0.5 block text-[10px] uppercase tracking-wide text-slate-400">
-                      Not a purchase invoice
-                    </span>
-                  </Td>
-
                   <Td valign="top">
-                    <p className="text-slate-800"><Name>{line.item.name}</Name></p>
-                    <p className="font-mono text-[11px] text-slate-500"><Code>{line.item.code}</Code></p>
+                    <p className="text-slate-800"><Name>{receipt.productName}</Name></p>
+                    <p className="text-[11px] text-slate-500">
+                      sold as {receipt.principalBrandName}
+                    </p>
                   </Td>
+
+                  <Td align="right">{receipt.rawMaterialCount}</Td>
+                  <Td align="right">{receipt.packingMaterialCount}</Td>
 
                   <Td>
-                    <span className="font-mono text-xs"><Code>{line.batchNumber}</Code></span>
-                  </Td>
-
-                  <Td align="right">
-                    <Qty value={line.receivedQuantity} uom={line.item.uom} />
-                  </Td>
-
-                  <Td align="right">
-                    {line.lotQuantityAvailable ? (
-                      <Qty value={line.lotQuantityAvailable} uom={line.item.uom} />
-                    ) : (
+                    {/* Named as challans everywhere they appear. US-JW-02 is
+                        explicit that they are not purchase invoices. */}
+                    {receipt.deliveryChallanNumbers.length === 0 ? (
                       <Blank />
+                    ) : (
+                      <span className="font-mono text-[11px] text-slate-700">
+                        {receipt.deliveryChallanNumbers.join(", ")}
+                      </span>
                     )}
                   </Td>
 
                   <Td valign="top">
-                    {/* THE DRUM’S OWN STATE, not the challan’s summary: a
-                        consignment can be half released, and the row that
-                        matters to a production officer is this one. */}
-                    {!receipt.qcRequired ? (
-                      <>
-                        <Pill tone="info">Not required</Pill>
-                        <span className="mt-0.5 block text-[10px] text-slate-500">
-                          Usable on arrival
-                        </span>
-                      </>
-                    ) : line.lotStatus === 'USABLE' ? (
-                      <Pill tone="ok">Released</Pill>
-                    ) : line.lotStatus === 'QUARANTINE' ? (
-                      <>
-                        <Pill tone="warn">QC pending</Pill>
-                        <span className="mt-0.5 block text-[10px] text-slate-500">
-                          Cannot be issued yet
-                        </span>
-                      </>
-                    ) : line.lotStatus === 'ON_HOLD' ? (
-                      <Pill tone="warn">On hold</Pill>
-                    ) : line.lotStatus === 'REJECTED' ? (
-                      <Pill tone="danger">Rejected</Pill>
-                    ) : (
-                      <Blank />
+                    <Pill
+                      tone={
+                        receipt.status === 'APPROVED'
+                          ? 'ok'
+                          : receipt.status === 'REJECTED'
+                            ? 'danger'
+                            : receipt.status === 'DRAFT'
+                              ? 'info'
+                              : 'warn'
+                      }
+                    >
+                      {JOB_WORK_RECEIPT_STATUS_LABELS[receipt.status]}
+                    </Pill>
+                    {receipt.status === 'PENDING_APPROVAL' && (
+                      <span className="mt-0.5 block text-[10px] text-slate-500">
+                        Waiting on Quality check
+                      </span>
                     )}
-                  </Td>
-
-                  <Td valign="top">
-                    <DerivedTag badge="SYSTEM-SET">
-                      <Pill tone="warn">{STOCK_OWNERSHIP_LABELS[line.stockOwnership]}</Pill>
-                    </DerivedTag>
-                  </Td>
-
-                  <Td>
-                    <DateText value={line.expiryDate} />
                   </Td>
 
                   <Td>
@@ -740,10 +739,15 @@ export async function InwardMaterialsPanel(query: StepQuery) {
                   </Td>
 
                   <Td>
-                    {/* The PARENT receipt, opened from any of its material
-                        rows: the register is read material by material, and
-                        this is the way back to the document. */}
-                    <ViewJobWorkReceiptButton receipt={receipt} />
+                    <span className="flex flex-wrap items-center gap-2">
+                      <ViewJobWorkReceiptButton receipt={receipt} />
+                      {/* Only a draft can be submitted. A receipt already with
+                          the quality user is theirs to decide, and one already
+                          decided is finished. */}
+                      {receipt.status === 'DRAFT' && (
+                        <SendForApprovalButton receipt={receipt} />
+                      )}
+                    </span>
                   </Td>
                 </tr>
               ))}            </tbody>
@@ -755,186 +759,180 @@ export async function InwardMaterialsPanel(query: StepQuery) {
 }
 
 // ---------------------------------------------------------------------------
-// 4. Production — US-JW-03, through the EXISTING work order
+// 4b. Quality check — the consignment a principal sent
 // ---------------------------------------------------------------------------
 
-export async function JobWorkProductionPanel(query: StepQuery) {
-  const orders = await apiFetch<JobWorkOrderSummary[]>('/api/v1/job-work/orders', {
-    authenticated: true,
-  });
-
-  // WHETHER EACH ORDER COULD BE MANUFACTURED, resolved here with the list so
-  // the form opens on a filled-in table rather than a spinner. The same call
-  // the work-order service makes when the button is pressed, which is what
-  // stops the screen and the refusal disagreeing.
-  const readinessByOrder: Record<string, JobWorkMaterialReadiness> = {};
-
-  await Promise.all(
-    (orders.ok ? orders.data : []).map(async (order) => {
-      const readiness = await apiFetch<JobWorkMaterialReadiness>(
-        `/api/v1/job-work/orders/${order.id}/readiness`,
-        { authenticated: true },
-      );
-
-      if (readiness.ok) readinessByOrder[order.id] = readiness.data;
-    }),
+/**
+ * What the principal has sent that is waiting to be approved.
+ *
+ * THE OTHER HALF OF THE OLD "QUALITY & RELEASE" TAB. That screen showed
+ * released BATCHES — work we had finished — under a name that also promised
+ * quality checking, which had nowhere of its own to happen and was borrowed
+ * from the purchased-material screen. This is that decision, on its own
+ * records: a consignment arrives, somebody says it is completely recorded,
+ * and a quality user approves or refuses it.
+ *
+ * NOTHING HERE IS ISSUABLE. Every lot under a receipt on this screen is
+ * quarantined; approving the receipt is what releases them, and it is the
+ * only thing that does.
+ */
+export async function JobWorkQualityCheckPanel(query: StepQuery) {
+  const receipts = await apiFetch<JobWorkMaterialReceiptView[]>(
+    '/api/v1/job-work/material-receipts',
+    { authenticated: true },
   );
 
   const search = param(query, 'search');
   const principalId = param(query, 'principalId');
-  const billingModel = param(query, 'billingModel');
+  const status = param(query, 'status');
 
-  const all = orders.ok ? orders.data : [];
+  const all = receipts.ok ? receipts.data : [];
 
-  const rows = all.filter(
-    (order) =>
-      (!principalId || order.principalId === principalId) &&
-      (!billingModel || order.billingModel === billingModel) &&
+  // A DRAFT IS NOT YET ANYBODY ELSE’S BUSINESS. The store is still adding to
+  // it, and putting it on a quality worklist would be asking for a decision
+  // about a document that is still changing.
+  const submitted = all.filter((receipt) => receipt.status !== 'DRAFT');
+
+  const rows = submitted.filter(
+    (receipt) =>
+      (!principalId || receipt.principalId === principalId) &&
+      (!status || receipt.status === status) &&
       matches(
         search,
-        order.orderNumber,
-        order.principalName,
-        order.product.principalBrandName,
-        order.product.productName,
-        order.product.productCode,
+        receipt.receiptNumber,
+        receipt.principalName,
+        receipt.jobWorkOrderNumber,
+        receipt.productName,
+        ...receipt.deliveryChallanNumbers,
+        ...receipt.lines.map((line) => line.item.name),
+        ...receipt.lines.map((line) => line.batchNumber),
       ),
   );
 
+  const waiting = submitted.filter((receipt) => receipt.status === 'PENDING_APPROVAL').length;
+
   return (
     <Panel
-      title="Job-work production"
-      subtitle={orders.ok ? countLabel(rows.length, 'order') : undefined}
+      title="Quality check"
+      subtitle={
+        receipts.ok
+          ? `${countLabel(rows.length, 'consignment')}${
+              waiting > 0 ? ` · ${waiting} awaiting a decision` : ''
+            }`
+          : undefined
+      }
       action={
         <>
-          <SearchBox placeholder="Search by order no., principal, brand or product…" />
+          <SearchBox placeholder="Search by receipt, principal, order, product, challan or batch…" />
           <FilterButton />
-          <RecordLink href="/workflows/production-quality/production-orders">
-            All work orders →
-          </RecordLink>
         </>
       }
     >
       <FilterPanel
-        principals={principalOptions(all, (row) => row.createdAt)}
-        billingModels={BILLING_MODEL_OPTIONS}
-        showDates={false}
+        principals={principalOptions(submitted, (receipt) => receipt.receivedAt)}
+        statuses={JOB_WORK_RECEIPT_STATUSES.filter((value) => value !== 'DRAFT').map(
+          (value) => ({ value, label: JOB_WORK_RECEIPT_STATUS_LABELS[value] }),
+        )}
+        showDates={false}
       />
 
-      {!orders.ok ? (
-        <ErrorState message={`Could not load job-work orders: ${orders.error}`} />
+      {!receipts.ok ? (
+        <ErrorState message={`Could not load material receipts: ${receipts.error}`} />
       ) : rows.length === 0 ? (
         <EmptyState
+          filtered={submitted.length > 0}
           title={
-            all.length === 0 ? 'No job-work orders to manufacture.' : 'No order matches that.'
+            submitted.length === 0
+              ? 'Nothing has been sent for approval yet.'
+              : 'No consignment matches that.'
           }
           hint={
-            all.length === 0
-              ? 'Raise a job-work order first; production is then raised against it.'
+            submitted.length === 0
+              ? 'A receipt reaches this screen when the store sends it for approval from Material received from principal.'
               : undefined
           }
-          filtered={all.length > 0}
         />
       ) : (
         <TableWrap>
-          <table className="w-full min-w-[72rem] text-left text-sm">
+          <table className="w-full min-w-[84rem] text-left text-sm">
             <thead>
               <tr className="text-xs uppercase tracking-wide text-slate-500">
-                <Th>Order</Th>
-                <Th>Brand / product</Th>
-                <Th>Stock bucket</Th>
-                <Th align="right">Ordered</Th>
-                <Th align="right">Material available</Th>
-                <Th>Material readiness</Th>
-                <Th align="right">Work orders</Th>
-                <Th>Raise production</Th>
+                <Th>Receipt</Th>
+                <Th>Job-work order</Th>
+                <Th>Product</Th>
+                <Th align="right">Raw</Th>
+                <Th align="right">Packing</Th>
+                <Th>Sent for approval</Th>
+                <Th>Status</Th>
+                <Th>Action</Th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((order) => {
-                // What is left of the principal's material for this order.
-                // Shown because under pure conversion it is the binding
-                // constraint, and a refusal at the point of raising the work
-                // order is less useful than the number beforehand.
-                const remaining = (
-                  Number(order.materialReceivedQuantity) - Number(order.materialConsumedQuantity)
-                ).toFixed(3);
+              {rows.map((receipt) => (
+                <tr key={receipt.id}>
+                  <Td>
+                    <p className="font-mono text-xs font-semibold text-slate-900">
+                      <Code>{receipt.receiptNumber}</Code>
+                    </p>
+                    <p className="font-mono text-[11px] text-slate-500">
+                      {receipt.deliveryChallanNumbers.join(", ")}
+                    </p>
+                  </Td>
 
-                return (
-                  <tr key={order.id}>
-                    <Td>
-                      <p className="font-mono text-xs font-semibold text-slate-900">
-                        <Code>{order.orderNumber}</Code>
-                      </p>
-                      <p className="text-[11px] text-slate-500"><Name>{order.principalName}</Name></p>
-                    </Td>
+                  <Td>
+                    <p className="font-mono text-xs text-slate-800">{receipt.jobWorkOrderNumber}</p>
+                    <p className="text-[11px] text-slate-500"><Name>{receipt.principalName}</Name></p>
+                  </Td>
 
-                    <Td valign="top">
-                      <p className="max-w-[14rem] truncate font-medium text-slate-800">
-                        {order.product.principalBrandName}
-                      </p>
-                      <p className="text-[11px] text-slate-500">
-                        <Name>{order.product.productName}</Name> (<Code>{order.product.productCode}</Code>)
-                      </p>
-                    </Td>
+                  <Td valign="top">
+                    <p className="text-slate-800"><Name>{receipt.productName}</Name></p>
+                    <p className="text-[11px] text-slate-500">
+                      sold as {receipt.principalBrandName}
+                    </p>
+                  </Td>
 
-                    <Td valign="top">
-                      <DerivedTag badge="SYSTEM-DERIVED">
-                        <Pill tone={order.stockBucket === 'PRINCIPAL_OWNED' ? 'warn' : 'info'}>
-                          {STOCK_OWNERSHIP_LABELS[order.stockBucket]}
-                        </Pill>
-                      </DerivedTag>
-                    </Td>
+                  <Td align="right">{receipt.rawMaterialCount}</Td>
+                  <Td align="right">{receipt.packingMaterialCount}</Td>
 
-                    <Td align="right">
-                      <Qty value={order.quantity} uom={order.product.uom} />
-                    </Td>
+                  <Td>
+                    {receipt.submittedAt ? (
+                      <>
+                        <DateTimeText value={receipt.submittedAt} />
+                        {receipt.submittedBy && (
+                          <span className="block text-[11px] text-slate-500">
+                            <Name>{receipt.submittedBy}</Name>
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      <Blank />
+                    )}
+                  </Td>
 
-                    <Td align="right">
-                      {order.billingModel === 'PURE_CONVERSION' ? (
-                        <Qty value={remaining} />
-                      ) : (
-                        <span className="text-[11px] text-slate-500">Company stock</span>
-                      )}
-                    </Td>
+                  <Td valign="top">
+                    <Pill
+                      tone={
+                        receipt.status === 'APPROVED'
+                          ? 'ok'
+                          : receipt.status === 'REJECTED'
+                            ? 'danger'
+                            : 'warn'
+                      }
+                    >
+                      {JOB_WORK_RECEIPT_STATUS_LABELS[receipt.status]}
+                    </Pill>
+                    {receipt.decidedBy && (
+                      <span className="mt-0.5 block text-[10px] text-slate-500">
+                        by <Name>{receipt.decidedBy}</Name>
+                      </span>
+                    )}
+                  </Td>
 
-                    <Td valign="top">
-                      {/* THE ANSWER THE BUTTON WILL GIVE, before it is pressed.
-                          Short by how much, and on which material — the detail
-                          is in the form, but the verdict belongs on the row. */}
-                      {(() => {
-                        const readiness = readinessByOrder[order.id];
-
-                        if (!readiness) return <Blank />;
-                        if (readiness.ready) return <Pill tone="ok">Ready</Pill>;
-
-                        const short = readiness.lines.filter((line) => !line.ready);
-
-                        return (
-                          <>
-                            <Pill tone="warn">
-                              {short.length > 0 ? `Short ${short.length}` : 'Blocked'}
-                            </Pill>
-                            <span className="mt-0.5 block max-w-[16rem] text-[10px] text-slate-500">
-                              {short.length > 0
-                                ? short.map((line) => line.item.code).join(', ')
-                                : readiness.blockedReason}
-                            </span>
-                          </>
-                        );
-                      })()}
-                    </Td>
-
-                    <Td align="right">{order.productionOrderCount}</Td>
-
-                    <Td>
-                      <RaiseJobWorkProductionButton
-                        order={order}
-                        readiness={readinessByOrder[order.id] ?? null}
-                      />
-                    </Td>
-                  </tr>
-                );
-              })}
+                  <Td>
+                    <JobWorkQualityCheckRowActions receipt={receipt} />
+                  </Td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </TableWrap>
@@ -944,168 +942,411 @@ export async function JobWorkProductionPanel(query: StepQuery) {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Quality & release — US-JW-04, the EXISTING gate
+// 5. Production to batch release — four sub-tabs over the module's own tables
 // ---------------------------------------------------------------------------
 
-export async function JobWorkQualityPanel(query: StepQuery) {
-  const orders = await apiFetch<JobWorkOrderSummary[]>('/api/v1/job-work/orders', {
-    authenticated: true,
-  });
-
-  const batchesByOrder = orders.ok
-    ? await Promise.all(
-        orders.data.map(async (order) => ({
-          order,
-          batches: await apiFetch<JobWorkDispatchableBatch[]>(
-            `/api/v1/job-work/orders/${order.id}/dispatchable`,
-            { authenticated: true },
-          ),
-        })),
-      )
-    : [];
-
-  const allRows = batchesByOrder.flatMap(({ order, batches }) =>
-    batches.ok ? batches.data.map((batch) => ({ order, batch })) : [],
-  );
-
-  const search = param(query, 'search');
-  const principalId = param(query, 'principalId');
-
-  const rows = allRows.filter(
-    ({ order, batch }) =>
-      (!principalId || order.principalId === principalId) &&
-      matches(
-        search,
-        order.orderNumber,
-        order.principalName,
-        order.product.principalBrandName,
-        order.product.productName,
-        batch.batchNumber,
-      ),
-  );
+/**
+ * One tab, four stages: production orders, material issue, batch record,
+ * batch release.
+ *
+ * BUILT FROM PRODUCTION & QUALITY GATE'S OWN COMPONENTS. `ProductionRegister`
+ * gives the New button, the centred drawer and the confirmation dialog;
+ * `ProductionTabs` gives the in-place sub-views; `useRegisterView` and its
+ * toolbar and pager give the search, the filter panel and the paging. All are
+ * imported and used unchanged — that module is not modified by any of this.
+ *
+ * THE TABLES UNDERNEATH ARE JOB WORK'S OWN. Nothing here reads
+ * `production_orders`, `material_issues`, `batches` or `batch_packing_records`.
+ *
+ * THE SUB-TAB IS IN THE URL, as `?stage=`. A link to a particular stage has to
+ * survive being shared and a page refresh, and the workflow's own navigation
+ * already works that way. The sub-views INSIDE a stage are client state, which
+ * is what ProductionTabs does on the internal screens.
+ */
+export async function JobWorkProductionToBatchReleasePanel(query: StepQuery) {
+  const stage = stageFrom(param(query, 'stage'));
 
   return (
-    <Panel
-      title="Quality & release"
-      subtitle={countLabel(rows.length, 'released batch')}
-      action={
-        <>
-          <SearchBox placeholder="Search by batch, order no., principal or brand…" />
-          <FilterButton />
-          <RecordLink href="/workflows/production-quality/batch-release">
-            Batch release →
-          </RecordLink>
-        </>
+    <div className="flex flex-col gap-4">
+      <StageTabs current={stage} />
+
+      {stage === 'production-orders' && <JobWorkProductionPanel />}
+      {stage === 'material-issue' && <JobWorkMaterialIssuePanel />}
+      {stage === 'batch-record' && <JobWorkBatchRecordPanel />}
+      {stage === 'batch-release' && <JobWorkBatchReleasePanel />}
+    </div>
+  );
+}
+
+/** An unknown or missing stage lands on the first one rather than a blank page. */
+function stageFrom(value: string | undefined): JobWorkProductionStage {
+  return JOB_WORK_PRODUCTION_STAGES.includes(value as JobWorkProductionStage)
+    ? (value as JobWorkProductionStage)
+    : 'production-orders';
+}
+
+/**
+ * The sub-tab row.
+ *
+ * PLAIN LINKS, not buttons: each stage is a URL, so it can be linked to, opened
+ * in a new tab and reached with the back button — none of which a client-side
+ * toggle gives you. Styled as the internal ProductionTabs styles its own, so
+ * the two screens read as one system.
+ */
+function StageTabs({ current }: { current: JobWorkProductionStage }) {
+  return (
+    <nav
+      aria-label="Production to batch release"
+      className="flex flex-wrap items-center gap-1 border-b border-slate-200"
+    >
+      {JOB_WORK_PRODUCTION_STAGES.map((stage) => {
+        const active = stage === current;
+
+        return (
+          <Link
+            key={stage}
+            href={`/workflows/job-work/production-to-batch-release?stage=${stage}`}
+            aria-current={active ? 'page' : undefined}
+            // The active tab sits ON the border, hiding it for its own width,
+            // which is what joins it to the panel below rather than leaving it
+            // floating above a line.
+            className={`-mb-px border-b-2 px-3 py-2 text-sm transition ${
+              active
+                ? 'border-slate-900 font-semibold text-slate-900'
+                : 'border-transparent font-medium text-slate-500 hover:border-slate-300 hover:text-slate-800'
+            }`}
+          >
+            {JOB_WORK_PRODUCTION_STAGE_LABELS[stage]}
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 5a. Production orders
+// ---------------------------------------------------------------------------
+
+/**
+ * Job-work production orders, raised against an approved consignment.
+ *
+ * The register a work order gets internally, over this module's own table. The
+ * form is offered only where there is something to raise one against: a
+ * job-work order with a consignment that has passed Quality check.
+ */
+export async function JobWorkProductionPanel() {
+  const [ordersResult, jobWorkOrdersResult] = await Promise.all([
+    get<JobWorkProductionOrderView[]>('/api/v1/job-work/production-orders'),
+    get<JobWorkOrderSummary[]>('/api/v1/job-work/orders'),
+  ]);
+
+  if (!ordersResult.ok) {
+    return (
+      <ProductionPanel title="Production orders">
+        <LoadError error={ordersResult.error} />
+      </ProductionPanel>
+    );
+  }
+
+  // WHICH ORDERS COULD HAVE ONE RAISED, and out of which consignments. Asked
+  // per order rather than guessed: "approved" is the API's judgement, and a
+  // form offering a consignment it would refuse is a form that wastes a save.
+  const eligible = await Promise.all(
+    (jobWorkOrdersResult.ok ? jobWorkOrdersResult.data : []).map(async (order) => ({
+      order,
+      receipts: await get<JobWorkMaterialReceiptView[]>(
+        `/api/v1/job-work/orders/${order.id}/eligible-receipts`,
+      ),
+    })),
+  );
+
+  const raisable = eligible.filter((entry) => entry.receipts.ok && entry.receipts.data.length > 0);
+
+  const receiptsByOrder: Record<string, JobWorkMaterialReceiptView[]> = {};
+
+  for (const entry of raisable) {
+    receiptsByOrder[entry.order.id] = entry.receipts.ok ? entry.receipts.data : [];
+  }
+
+  // The View/Edit menu per row, built HERE because it carries the server action
+  // binding; the client table only decides which rows are on screen.
+  const rowActions: Record<string, React.ReactNode> = {};
+
+  for (const order of ordersResult.data) {
+    rowActions[order.id] = <JobWorkProductionRowActions key={order.id} order={order} />;
+  }
+
+  return (
+    <ProductionRegister
+      newLabel={raisable.length > 0 ? 'New production order' : undefined}
+      newTitle="New — Job-work production order"
+      // The form carries the consignment's material table, which is wide.
+      formWidth="wide"
+      form={
+        raisable.length > 0 ? (
+          <RaiseJobWorkProductionOrderForm
+            orders={raisable.map((entry) => entry.order)}
+            receiptsByOrder={receiptsByOrder}
+          />
+        ) : undefined
       }
     >
-      <FilterPanel
-        principals={principalOptions(orders.ok ? orders.data : [], (order) => order.createdAt)}
-        showDates={false}
-      />
+      <JobWorkOrderTable orders={ordersResult.data} actionFor={rowActions} />
+    </ProductionRegister>
+  );
+}
 
-      {!orders.ok ? (
-        <ErrorState message={`Could not load job-work orders: ${orders.error}`} />
-      ) : rows.length === 0 ? (
-        <EmptyState
-          filtered={allRows.length > 0}
-          title={
-            allRows.length === 0 ? 'No released job-work batches.' : 'No batch matches that.'
-          }
-          hint="A batch appears here once it has been manufactured, packed and released by the quality gate. Batches on hold or rejected stay on the Batch release screen until they are decided."
-        />
-      ) : (
-        <TableWrap>
-          <table className="w-full min-w-[84rem] text-left text-sm">
-            <thead>
-              <tr className="text-xs uppercase tracking-wide text-slate-500">
-                <Th>Batch</Th>
-                <Th>Job-work order</Th>
-                <Th>Product</Th>
-                <Th>Ownership</Th>
-                <Th>Quality gate</Th>
-                <Th align="right">Available</Th>
-                <Th>Expiry</Th>
-                <Th>Release</Th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(({ order, batch }) => (
-                <tr key={batch.batchId}>
-                  <Td>
-                    <p className="font-mono text-xs font-semibold text-slate-900">
-                      <Code>{batch.batchNumber}</Code>
-                    </p>
-                    <p className="font-mono text-[11px] text-slate-500">
-                      {batch.productionOrderNumber}
-                    </p>
-                  </Td>
+// ---------------------------------------------------------------------------
+// 5b. Material issue
+// ---------------------------------------------------------------------------
 
-                  <Td>
-                    <p className="font-mono text-xs text-slate-800"><Code>{order.orderNumber}</Code></p>
-                    <p className="text-[11px] text-slate-500"><Name>{order.principalName}</Name></p>
-                  </Td>
+/**
+ * What has been dispensed, and what the principal has sent to dispense from.
+ *
+ * TWO VIEWS, as the internal step has: the register of issues, and the material
+ * on hand. "On hand" here is the principal's consignment — the inward receipt's
+ * own lines with what earlier issues took already subtracted — which is the
+ * Pure Conversion integration the brief asks for, shown where the internal
+ * screen shows company stock.
+ */
+export async function JobWorkMaterialIssuePanel() {
+  const [issuesResult, ordersResult] = await Promise.all([
+    get<JobWorkMaterialIssueView[]>('/api/v1/job-work/material-issues'),
+    get<JobWorkProductionOrderView[]>('/api/v1/job-work/production-orders'),
+  ]);
 
-                  <Td valign="top">
-                    <p className="text-slate-800"><Name>{batch.item.name}</Name></p>
-                    <p className="text-[11px] text-slate-500">
-                      sold as {order.product.principalBrandName}
-                    </p>
-                  </Td>
+  if (!issuesResult.ok) {
+    return (
+      <ProductionPanel title="Material issue">
+        <LoadError error={issuesResult.error} />
+      </ProductionPanel>
+    );
+  }
 
-                  <Td>
-                    {/* OFF THE LOT, not off the agreement — see the wire type.
-                        On the table rather than behind the row, because "whose
-                        goods are these" is the question this screen is scanned
-                        for and opening every batch to answer it is the cost the
-                        column removes. */}
-                    <Pill tone={batch.stockOwnership === 'PRINCIPAL_OWNED' ? 'warn' : 'info'}>
-                      {STOCK_OWNERSHIP_LABELS[batch.stockOwnership]}
-                    </Pill>
-                    {batch.stockOwnership === 'PRINCIPAL_OWNED' ? (
-                      <span className="mt-0.5 block text-[10px] text-slate-500">
-                        <Name>{order.principalName}</Name>
-                      </span>
-                    ) : null}
-                  </Td>
+  // A released or cancelled order is finished; offering it would be offering a
+  // refusal.
+  const open = (ordersResult.ok ? ordersResult.data : []).filter(
+    (order) => order.status !== 'BATCH_RELEASED' && order.status !== 'CANCELLED',
+  );
 
-                  <Td>
-                    {/* Section 17: the status AND what it permits, because the
-                        consequence is the part someone needs. */}
-                    <Pill tone="ok">Released</Pill>
-                    <span className="mt-0.5 block text-[10px] font-semibold uppercase tracking-wide text-emerald-700">
-                      Dispatch allowed
-                    </span>
-                  </Td>
+  // ONE plan computed here, for the order the form opens on. The rest are
+  // fetched by the form when an officer picks them: a plan costs a query per
+  // material, so computing all of them on every page load would pay for orders
+  // nobody opens.
+  const firstOrder = open[0];
+  const planResult = firstOrder
+    ? await get<JobWorkIssuePlan>(`/api/v1/job-work/production-orders/${firstOrder.id}/issue-plan`)
+    : null;
 
-                  <Td align="right">
-                    <Qty value={batch.quantityAvailable} uom={batch.item.uom} />
-                  </Td>
+  // Null when the read failed, and the form then fetches it like any other — a
+  // failed preload should cost a round trip, not the ability to dispense.
+  const initialPlan = planResult?.ok ? planResult.data : null;
 
-                  <Td>
-                    <DateText value={batch.expiryDate} />
-                  </Td>
+  // THE PRINCIPAL'S MATERIAL, per open order. Fetched from the receipt behind
+  // each one, which is the record of arrival rather than a copy of it.
+  const material = (
+    await Promise.all(
+      open.map(async (order) => {
+        const result = await get<JobWorkIssuableMaterial[]>(
+          `/api/v1/job-work/production-orders/${order.id}/issuable-material`,
+        );
 
-                  <Td>
-                    {/* THE SAME BATCH RELEASE SCREEN, opened on this batch. The
-                        gate itself lives in Production & Quality and is not
-                        reimplemented here; the link carries the batch number as
-                        that screen's own search term, so the decision history
-                        for this batch is what loads. */}
-                    <RecordLink
-                      href={`/workflows/production-quality/batch-release?search=${encodeURIComponent(
-                        batch.batchNumber,
-                      )}`}
-                    >
-                      Open
-                    </RecordLink>
-                  </Td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </TableWrap>
-      )}
-    </Panel>
+        return (result.ok ? result.data : []).map((line) => ({
+          ...line,
+          productionOrderNumber: order.orderNumber,
+          principalName: order.principalName,
+        }));
+      }),
+    )
+  ).flat();
+
+  const issues = issuesResult.data;
+
+  return (
+    <ProductionTabs
+      tabs={[
+        {
+          key: 'issues',
+          label: 'Material issue',
+          badge: String(issues.length),
+          panel: (
+            <ProductionRegister
+              newLabel={open.length > 0 ? 'Dispense material' : undefined}
+              newTitle="Dispense material"
+              // The plan is a table of every material with its drums; at the
+              // default width those columns wrapped and had to be scrolled.
+              formWidth="wide"
+              form={
+                open.length > 0 ? (
+                  <IssueJobWorkMaterialForm orders={open} initialPlan={initialPlan} />
+                ) : undefined
+              }
+            >
+              <JobWorkIssueTable issues={issues} />
+            </ProductionRegister>
+          ),
+        },
+        {
+          key: 'received',
+          label: 'Material received from principal',
+          badge: String(material.length),
+          panel: <JobWorkReceivedMaterialTable material={material} />,
+        },
+      ]}
+    />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 5c. Batch record
+// ---------------------------------------------------------------------------
+
+/**
+ * The batches made against job-work production orders.
+ *
+ * The internal step's master/detail register, over this module's own table: the
+ * list on the left, and on the right the batch's quantities, its yield, what
+ * the formulation called for against what was actually drawn from the
+ * principal's consignment, and the packing record.
+ */
+export async function JobWorkBatchRecordPanel() {
+  const [batchesResult, ordersResult] = await Promise.all([
+    get<JobWorkBatchView[]>('/api/v1/job-work/batches'),
+    get<JobWorkProductionOrderView[]>('/api/v1/job-work/production-orders'),
+  ]);
+
+  if (!batchesResult.ok) {
+    return (
+      <ProductionPanel title="Batch record">
+        <LoadError error={batchesResult.error} />
+      </ProductionPanel>
+    );
+  }
+
+  // A batch can only be opened against an order material has actually gone to,
+  // which the API checks; an issue is what moves an order into production.
+  const awaitingBatch = (ordersResult.ok ? ordersResult.data : []).filter(
+    (order) =>
+      order.issueCount > 0 &&
+      order.batchNumber === null &&
+      order.status !== 'CANCELLED' &&
+      order.status !== 'BATCH_RELEASED',
+  );
+
+  const batches = batchesResult.data;
+
+  // The packing form per batch, built HERE because it carries the server action
+  // binding. Only for a batch still awaiting a decision: packing cannot be
+  // amended once the quality gate has ruled, so offering the form afterwards
+  // would be a control the API refuses.
+  const packingForms: Record<string, React.ReactNode> = {};
+
+  for (const batch of batches) {
+    if (batch.releaseStatus !== 'PENDING') continue;
+
+    packingForms[batch.id] = <RecordJobWorkPackingForm key={batch.id} batch={batch} />;
+  }
+
+  return (
+    <ProductionRegister
+      newLabel={awaitingBatch.length > 0 ? 'New batch' : undefined}
+      newTitle="New — Batch record"
+      form={awaitingBatch.length > 0 ? <RecordJobWorkBatchForm orders={awaitingBatch} /> : undefined}
+    >
+      <div className="p-6">
+        {batches.length === 0 ? (
+          <ProductionEmptyState>
+            {awaitingBatch.length > 0
+              ? 'No batches yet. A production order has material issued and is ready to open one.'
+              : 'No batches yet. Issue the principal’s material against a production order first.'}
+          </ProductionEmptyState>
+        ) : (
+          <JobWorkBatchRecords batches={batches} packingFormFor={packingForms} />
+        )}
+      </div>
+    </ProductionRegister>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 5d. Batch release — the quality gate
+// ---------------------------------------------------------------------------
+
+/**
+ * The release decision on a finished job-work batch.
+ *
+ * SEPARATE FROM QUALITY CHECK, which clears what the principal SENT. This one
+ * clears what was made of it, on this module's own batches — the internal Batch
+ * release screen is untouched and still decides own-brand batches.
+ *
+ * WHO MAY DECIDE, and therefore who sees this stage at all, is the same pair
+ * the internal gate names. A DISCLOSURE, not the enforcement: RolesGuard on the
+ * release endpoint is what actually refuses, and it names the same two roles.
+ */
+export async function JobWorkBatchReleasePanel() {
+  const [user, batchesResult] = await Promise.all([
+    requireSession(),
+    get<JobWorkBatchView[]>('/api/v1/job-work/batches'),
+  ]);
+
+  if (!batchesResult.ok) {
+    return (
+      <ProductionPanel title="Batch release">
+        <LoadError error={batchesResult.error} />
+      </ProductionPanel>
+    );
+  }
+
+  const canDecide = user.role === 'QUALITY_OFFICER' || user.role === 'ADMIN';
+
+  if (!canDecide) {
+    return (
+      <p className="rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+        A job-work batch should be released by Admin and Quality Officer.
+      </p>
+    );
+  }
+
+  const pending = batchesResult.data.filter((batch) => batch.releaseStatus === 'PENDING');
+  const decided = batchesResult.data.filter((batch) => batch.releaseStatus !== 'PENDING');
+  const released = batchesResult.data.filter((batch) => batch.releaseStatus === 'RELEASED');
+
+  // The release form per batch, built HERE because it carries the server action
+  // binding; the client list only decides which ones are on screen.
+  const releaseForms: Record<string, React.ReactNode> = {};
+
+  for (const batch of pending) {
+    // KEYED, even though each is rendered as a single child: they are CREATED
+    // in a loop here and consumed by a client component across the
+    // server/client boundary, and React attributes the collection to either
+    // side depending on where it looks.
+    releaseForms[batch.id] = <JobWorkReleaseDecisionForm key={batch.id} batch={batch} />;
+  }
+
+  return (
+    <ProductionTabs
+      tabs={[
+        {
+          key: 'gate',
+          label: 'Batch release',
+          badge: String(pending.length),
+          panel: <JobWorkPendingReleaseList batches={pending} formFor={releaseForms} />,
+        },
+        {
+          key: 'released',
+          label: 'Released',
+          badge: String(released.length),
+          panel: <JobWorkReleasedTable batches={released} />,
+        },
+        {
+          key: 'decided',
+          label: 'Decided',
+          badge: String(decided.length),
+          panel: <JobWorkDecidedTable batches={decided} />,
+        },
+      ]}
+    />
   );
 }
 
@@ -1179,7 +1420,7 @@ export async function OutwardDispatchPanel(query: StepQuery) {
       >
         <FilterPanel
           principals={principalOptions(allOrders, (order) => order.createdAt)}
-          showDates={false}
+          showDates={false}
         />
 
         {!orders.ok ? (
@@ -1217,9 +1458,9 @@ export async function OutwardDispatchPanel(query: StepQuery) {
                     </Td>
 
                     <Td valign="top">
-                      <DerivedTag badge="AUTO-DERIVED">
+                      <DerivedValue>
                         {JOB_WORK_INVOICE_BASIS_LABELS[order.invoiceBasis]}
-                      </DerivedTag>
+                      </DerivedValue>
                     </Td>
 
                     <Td align="right">{batches.ok ? batches.data.length : '—'}</Td>
@@ -1337,7 +1578,7 @@ export async function JobWorkBillingPanel(query: StepQuery) {
       <FilterPanel
         principals={principalOptions(all, (row) => row.createdAt)}
         billingModels={BILLING_MODEL_OPTIONS}
-        showDates={false}
+        showDates={false}
       />
 
       {!invoices.ok ? (
@@ -1390,9 +1631,9 @@ export async function JobWorkBillingPanel(query: StepQuery) {
                   </Td>
 
                   <Td valign="top">
-                    <DerivedTag badge="AUTO-DERIVED">
+                    <DerivedValue>
                       {JOB_WORK_INVOICE_BASIS_LABELS[invoice.invoiceBasis]}
-                    </DerivedTag>
+                    </DerivedValue>
                     {invoice.invoiceBasis === 'CONVERSION_CHARGE_ONLY' && (
                       <p className="mt-1 max-w-[16rem] text-[11px] leading-snug text-slate-500">
                         Raw-material value is not invoiced — the principal supplied it.
@@ -1501,7 +1742,7 @@ export async function JobWorkRegisterPanel(query: StepQuery) {
           (row) => row.createdAt,
         )}
         billingModels={BILLING_MODEL_OPTIONS}
-        showDates={false}
+        showDates={false}
       />
 
       {!register.ok ? (
@@ -1652,8 +1893,13 @@ export const JOB_WORK_STEPS: Record<string, (query: StepQuery) => React.ReactNod
   principals: (query) => <PrincipalsPanel {...query} />,
   'job-work-orders': (query) => <JobWorkOrdersPanel {...query} />,
   'inward-materials': (query) => <InwardMaterialsPanel {...query} />,
-  production: (query) => <JobWorkProductionPanel {...query} />,
-  'quality-release': (query) => <JobWorkQualityPanel {...query} />,
+  'quality-check': (query) => <JobWorkQualityCheckPanel {...query} />,
+  // ONE ENTRY FOR FOUR SCREENS. Production and Batch release were separate
+  // steps until 2026-09-21; they are now sub-tabs of this one, chosen by
+  // the stage query parameter, and the panel below picks between them.
+  'production-to-batch-release': (query) => (
+    <JobWorkProductionToBatchReleasePanel {...query} />
+  ),
   'outward-dispatch': (query) => <OutwardDispatchPanel {...query} />,
   billing: (query) => <JobWorkBillingPanel {...query} />,
   register: (query) => <JobWorkRegisterPanel {...query} />,

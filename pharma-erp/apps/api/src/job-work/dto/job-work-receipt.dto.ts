@@ -3,7 +3,7 @@ import {
   ArrayMaxSize,
   ArrayMinSize,
   IsArray,
-  IsBoolean,
+  IsIn,
   IsOptional,
   IsString,
   IsUUID,
@@ -65,6 +65,35 @@ export class JobWorkMaterialReceiptLineDto {
   notes?: string;
 }
 
+/**
+ * A quality user's decision on a whole consignment.
+ *
+ * ONE DECISION FOR THE RECEIPT. A principal delivers a consignment and it is
+ * accepted or it is not; the per-drum decision is the purchased-material model
+ * and belongs on the incoming-QC screen.
+ */
+export class DecideJobWorkReceiptDto {
+  @IsIn(['APPROVED', 'ON_HOLD', 'REJECTED'], {
+    message: 'decision must be APPROVED, ON_HOLD or REJECTED',
+  })
+  decision!: 'APPROVED' | 'ON_HOLD' | 'REJECTED';
+
+  /** A COA or test reference. Optional; the remarks are what is insisted on. */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  testReference?: string;
+
+  /**
+   * Required for a hold or a rejection, checked in the service because the rule
+   * is conditional on the decision.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  notes?: string;
+}
+
 export class CreateJobWorkMaterialReceiptDto {
   @IsUUID()
   jobWorkOrderId!: string;
@@ -84,18 +113,6 @@ export class CreateJobWorkMaterialReceiptDto {
   /** The date on the challan, which is not always the day it is keyed in. */
   @Matches(CALENDAR_DAY, { message: `receiptDate ${CALENDAR_DAY_MESSAGE}` })
   receiptDate!: string;
-
-  /**
-   * Whether this consignment has to clear incoming QC before it may be issued.
-   *
-   * DEFAULTS TO TRUE IN THE SERVICE, not here: omitting the field has to mean
-   * "inspect it", which is the rule purchased material already lives under. A
-   * caller sending false is making a deliberate choice, and it is recorded on
-   * the receipt and audited with the rest of the create.
-   */
-  @IsOptional()
-  @IsBoolean()
-  qcRequired?: boolean;
 
   /**
    * The materials on the challan — at least one.

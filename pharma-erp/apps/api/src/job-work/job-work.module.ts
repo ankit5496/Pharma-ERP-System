@@ -5,9 +5,11 @@ import { NumberingService } from '../procurement/numbering.service';
 import { JobWorkDispatchService } from './job-work-dispatch.service';
 import { JobWorkExecutionController } from './job-work-execution.controller';
 import { JobWorkOrdersService } from './job-work-orders.service';
+import { JobWorkProductionService } from './job-work-production.service';
 import { JobWorkReadinessService } from './job-work-readiness.service';
 import { JobWorkReceiptsService } from './job-work-receipts.service';
 import { JobWorkRegisterService } from './job-work-register.service';
+import { JobWorkWorkflowService } from './job-work-workflow.service';
 import { JobWorkController } from './job-work.controller';
 import { JobWorkService } from './job-work.service';
 
@@ -39,10 +41,12 @@ import { JobWorkService } from './job-work.service';
     NumberingService,
     JobWorkService,
     JobWorkOrdersService,
+    JobWorkProductionService,
     JobWorkReadinessService,
     JobWorkReceiptsService,
     JobWorkDispatchService,
     JobWorkRegisterService,
+    JobWorkWorkflowService,
   ],
   // JobWorkReadinessService is exported for the same reason as the orders
   // service: ProductionService refuses a work order on its figures, and the

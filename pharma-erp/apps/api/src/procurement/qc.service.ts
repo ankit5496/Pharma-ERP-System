@@ -51,12 +51,14 @@ const LOT_INCLUDE = {
   // vendor and no purchase order because there was no purchase.
   jobWorkMaterialReceiptLine: {
     select: {
+      // The challan belongs to the line: one receipt gathers materials from
+      // several of them.
+      deliveryChallanNumber: true,
       receipt: {
         select: {
           id: true,
           receiptNumber: true,
           receiptDate: true,
-          deliveryChallanNumber: true,
           jobWorkOrder: {
             select: {
               id: true,
@@ -124,12 +126,11 @@ export class QcService {
     // a Quality Officer’s worklist that they have no document to inspect
     // against. The quality gate job work DOES have is US-JW-04, on the
     // finished batch.
-    // BOTH BUCKETS. Incoming QC inspects material arriving at the gate, and a
-    // principal's drum arrives at the same gate as a purchased one — it is
-    // simply free of cost. Filtering to company-owned made principal material
-    // that a receipt had marked for inspection impossible to release, which is
-    // the same as having no inspection step at all.
-    const where: Prisma.StockLotWhereInput = {};
+    // COMPANY-OWNED ONLY. Principal material is decided on Job Work → Quality
+    // Check, a consignment at a time, against its own receipt. It briefly
+    // appeared here too; two screens able to release the same drum is two
+    // places to look when asking who cleared it.
+    const where: Prisma.StockLotWhereInput = { ownership: 'COMPANY_OWNED' };
 
     if (query.status) {
       where.status = query.status as StockLotStatus;
@@ -169,10 +170,10 @@ export class QcService {
         // on this queue too.
         {
           jobWorkMaterialReceiptLine: {
+            OR: [{ deliveryChallanNumber: { contains: search, mode: 'insensitive' } }],
             receipt: {
               OR: [
                 { receiptNumber: { contains: search, mode: 'insensitive' } },
-                { deliveryChallanNumber: { contains: search, mode: 'insensitive' } },
                 { jobWorkOrder: { orderNumber: { contains: search, mode: 'insensitive' } } },
                 { jobWorkOrder: { principal: { name: { contains: search, mode: 'insensitive' } } } },
               ],
@@ -332,12 +333,6 @@ export class QcService {
         });
       }
 
-      // A principal's drum belongs to a challan, and the challan's status is a
-      // summary of its drums. Recomputed here rather than advanced by hand, and
-      // inside this transaction so the two cannot disagree.
-      if (lot.jobWorkMaterialReceiptLine) {
-        await this.jobWorkReceipts.syncStatus(tx, lot.jobWorkMaterialReceiptLine.receipt.id);
-      }
     });
 
     await this.audit.record({
@@ -383,7 +378,7 @@ export class QcService {
       // Same narrowing as the queue, and for the same reason: a QC decision
       // recorded against a principal's material would be a decision about
       // stock this gate does not govern.
-      where: { id },
+      where: { id, ownership: 'COMPANY_OWNED' },
       include: LOT_INCLUDE,
     });
 
@@ -404,7 +399,8 @@ export class QcService {
 
   private toQueueItem(row: LotRow, people: Map<string, string>): QcQueueItem {
     const purchase = row.goodsReceiptLine?.goodsReceipt ?? null;
-    const challan = row.jobWorkMaterialReceiptLine?.receipt ?? null;
+    const line = row.jobWorkMaterialReceiptLine ?? null;
+    const challan = line?.receipt ?? null;
 
     if (!purchase && !challan) {
       // Unreachable: `stock_lots_has_one_source` guarantees every lot has
@@ -440,7 +436,7 @@ export class QcService {
               number: challan.receiptNumber,
               receiptDate: challan.receiptDate.toISOString(),
             },
-            deliveryChallanNumber: challan.deliveryChallanNumber,
+            deliveryChallanNumber: line?.deliveryChallanNumber ?? '',
           }
         : null,
 

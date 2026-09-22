@@ -308,7 +308,6 @@ const challanReceipt = await store('/job-work/material-receipts', {
     jobWorkOrderId: order.id,
     deliveryChallanNumber: `DC-MW-${tag}`,
     receiptDate: iso(today),
-    qcRequired: false,
     lines: [
       {
         itemId: material.id,
@@ -375,7 +374,6 @@ const conversionReceipt = await store('/job-work/material-receipts', {
     jobWorkOrderId: conversionOrder.id,
     deliveryChallanNumber: `DC-CV-${tag}`,
     receiptDate: iso(today),
-    qcRequired: false,
     lines: [
       {
         itemId: material.id,

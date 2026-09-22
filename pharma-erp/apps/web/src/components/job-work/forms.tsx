@@ -6,6 +6,8 @@ import {
   JOB_WORK_INVOICE_BASIS_LABELS,
   STOCK_BUCKET_FOR_BILLING_MODEL,
   JOB_WORK_MATERIAL_KIND_LABELS,
+  JOB_WORK_PRODUCTION_STATUSES,
+  JOB_WORK_PRODUCTION_STATUS_LABELS,
   JOB_WORK_RECEIPT_STATUS_LABELS,
   STOCK_OWNERSHIP_LABELS,
   type JobWorkDispatchableBatch,
@@ -13,9 +15,10 @@ import {
   type JobWorkMaterialReceiptView,
   type JobWorkOrderablePrincipal,
   type JobWorkOrderMaterial,
+  type JobWorkProductionOrderView,
   type JobWorkOrderSummary,
 } from '@pharma-erp/types';
-import { useMemo, useState } from 'react';
+import { startTransition, useMemo, useState } from 'react';
 
 import {
   Disclosure,
@@ -25,12 +28,21 @@ import {
   useAction,
 } from '@/components/procurement/form-kit';
 import { SearchableSelect } from '@/components/procurement/searchable-select';
+import { RowActionMenu } from '@/components/row-action-menu';
 
 import {
   createJobWorkDispatchAction,
   createJobWorkOrderAction,
   createJobWorkProductionOrderAction,
   createJobWorkReceiptAction,
+  decideJobWorkReceiptAction,
+  loadJobWorkMaterialsAction,
+  loadEligibleReceiptsAction,
+  loadJobWorkReadinessAction,
+  loadJobWorkReceiptsAction,
+  raiseJobWorkProductionOrderAction,
+  submitJobWorkReceiptAction,
+  updateJobWorkProductionOrderAction,
   updateJobWorkOrderAction,
 } from './actions';
 
@@ -38,26 +50,38 @@ import {
  * The Job Work forms.
  *
  * SECTION 17 OF THE BRIEF IS THE ORGANISING IDEA HERE: a value the system
- * decides is shown, not hidden, and shown with the badge that says why it
- * cannot be changed. So the billing model appears on the order form the moment
- * a principal is chosen — as text with an AUTO-INHERITED badge, never as a
- * select. The stock bucket and the invoice basis are shown the same way.
+ * decides is shown, not hidden. So the billing model appears on the order form
+ * the moment a principal is chosen — as a read-only value, never as a select.
+ * The stock bucket and the invoice basis are shown the same way.
+ *
+ * Section 17 also asked for a badge on each of them naming the kind of
+ * decision. Those were withdrawn at the product owner's request; the values,
+ * and the fact that none of them takes input, are unchanged.
  *
  * None of that is what ENFORCES anything. Every rule is re-decided by the API
  * (section 20); these controls exist so a user is not surprised by a refusal
  * they could have seen coming.
  */
 
-/** A value the system decided, with the badge saying which kind of decision. */
+/**
+ * A value the system decided, shown but not editable.
+ *
+ * THE SHADED BOX IS THE WHOLE MESSAGE. It used to carry a badge as well —
+ * SYSTEM-DERIVED, AUTO-INHERITED and so on — naming which kind of decision had
+ * fixed the value. Withdrawn at the product owner's request: the field is
+ * already visibly not an input, and the badge restated that in vocabulary only
+ * the people who built it use.
+ *
+ * Nothing else changed. These values are still derived exactly as they were,
+ * still not submitted, and still re-decided by the API.
+ */
 function Derived({
   label,
   value,
-  badge,
   hint,
 }: {
   label: string;
   value: string;
-  badge: 'AUTO-INHERITED' | 'SYSTEM-DERIVED' | 'AUTO-DERIVED' | 'SYSTEM-SET' | 'READ-ONLY';
   hint?: string;
 }) {
   return (
@@ -65,9 +89,6 @@ function Derived({
       <span className="field-label">{label}</span>
       <div className="mt-1.5 flex min-h-[2.5rem] flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
         <span className="text-sm font-medium text-slate-800">{value}</span>
-        <span className="rounded border border-slate-300 bg-white px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-          {badge}
-        </span>
       </div>
       {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
     </div>
@@ -164,7 +185,6 @@ export function CreateJobWorkOrderButton({
                   <Derived
                     label="Billing model"
                     value={BILLING_MODEL_LABELS[principal.billingModel]}
-                    badge="AUTO-INHERITED"
                   />
 
                   <Derived
@@ -174,7 +194,6 @@ export function CreateJobWorkOrderButton({
                         STOCK_BUCKET_FOR_BILLING_MODEL[principal.billingModel]
                       ]
                     }
-                    badge="SYSTEM-DERIVED"
                   />
 
                   <div className="sm:col-span-2">
@@ -185,7 +204,6 @@ export function CreateJobWorkOrderButton({
                           INVOICE_BASIS_FOR_BILLING_MODEL[principal.billingModel]
                         ]
                       }
-                      badge="AUTO-DERIVED"
                     />
                   </div>
 
@@ -265,43 +283,37 @@ export function EditJobWorkOrderButton({ order }: { order: JobWorkOrderSummary }
               order itself. */}
           <input type="hidden" name="id" value={order.id} />
 
-          <Derived label="Order no." value={order.orderNumber} badge="SYSTEM-SET" />
-          <Derived label="Principal" value={order.principalName} badge="READ-ONLY" />
+          <Derived label="Order no." value={order.orderNumber} />
+          <Derived label="Principal" value={order.principalName} />
 
           <Derived
             label="Agreement"
             value={order.agreementReference ?? 'No reference'}
-            badge="READ-ONLY"
           />
 
           <Derived
             label="Billing model"
             value={BILLING_MODEL_LABELS[order.billingModel]}
-            badge="AUTO-INHERITED"
           />
 
           <Derived
             label="Product"
             value={`${order.product.productName} (${order.product.productCode})`}
-            badge="READ-ONLY"
           />
 
           <Derived
             label="Principal's brand"
             value={order.product.principalBrandName}
-            badge="READ-ONLY"
           />
 
           <Derived
             label="Stock bucket"
             value={STOCK_OWNERSHIP_LABELS[order.stockBucket]}
-            badge="SYSTEM-DERIVED"
           />
 
           <Derived
             label="Material received"
             value={`${order.materialReceivedQuantity} ${order.product.uom}`}
-            badge="AUTO-DERIVED"
           />
 
           <Field label="Quantity" htmlFor="jw-edit-quantity" required>
@@ -363,14 +375,21 @@ export function EditJobWorkOrderButton({ order }: { order: JobWorkOrderSummary }
  */
 export function ViewJobWorkReceiptButton({
   receipt,
+  isOpen,
+  onOpenChange,
 }: {
   receipt: JobWorkMaterialReceiptView;
+  /** Passed by a row's Actions menu, which is then the trigger. */
+  isOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   return (
     <Disclosure
+      isOpen={isOpen}
+      onOpenChange={onOpenChange}
       label="View"
       title={`Receipt ${receipt.receiptNumber}`}
-      subtitle={`Challan ${receipt.deliveryChallanNumber} from ${receipt.principalName}`}
+      subtitle={`${receipt.principalName} · ${receipt.jobWorkOrderNumber}`}
       width="60rem"
     >
       {(close) => (
@@ -379,123 +398,62 @@ export function ViewJobWorkReceiptButton({
               and stacking them two-up would push the material — the part
               somebody opened this to see — below the fold. */}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <Derived label="Receipt no." value={receipt.receiptNumber} badge="SYSTEM-SET" />
-            <Derived label="Principal" value={receipt.principalName} badge="READ-ONLY" />
+            <Derived label="Receipt no." value={receipt.receiptNumber} />
+            <Derived label="Principal" value={receipt.principalName} />
             <Derived
               label="Job-work order"
               value={receipt.jobWorkOrderNumber}
-              badge="READ-ONLY"
+            />
+
+            {/* The product this consignment is for. One order, one product —
+                so it identifies the receipt as surely as the order number,
+                and it is what a quality user recognises the job by. */}
+            <Derived
+              label="Product"
+              value={receipt.productName + ' (' + receipt.productCode + ')'}
+              hint={'Sold as ' + receipt.principalBrandName}
             />
 
             <Derived
-              label="Delivery challan"
-              value={receipt.deliveryChallanNumber}
-              badge="READ-ONLY"
-              hint="The principal\u2019s own document. Not a purchase invoice."
+              label="Delivery challans"
+              value={receipt.deliveryChallanNumbers.join(', ') || '—'}
+              hint="The principal&rsquo;s own documents. Not purchase invoices."
             />
-            <Derived label="Challan date" value={receipt.receiptDate} badge="READ-ONLY" />
+            <Derived label="Receipt date" value={receipt.receiptDate} />
             <Derived
               label="Recorded"
               value={`${receipt.receivedAt.slice(0, 10)}${
                 receipt.receivedBy ? ` by ${receipt.receivedBy}` : ''
               }`}
-              badge="SYSTEM-SET"
             />
 
             <Derived
-              label="Incoming QC"
-              value={receipt.qcRequired ? 'Required' : 'Not required'}
-              badge="READ-ONLY"
-            />
-            <Derived
               label="Status"
               value={JOB_WORK_RECEIPT_STATUS_LABELS[receipt.status]}
-              badge="AUTO-DERIVED"
-              hint="Follows the lots below."
+            />
+            <Derived
+              label="Approval"
+              value={
+                receipt.decidedAt
+                  ? `${receipt.decidedAt.slice(0, 10)}${
+                      receipt.decidedBy ? ` by ${receipt.decidedBy}` : ''
+                    }`
+                  : receipt.submittedAt
+                    ? 'Waiting on Quality check'
+                    : 'Not sent for approval yet'
+              }
+              hint={receipt.decisionNotes ?? undefined}
             />
             <Derived
               label="Stock ownership"
               value={STOCK_OWNERSHIP_LABELS.PRINCIPAL_OWNED}
-              badge="SYSTEM-SET"
             />
           </div>
 
-          {MATERIAL_SECTIONS.map(({ kind, title }) => {
-            // The line has no kind of its own — it is a material, and what
-            // kind it is follows from the item master. Read here rather than
-            // stored, so an item reclassified later reads correctly.
-            const lines = receipt.lines.filter((line) =>
-              kind === 'PACKING'
-                ? line.item.type === 'PACKING_MATERIAL'
-                : line.item.type !== 'PACKING_MATERIAL',
-            );
-
-            if (lines.length === 0) return null;
-
-            return (
-              <fieldset key={kind} className="rounded-md border border-slate-200 p-4">
-                <legend className="px-1 text-sm font-medium text-slate-700">
-                  {title} ({lines.length})
-                </legend>
-
-                <div className="overflow-x-auto">
-                  <table className="w-full min-w-[42rem] text-left text-xs">
-                    <thead>
-                      <tr className="uppercase tracking-wide text-slate-500">
-                        <th className="py-1 pr-3 font-medium">Material</th>
-                        <th className="py-1 pr-3 font-medium">Batch / lot</th>
-                        <th className="py-1 pr-3 text-right font-medium">Received</th>
-                        <th className="py-1 pr-3 font-medium">MFG</th>
-                        <th className="py-1 pr-3 font-medium">Expiry</th>
-                        <th className="py-1 pr-3 font-medium">Lot</th>
-                        <th className="py-1 font-medium">QC</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {lines.map((line) => (
-                        <tr key={line.id} className="border-t border-slate-100">
-                          <td className="py-1.5 pr-3">
-                            <span className="block text-slate-800">{line.item.name}</span>
-                            <span className="block font-mono text-[10px] text-slate-500">
-                              {line.item.code}
-                            </span>
-                          </td>
-                          <td className="py-1.5 pr-3 font-mono text-slate-700">
-                            {line.batchNumber}
-                          </td>
-                          <td className="py-1.5 pr-3 text-right tabular-nums text-slate-900">
-                            {line.receivedQuantity} {line.item.uom}
-                          </td>
-                          <td className="py-1.5 pr-3 tabular-nums text-slate-600">
-                            {line.manufacturingDate ?? '—'}
-                          </td>
-                          <td className="py-1.5 pr-3 tabular-nums text-slate-600">
-                            {line.expiryDate ?? '—'}
-                          </td>
-                          <td className="py-1.5 pr-3 font-mono text-slate-600">
-                            {line.lotNumber ?? '—'}
-                          </td>
-                          <td className="py-1.5 text-slate-700">
-                            {!receipt.qcRequired
-                              ? 'Not required'
-                              : line.lotStatus === 'USABLE'
-                                ? 'Released'
-                                : line.lotStatus === 'QUARANTINE'
-                                  ? 'Pending'
-                                  : line.lotStatus === 'ON_HOLD'
-                                    ? 'On hold'
-                                    : line.lotStatus === 'REJECTED'
-                                      ? 'Rejected'
-                                      : '—'}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </fieldset>
-            );
-          })}
+          {/* The same tables the quality decision and the work-order form
+              show. Three spellings of "what did the principal send" is how
+              three screens come to disagree about it. */}
+          <ReceiptMaterialTables receipt={receipt} />
 
           {receipt.notes && (
             <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
@@ -515,6 +473,297 @@ export function ViewJobWorkReceiptButton({
 // ---------------------------------------------------------------------------
 
 /**
+ * Asks for the receipt to be approved.
+ *
+ * DELIBERATELY NOT CALLED "APPROVE". This is the store saying the delivery is
+ * completely recorded; the quality decision belongs to somebody else, on the
+ * Quality check tab. A single button doing both would let whoever booked the
+ * material also clear it for production.
+ *
+ * Confirmed rather than fired on one click, because it closes the receipt to
+ * further material: anything arriving afterwards opens a fresh draft.
+ */
+export function SendForApprovalButton({
+  receipt,
+}: {
+  receipt: JobWorkMaterialReceiptView;
+}) {
+  const [state, formAction] = useAction(submitJobWorkReceiptAction);
+
+  return (
+    <Disclosure
+      label="Send for approval"
+      title={`Send ${receipt.receiptNumber} for approval`}
+      subtitle="The quality decision is taken separately, on Quality check."
+      closeWhen={state.status === 'success'}
+      width="34rem"
+    >
+      {(close) => (
+        <form action={formAction} className="flex grow flex-col gap-4">
+          <input type="hidden" name="receiptId" value={receipt.id} />
+
+          <p className="text-sm text-slate-700">
+            This says the delivery is completely recorded — {receipt.rawMaterialCount} raw and{' '}
+            {receipt.packingMaterialCount} packing material
+            {receipt.rawMaterialCount + receipt.packingMaterialCount === 1 ? '' : 's'} on{' '}
+            {receipt.deliveryChallanNumbers.length} challan
+            {receipt.deliveryChallanNumbers.length === 1 ? '' : 's'}.
+          </p>
+
+          <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            Once sent, no more material can be added to this receipt. Anything that arrives later
+            for this order opens a new one. The material stays quarantined until a quality user
+            approves it.
+          </p>
+
+          <FormFooter onCancel={close}>
+            <SubmitButton pendingLabel="Sending…">Send for approval</SubmitButton>
+          </FormFooter>
+        </form>
+      )}
+    </Disclosure>
+  );
+}
+
+/**
+ * The quality decision on a consignment.
+ *
+ * ONE DECISION FOR THE WHOLE RECEIPT, and every lot under it follows. A reason
+ * is required for anything but an approval — a hold or a rejection has
+ * consequences for the principal, and the point of decision is the only time
+ * anyone reliably writes down why.
+ */
+export function DecideJobWorkReceiptButton({
+  receipt,
+  isOpen,
+  onOpenChange,
+}: {
+  receipt: JobWorkMaterialReceiptView;
+  /** Passed by a row's Actions menu, which is then the trigger. */
+  isOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}) {
+  const [state, formAction] = useAction(decideJobWorkReceiptAction);
+  const [decision, setDecision] = useState('APPROVED');
+
+  return (
+    <Disclosure
+      isOpen={isOpen}
+      onOpenChange={onOpenChange}
+      label="Record decision"
+      title={`Quality check — ${receipt.receiptNumber}`}
+      subtitle={`${receipt.principalName} · ${receipt.jobWorkOrderNumber}`}
+      closeWhen={state.status === 'success'}
+      width="52rem"
+    >
+      {(close) => (
+        <form action={formAction} className="grid gap-4 sm:grid-cols-2">
+          <input type="hidden" name="receiptId" value={receipt.id} />
+
+          <Derived label="Receipt no." value={receipt.receiptNumber} />
+          <Derived label="Principal" value={receipt.principalName} />
+          <Derived label="Job-work order" value={receipt.jobWorkOrderNumber} />
+          <Derived
+            label="Sent for approval"
+            value={
+              receipt.submittedAt
+                ? `${receipt.submittedAt.slice(0, 10)}${
+                    receipt.submittedBy ? ` by ${receipt.submittedBy}` : ''
+                  }`
+                : 'Not yet submitted'
+            }
+          />
+
+          {/* WHAT IS BEING DECIDED ABOUT. A decision taken without seeing the
+              material is a signature, not a quality check. */}
+          <div className="sm:col-span-2">
+            <ReceiptMaterialTables receipt={receipt} />
+          </div>
+
+          <Field label="Decision" htmlFor="jw-decision" required>
+            <select
+              id="jw-decision"
+              name="decision"
+              required
+              value={decision}
+              onChange={(event) => setDecision(event.target.value)}
+              className="field h-10"
+            >
+              <option value="APPROVED">Approve — release to production</option>
+              <option value="ON_HOLD">Hold — keep quarantined</option>
+              <option value="REJECTED">Reject — cannot be used</option>
+            </select>
+          </Field>
+
+          <Field label="COA / test reference" htmlFor="jw-testReference">
+            <input
+              id="jw-testReference"
+              name="testReference"
+              type="text"
+              maxLength={64}
+              className="field h-10"
+            />
+          </Field>
+
+          <div className="sm:col-span-2">
+            <Field
+              label="Remarks"
+              htmlFor="jw-decision-notes"
+              required={decision !== 'APPROVED'}
+              hint={
+                decision === 'APPROVED'
+                  ? 'Optional.'
+                  : 'Required — the principal will be told why.'
+              }
+            >
+              <textarea
+                id="jw-decision-notes"
+                name="notes"
+                rows={2}
+                required={decision !== 'APPROVED'}
+                className="field"
+              />
+            </Field>
+          </div>
+
+          <FormFooter onCancel={close} className="sm:col-span-2">
+            <SubmitButton pendingLabel="Recording…">Record decision</SubmitButton>
+          </FormFooter>
+        </form>
+      )}
+    </Disclosure>
+  );
+}
+
+/**
+ * The actions on one Quality Check row.
+ *
+ * ONE CONTROL, not a button per action. The two dialogs are rendered here and
+ * opened by the menu entries; Disclosure drops its own trigger when it is
+ * handed an open state, so there is exactly one way into each.
+ *
+ * RECORD DECISION IS OFFERED ONLY ONCE. A consignment already approved, held or
+ * rejected is a quality record, and the entry says why it is unavailable rather
+ * than disappearing — an action that vanishes leaves somebody wondering whether
+ * they misremembered it.
+ */
+export function JobWorkQualityCheckRowActions({
+  receipt,
+}: {
+  receipt: JobWorkMaterialReceiptView;
+}) {
+  const [viewing, setViewing] = useState(false);
+  const [deciding, setDeciding] = useState(false);
+
+  const pending = receipt.status === 'PENDING_APPROVAL';
+
+  return (
+    <>
+      <RowActionMenu
+        label={`${receipt.receiptNumber} from ${receipt.principalName}`}
+        actions={[
+          { label: 'View', onSelect: () => setViewing(true) },
+          {
+            label: 'Record decision',
+            onSelect: () => setDeciding(true),
+            disabledReason: pending
+              ? null
+              : `This consignment is already ${
+                  JOB_WORK_RECEIPT_STATUS_LABELS[receipt.status].toLowerCase()
+                }. A quality decision is taken once.`,
+          },
+        ]}
+      />
+
+      <ViewJobWorkReceiptButton receipt={receipt} isOpen={viewing} onOpenChange={setViewing} />
+
+      {/* Mounted only while open so the form starts empty each time rather than
+          holding the previous row's typing. */}
+      {deciding && (
+        <DecideJobWorkReceiptButton
+          receipt={receipt}
+          isOpen={deciding}
+          onOpenChange={setDeciding}
+        />
+      )}
+    </>
+  );
+}
+
+/**
+ * A receipt's material, in the two sections it is read in.
+ *
+ * Shared by the quality decision, the record view and the work-order form —
+ * all three answer "what did the principal actually send", and three
+ * spellings of that table is how they come to disagree.
+ */
+export function ReceiptMaterialTables({
+  receipt,
+}: {
+  receipt: JobWorkMaterialReceiptView;
+}) {
+  return (
+    <div className="space-y-3">
+      {(['RAW', 'PACKING'] as const).map((kind) => {
+        const lines = receipt.lines.filter((line) => line.kind === kind);
+
+        if (lines.length === 0) return null;
+
+        return (
+          <fieldset key={kind} className="rounded-md border border-slate-200 p-3">
+            <legend className="px-1 text-sm font-medium text-slate-700">
+              {JOB_WORK_MATERIAL_KIND_LABELS[kind]} ({lines.length})
+            </legend>
+
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[44rem] text-left text-xs">
+                <thead>
+                  <tr className="uppercase tracking-wide text-slate-500">
+                    <th className="py-1 pr-3 font-medium">Material</th>
+                    <th className="py-1 pr-3 font-medium">Batch / lot</th>
+                    <th className="py-1 pr-3 text-right font-medium">Received</th>
+                    <th className="py-1 pr-3 font-medium">UOM</th>
+                    <th className="py-1 pr-3 font-medium">MFG</th>
+                    <th className="py-1 pr-3 font-medium">Expiry</th>
+                    <th className="py-1 font-medium">Challan</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lines.map((line) => (
+                    <tr key={line.id} className="border-t border-slate-100">
+                      <td className="py-1.5 pr-3">
+                        <span className="block text-slate-800">{line.item.name}</span>
+                        <span className="block font-mono text-[10px] text-slate-500">
+                          {line.item.code}
+                        </span>
+                      </td>
+                      <td className="py-1.5 pr-3 font-mono text-slate-700">{line.batchNumber}</td>
+                      <td className="py-1.5 pr-3 text-right tabular-nums text-slate-900">
+                        {line.receivedQuantity}
+                      </td>
+                      <td className="py-1.5 pr-3 text-slate-600">{line.item.uom}</td>
+                      <td className="py-1.5 pr-3 tabular-nums text-slate-600">
+                        {line.manufacturingDate ?? '—'}
+                      </td>
+                      <td className="py-1.5 pr-3 tabular-nums text-slate-600">
+                        {line.expiryDate ?? '—'}
+                      </td>
+                      <td className="py-1.5 font-mono text-[11px] text-slate-500">
+                        {line.deliveryChallanNumber}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </fieldset>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
  * The material receipt form.
  *
  * Offered only for PURE_CONVERSION orders — under own-procurement the material
@@ -530,19 +779,9 @@ export function ViewJobWorkReceiptButton({
  */
 export function CreateJobWorkReceiptButton({
   orders,
-  materialsByOrder,
   ownProcurementOrderCount = 0,
 }: {
   orders: readonly JobWorkOrderSummary[];
-  /**
-   * What each order's formulation calls for, keyed by order.
-   *
-   * Resolved on the server with the rest of the screen so choosing an order is
-   * instant and needs no second round trip. An order missing from the map has
-   * no usable BOM behind it — the form says so instead of offering an empty
-   * list of materials to fill in.
-   */
-  materialsByOrder: Readonly<Record<string, readonly JobWorkOrderMaterial[]>>;
   /**
    * How many job-work orders exist on the OTHER billing model.
    *
@@ -559,8 +798,36 @@ export function CreateJobWorkReceiptButton({
   // choice, and everything else on the form follows from it.
   const [receiptOrderId, setReceiptOrderId] = useState('');
 
-  const materials = receiptOrderId ? (materialsByOrder[receiptOrderId] ?? []) : [];
+  /**
+   * The chosen order's materials, fetched when it is chosen.
+   *
+   * Not brought with the page: the form needs one order's list and the page
+   * would have had to load every order's to have it ready, which is what made
+   * this screen take thirty-four seconds to draw.
+   */
+  const [materials, setMaterials] = useState<readonly JobWorkOrderMaterial[]>([]);
+  const [loadingMaterials, setLoadingMaterials] = useState(false);
+
   const orderChosen = receiptOrderId.length > 0;
+
+  const chooseOrder = (id: string) => {
+    setReceiptOrderId(id);
+    setMaterials([]);
+
+    if (!id) return;
+
+    setLoadingMaterials(true);
+
+    // The lookup is synchronous to the user; the fetch settles behind it. A
+    // second choice made while the first is in flight wins, because the state
+    // it sets is the state the last call writes.
+    startTransition(async () => {
+      const loaded = await loadJobWorkMaterialsAction(id);
+
+      setMaterials(loaded);
+      setLoadingMaterials(false);
+    });
+  };
 
   return (
     <Disclosure
@@ -618,7 +885,7 @@ export function CreateJobWorkReceiptButton({
                     hint: `${order.principalName} (${order.product.principalBrandName})`,
                   }))}
                   value={receiptOrderId}
-                  onChange={setReceiptOrderId}
+                  onChange={chooseOrder}
                   emptyLabel="Select job-work order"
                   className="field h-10"
                 />
@@ -649,36 +916,7 @@ export function CreateJobWorkReceiptButton({
               <Derived
                 label="Stock ownership"
                 value={STOCK_OWNERSHIP_LABELS.PRINCIPAL_OWNED}
-                badge="SYSTEM-SET"
               />
-
-              {/* A DECISION ABOUT THE CONSIGNMENT, not about any one drum on
-                  it, and the same gate purchased material passes through.
-                  Ticked by default: a receipt does not make material usable,
-                  incoming QC does. Untick it only where the principal ships
-                  under an agreed quality arrangement — the choice is recorded
-                  on the receipt and audited. */}
-              <div className="sm:col-span-2">
-                <label className="flex items-start gap-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm">
-                  <input
-                    type="checkbox"
-                    name="qcRequired"
-                    value="true"
-                    defaultChecked
-                    className="mt-0.5 h-4 w-4"
-                  />
-                  <span>
-                    <span className="font-medium text-slate-900">
-                      Hold for incoming QC before this material may be issued
-                    </span>
-                    <span className="mt-0.5 block text-xs text-slate-600">
-                      Every material on this challan lands in quarantine and is released by a
-                      Quality Officer on <strong>Incoming QC</strong>. Clear this only if the
-                      consignment is accepted on the principal&rsquo;s own certificate.
-                    </span>
-                  </span>
-                </label>
-              </div>
 
               <div className="sm:col-span-2">
                 <Field label="Notes" htmlFor="jw-notes">
@@ -690,6 +928,10 @@ export function CreateJobWorkReceiptButton({
               {!orderChosen ? (
                 <p className="sm:col-span-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
                   Choose the job-work order above and its materials will be listed here.
+                </p>
+              ) : loadingMaterials ? (
+                <p className="sm:col-span-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                  Loading the materials for that order…
                 </p>
               ) : materials.length === 0 ? (
                 <div className="sm:col-span-2 space-y-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
@@ -858,63 +1100,113 @@ function MaterialReceiptRow({
  * the batch size and when it starts.
  *
  * THE MATERIAL READINESS TABLE IS THE POINT OF THE FORM. It is the same
- * arithmetic the API refuses on — fetched with the screen, not computed here
- * — so a shortage is visible before the button is pressed rather than
- * afterwards as a sentence. The button follows it; the API re-checks anyway,
- * because a disabled control is a courtesy and not a rule.
+ * arithmetic the API refuses on — asked of the API, not computed here — so a
+ * shortage is visible before the button is pressed rather than afterwards as a
+ * sentence. The button follows it; the API re-checks anyway, because a disabled
+ * control is a courtesy and not a rule.
+ *
+ * FETCHED WHEN THE FORM OPENS. The answer costs several round trips to the
+ * database, and the list used to ask for one per row — sixty-one of them to
+ * draw a page, which took the screen forty-four seconds. It is asked once, for
+ * the order somebody is actually looking at.
  */
-export function RaiseJobWorkProductionButton({
-  order,
-  readiness,
-}: {
-  order: JobWorkOrderSummary;
-  /** Null when the check could not be loaded; the form then says so. */
-  readiness: JobWorkMaterialReadiness | null;
-}) {
+export function RaiseJobWorkProductionButton({ order }: { order: JobWorkOrderSummary }) {
   const [state, formAction] = useAction(createJobWorkProductionOrderAction);
+
+  const [open, setOpen] = useState(false);
+  const [readiness, setReadiness] = useState<JobWorkMaterialReadiness | null>(null);
+  const [receipts, setReceipts] = useState<readonly JobWorkMaterialReceiptView[]>([]);
+  const [checking, setChecking] = useState(false);
 
   const principalOwned = order.stockBucket === 'PRINCIPAL_OWNED';
 
+  const openForm = (next: boolean) => {
+    setOpen(next);
+
+    // Asked each time it opens rather than cached: material moves, QC decisions
+    // are taken, and a stale "Ready" is the failure this table exists to stop.
+    if (!next) return;
+
+    setChecking(true);
+
+    startTransition(async () => {
+      const [check, received] = await Promise.all([
+        loadJobWorkReadinessAction(order.id),
+        // WHAT THE PRINCIPAL ACTUALLY SENT, read from the receipts rather than
+        // recomputed: the popup shows the material it will consume, and the
+        // only honest source for that is the record of its arrival.
+        loadJobWorkReceiptsAction(order.id),
+      ]);
+
+      setReadiness(check);
+      setReceipts(received);
+      setChecking(false);
+    });
+  };
+
+  const alreadyRaised = order.productionOrderCount > 0;
+
   return (
+    <span className="flex flex-wrap items-center gap-2">
+      {/* THE TRIGGER, which controlled mode leaves to the caller. Without one
+          this column rendered empty — the dialog had no way in at all. */}
+      <button
+        type="button"
+        onClick={() => openForm(true)}
+        className="h-9 whitespace-nowrap rounded-md bg-slate-900 px-3 text-sm font-medium text-white transition hover:bg-slate-800"
+      >
+        Raise work order
+      </button>
+
+      {/* SAID, NOT PREVENTED. A second batch against one job-work order is
+          ordinary — a principal orders 200,000 and the plant runs two of
+          100,000 — so this reports what already exists rather than blocking a
+          legitimate second run. What stops a DUPLICATE is the material: the
+          first work order consumes it, and the readiness check inside refuses
+          the second unless more has been received and approved. */}
+      {alreadyRaised && (
+        <span className="text-[11px] text-slate-500">
+          {order.productionOrderCount} already raised
+        </span>
+      )}
+
     <Disclosure
       label="Raise work order"
       title={`Work order for ${order.orderNumber}`}
       subtitle="This raises the SAME production work order own-brand batches use, tagged to this principal. Material will be drawn from the bucket the billing model chose."
       closeWhen={state.status === 'success'}
       width="60rem"
+      isOpen={open}
+      onOpenChange={openForm}
     >
       {(close) => (
         <form action={formAction} className="grid gap-4 sm:grid-cols-2">
           <input type="hidden" name="jobWorkOrderId" value={order.id} />
           <input type="hidden" name="productId" value={order.product.productId} />
 
-          <Derived label="Principal" value={order.principalName} badge="READ-ONLY" />
+          <Derived label="Principal" value={order.principalName} />
 
           <Derived
             label="Agreement"
             value={order.agreementReference ?? 'No reference'}
-            badge="READ-ONLY"
           />
 
-          <Derived label="Job-work order" value={order.orderNumber} badge="READ-ONLY" />
+          <Derived label="Job-work order" value={order.orderNumber} />
 
           <Derived
             label="Billing model"
             value={BILLING_MODEL_LABELS[order.billingModel]}
-            badge="AUTO-INHERITED"
           />
 
           <Derived
             label="Product"
             value={`${order.product.productName} (${order.product.productCode})`}
-            badge="READ-ONLY"
             hint={`Sold as ${order.product.principalBrandName}`}
           />
 
           <Derived
             label="Stock bucket"
             value={STOCK_OWNERSHIP_LABELS[order.stockBucket]}
-            badge="SYSTEM-DERIVED"
           />
 
           <Field label="Batch size" htmlFor="jw-plannedQuantity">
@@ -938,18 +1230,65 @@ export function RaiseJobWorkProductionButton({
             <input id="jw-plannedStartOn" name="plannedStartOn" type="date" className="field h-10" />
           </Field>
 
-          <div className="sm:col-span-2">
-            <MaterialReadinessTable readiness={readiness} principalOwned={principalOwned} />
+          <div className="sm:col-span-2 space-y-4">
+            {checking ? (
+              <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                Checking what material is available for this order…
+              </p>
+            ) : (
+              <>
+                <MaterialReadinessTable readiness={readiness} principalOwned={principalOwned} />
+
+                {/* WHAT THE PRINCIPAL ACTUALLY SENT — under pure conversion the
+                    batch is made of these drums and no others, so the person
+                    raising the order should see them, with their batch markings
+                    and expiry dates, before committing to a batch size. */}
+                {principalOwned &&
+                  receipts
+                    .filter((receipt) => receipt.status === 'APPROVED')
+                    .map((receipt) => (
+                      <fieldset
+                        key={receipt.id}
+                        className="rounded-md border border-slate-200 p-4"
+                      >
+                        <legend className="px-1 text-sm font-medium text-slate-700">
+                          Received on {receipt.receiptNumber}
+                        </legend>
+
+                        <p className="mb-2 text-xs text-slate-500">
+                          Challan{receipt.deliveryChallanNumbers.length === 1 ? '' : 's'}{' '}
+                          {receipt.deliveryChallanNumbers.join(', ')} · approved
+                          {receipt.decidedBy ? ` by ${receipt.decidedBy}` : ''}
+                        </p>
+
+                        <ReceiptMaterialTables receipt={receipt} />
+                      </fieldset>
+                    ))}
+
+                {principalOwned &&
+                  receipts.filter((receipt) => receipt.status === 'APPROVED').length === 0 && (
+                    <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                      No approved material receipt for this order yet. Record what the principal
+                      sent under <strong>Material received from principal</strong>, send it for
+                      approval, and have it approved on <strong>Quality check</strong>.
+                    </p>
+                  )}
+              </>
+            )}
           </div>
 
           <FormFooter onCancel={close} className="sm:col-span-2">
-            <SubmitButton pendingLabel="Raising…" disabled={readiness ? !readiness.ready : false}>
+            <SubmitButton
+              pendingLabel="Raising…"
+              disabled={checking || (readiness ? !readiness.ready : false)}
+            >
               Raise work order
             </SubmitButton>
           </FormFooter>
         </form>
       )}
     </Disclosure>
+    </span>
   );
 }
 
@@ -1111,6 +1450,435 @@ function MaterialReadinessTable({
   );
 }
 // ---------------------------------------------------------------------------
+// Job-work production orders — the module's own manufacturing record
+// ---------------------------------------------------------------------------
+
+/**
+ * Raises the production order for a job-work order.
+ *
+ * EVERYTHING IT CAN KNOW, IT KNOWS. The principal, agreement, billing model,
+ * product and brand all follow from the job-work order and none of them is a
+ * field — re-typing what the system already holds is how two records of one
+ * job come to disagree. What is left to decide is which approved consignment
+ * the batch is made from, how much, and when.
+ *
+ * THE CONSIGNMENT IS THE GATE. Only receipts that have passed Quality check
+ * are offered, and the API refuses anything else — so an order cannot be
+ * raised against material still in quarantine.
+ */
+export function RaiseJobWorkProductionOrderButton({
+  order,
+}: {
+  order: JobWorkOrderSummary;
+}) {
+  const [state, formAction] = useAction(raiseJobWorkProductionOrderAction);
+
+  const [open, setOpen] = useState(false);
+  const [receipts, setReceipts] = useState<readonly JobWorkMaterialReceiptView[]>([]);
+  const [receiptId, setReceiptId] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const openForm = (next: boolean) => {
+    setOpen(next);
+
+    if (!next) return;
+
+    setLoading(true);
+
+    startTransition(async () => {
+      const eligible = await loadEligibleReceiptsAction(order.id);
+
+      setReceipts(eligible);
+      // One approved consignment is the ordinary case; choosing it for them
+      // saves a click without hiding that a choice exists.
+      setReceiptId(eligible.length === 1 ? (eligible[0]?.id ?? '') : '');
+      setLoading(false);
+    });
+  };
+
+  const chosen = receipts.find((receipt) => receipt.id === receiptId) ?? null;
+
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      <button
+        type="button"
+        onClick={() => openForm(true)}
+        className="h-9 whitespace-nowrap rounded-md bg-slate-900 px-3 text-sm font-medium text-white transition hover:bg-slate-800"
+      >
+        Raise production order
+      </button>
+
+      <Disclosure
+        isOpen={open}
+        onOpenChange={openForm}
+        label="Raise production order"
+        title={`Production order for ${order.orderNumber}`}
+        subtitle="Made from an approved consignment of the principal’s material."
+        closeWhen={state.status === 'success'}
+        width="62rem"
+      >
+        {(close) => (
+          <form action={formAction} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <input type="hidden" name="jobWorkOrderId" value={order.id} />
+
+            {/* THREE COLUMNS: nine read-only values above the material tables,
+                which are the part somebody opened this to see. Stacking them
+                two-up would push the tables below the fold. */}
+            <Derived label="Production order no." value="Generated on save" />
+            <Derived label="Job-work order" value={order.orderNumber} />
+            <Derived label="Principal" value={order.principalName} />
+
+            <Derived
+              label="Agreement"
+              value={order.agreementReference ?? 'No reference'}
+            />
+            <Derived
+              label="Billing model"
+              value={BILLING_MODEL_LABELS[order.billingModel]}
+            />
+            <Derived
+              label="Stock bucket"
+              value={STOCK_OWNERSHIP_LABELS[order.stockBucket]}
+            />
+
+            <Derived
+              label="Product"
+              value={`${order.product.productName} (${order.product.productCode})`}
+            />
+            <Derived label="Brand" value={order.product.principalBrandName} />
+            <Derived label="UOM" value={order.product.uom} />
+
+            <Field label="Material receipt" htmlFor="jwpo-receipt" required>
+              <SearchableSelect
+                id="jwpo-receipt"
+                name="materialReceiptId"
+                required
+                disabled={loading || receipts.length === 0}
+                options={receipts.map((receipt) => ({
+                  value: receipt.id,
+                  label: receipt.receiptNumber,
+                  hint: `${receipt.rawMaterialCount} raw · ${receipt.packingMaterialCount} packing · ${receipt.deliveryChallanNumbers.join(", ")}`,
+                }))}
+                value={receiptId}
+                onChange={setReceiptId}
+                emptyLabel={loading ? 'Loading…' : 'Select material receipt'}
+                className="field h-10"
+              />
+            </Field>
+
+            <Field label="Planned quantity" htmlFor="jwpo-quantity" required>
+              <input
+                id="jwpo-quantity"
+                name="plannedQuantity"
+                type="text"
+                inputMode="decimal"
+                required
+                defaultValue={order.quantity}
+                className="field h-10"
+              />
+            </Field>
+
+            <Field label="Planned start" htmlFor="jwpo-start">
+              <input id="jwpo-start" name="plannedStartOn" type="date" className="field h-10" />
+            </Field>
+
+            <Field label="Planned completion" htmlFor="jwpo-finish">
+              <input
+                id="jwpo-finish"
+                name="plannedCompletionOn"
+                type="date"
+                className="field h-10"
+              />
+            </Field>
+
+            <div className="sm:col-span-2 lg:col-span-3">
+              <Field label="Notes" htmlFor="jwpo-notes">
+                <textarea id="jwpo-notes" name="notes" rows={2} className="field" />
+              </Field>
+            </div>
+
+            <div className="sm:col-span-2 lg:col-span-3">
+              {loading ? (
+                <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                  Looking for approved consignments against this order…
+                </p>
+              ) : receipts.length === 0 ? (
+                <div className="space-y-1 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+                  <p className="font-medium">
+                    No approved material receipt for this order.
+                  </p>
+                  <p>
+                    Record what the principal sent under{' '}
+                    <strong>Material received from principal</strong>, send it for approval, and
+                    have it approved on <strong>Quality check</strong>. A production order cannot
+                    be raised against material still in quarantine.
+                  </p>
+                </div>
+              ) : chosen ? (
+                <fieldset className="rounded-md border border-slate-200 p-4">
+                  <legend className="px-1 text-sm font-medium text-slate-700">
+                    Material on {chosen.receiptNumber}
+                  </legend>
+
+                  {/* REFERENCED, NOT COPIED. These are the receipt’s own child
+                      records — the production order holds none of its own. */}
+                  <ReceiptMaterialTables receipt={chosen} />
+                </fieldset>
+              ) : (
+                <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+                  Choose the material receipt above and its materials will be listed here.
+                </p>
+              )}
+            </div>
+
+            <FormFooter onCancel={close} className="sm:col-span-2 lg:col-span-3">
+              <SubmitButton pendingLabel="Raising…" disabled={loading || receipts.length === 0}>
+                Raise production order
+              </SubmitButton>
+            </FormFooter>
+          </form>
+        )}
+      </Disclosure>
+    </span>
+  );
+}
+
+/**
+ * The production order as a record, and the plan as something to change.
+ *
+ * ONE COMPONENT FOR BOTH, because the two differ only in which fields take
+ * input — and a view that omits the fields an edit shows is a view somebody
+ * has to close and reopen in the other mode to read.
+ */
+export function JobWorkProductionOrderDialog({
+  order,
+  mode,
+  isOpen,
+  onOpenChange,
+}: {
+  order: JobWorkProductionOrderView;
+  mode: 'view' | 'edit';
+  isOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}) {
+  const [state, formAction] = useAction(updateJobWorkProductionOrderAction);
+
+  const editing = mode === 'edit';
+
+  return (
+    <Disclosure
+      isOpen={isOpen}
+      onOpenChange={onOpenChange}
+      label={editing ? 'Edit' : 'View'}
+      title={`${order.orderNumber} — ${order.product.name}`}
+      subtitle={`${order.principalName} · ${order.jobWorkOrderNumber}`}
+      closeWhen={state.status === 'success'}
+      width="62rem"
+    >
+      {(close) => (
+        <form action={formAction} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <input type="hidden" name="id" value={order.id} />
+
+          <Derived label="Production order no." value={order.orderNumber} />
+          <Derived label="Job-work order" value={order.jobWorkOrderNumber} />
+          <Derived label="Principal" value={order.principalName} />
+
+          <Derived
+            label="Agreement"
+            value={order.agreementReference ?? 'No reference'}
+          />
+          <Derived
+            label="Billing model"
+            value={BILLING_MODEL_LABELS[order.billingModel]}
+          />
+          <Derived
+            label="Product"
+            value={`${order.product.name} (${order.product.code})`}
+            hint={`Sold as ${order.principalBrandName}`}
+          />
+
+          <Derived label="Material receipt" value={order.materialReceipt.receiptNumber} />
+          <Derived
+            label="Quality check"
+            value={
+              order.materialReceipt.decidedAt
+                ? `Approved ${order.materialReceipt.decidedAt.slice(0, 10)}`
+                : 'Approved'
+            }
+            hint={order.materialReceipt.decidedBy ?? undefined}
+          />
+          <Derived
+            label="Raised"
+            value={`${order.createdAt.slice(0, 10)}${
+              order.createdBy ? ` by ${order.createdBy}` : ''
+            }`}
+          />
+
+          {editing ? (
+            <>
+              <Field label="Planned quantity" htmlFor={`jwpo-q-${order.id}`} required>
+                <input
+                  id={`jwpo-q-${order.id}`}
+                  name="plannedQuantity"
+                  type="text"
+                  inputMode="decimal"
+                  required
+                  defaultValue={order.plannedQuantity}
+                  className="field h-10"
+                />
+              </Field>
+
+              <Field label="Planned start" htmlFor={`jwpo-s-${order.id}`}>
+                <input
+                  id={`jwpo-s-${order.id}`}
+                  name="plannedStartOn"
+                  type="date"
+                  defaultValue={order.plannedStartOn ?? ''}
+                  className="field h-10"
+                />
+              </Field>
+
+              <Field label="Planned completion" htmlFor={`jwpo-c-${order.id}`}>
+                <input
+                  id={`jwpo-c-${order.id}`}
+                  name="plannedCompletionOn"
+                  type="date"
+                  defaultValue={order.plannedCompletionOn ?? ''}
+                  className="field h-10"
+                />
+              </Field>
+            </>
+          ) : (
+            <>
+              <Derived
+                label="Planned quantity"
+                value={`${order.plannedQuantity} ${order.product.uom}`}
+              />
+              <Derived label="Planned start" value={order.plannedStartOn ?? '—'} />
+              <Derived label="Planned completion" value={order.plannedCompletionOn ?? '—'} />
+            </>
+          )}
+
+          {editing ? (
+            <Field
+              label="Stage"
+              htmlFor={`jwpo-st-${order.id}`}
+              hint="Only the next stage of the workflow is accepted."
+            >
+              <select
+                id={`jwpo-st-${order.id}`}
+                name="status"
+                defaultValue={order.status}
+                className="field h-10"
+              >
+                {JOB_WORK_PRODUCTION_STATUSES.map((value) => (
+                  <option key={value} value={value}>
+                    {JOB_WORK_PRODUCTION_STATUS_LABELS[value]}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          ) : (
+            <Derived
+              label="Stage"
+              value={JOB_WORK_PRODUCTION_STATUS_LABELS[order.status]}
+            />
+          )}
+
+          <div className="sm:col-span-2 lg:col-span-3">
+            {editing ? (
+              <Field label="Notes" htmlFor={`jwpo-n-${order.id}`}>
+                <textarea
+                  id={`jwpo-n-${order.id}`}
+                  name="notes"
+                  rows={2}
+                  defaultValue={order.notes ?? ''}
+                  className="field"
+                />
+              </Field>
+            ) : (
+              order.notes && (
+                <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                  {order.notes}
+                </p>
+              )
+            )}
+          </div>
+
+          <div className="sm:col-span-2 lg:col-span-3">
+            <fieldset className="rounded-md border border-slate-200 p-4">
+              <legend className="px-1 text-sm font-medium text-slate-700">
+                Material on {order.materialReceipt.receiptNumber}
+              </legend>
+
+              <ReceiptMaterialTables receipt={order.materialReceipt} />
+            </fieldset>
+          </div>
+
+          <FormFooter onCancel={close} className="sm:col-span-2 lg:col-span-3">
+            {editing && <SubmitButton pendingLabel="Saving…">Save changes</SubmitButton>}
+          </FormFooter>
+        </form>
+      )}
+    </Disclosure>
+  );
+}
+
+/**
+ * The actions on one job-work production order row.
+ *
+ * EDIT DISAPPEARS ONCE THE BATCH IS UNDER WAY, with the reason given rather
+ * than the entry vanishing: after production starts the figures describe what
+ * is happening on the floor, and editing them would rewrite history.
+ */
+export function JobWorkProductionRowActions({
+  order,
+}: {
+  order: JobWorkProductionOrderView;
+}) {
+  const [viewing, setViewing] = useState(false);
+  const [editing, setEditing] = useState(false);
+
+  const planEditable = order.status === 'DRAFT' || order.status === 'READY_FOR_PRODUCTION';
+
+  return (
+    <>
+      <RowActionMenu
+        label={`${order.orderNumber} for ${order.principalName}`}
+        actions={[
+          { label: 'View', onSelect: () => setViewing(true) },
+          {
+            label: 'Edit',
+            onSelect: () => setEditing(true),
+            disabledReason: planEditable
+              ? null
+              : `This order is ${JOB_WORK_PRODUCTION_STATUS_LABELS[order.status].toLowerCase()}, so its plan can no longer be changed.`,
+          },
+        ]}
+      />
+
+      {viewing && (
+        <JobWorkProductionOrderDialog
+          order={order}
+          mode="view"
+          isOpen={viewing}
+          onOpenChange={setViewing}
+        />
+      )}
+
+      {editing && (
+        <JobWorkProductionOrderDialog
+          order={order}
+          mode="edit"
+          isOpen={editing}
+          onOpenChange={setEditing}
+        />
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // US-JW-05 — dispatch and invoice
 // ---------------------------------------------------------------------------
 
@@ -1197,7 +1965,6 @@ export function CreateJobWorkDispatchButton({
                 <Derived
                   label="Invoice basis"
                   value={JOB_WORK_INVOICE_BASIS_LABELS[order.invoiceBasis]}
-                  badge="AUTO-DERIVED"
                 />
               </div>
 

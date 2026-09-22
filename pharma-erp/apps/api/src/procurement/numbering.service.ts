@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 
 import type { Prisma } from '@pharma-erp/database';
 
+import { PrismaService } from '../prisma/prisma.service';
+
 /** Document prefixes. The set is closed so a typo cannot invent a new series. */
 export type DocumentType =
   // Procure-to-Pay
@@ -37,7 +39,15 @@ export type DocumentType =
   | 'JWA'
   | 'JW'
   | 'JWR'
-  | 'JWI';
+  | 'JWI'
+  // The job-work PRODUCTION order, which is its own document and not the
+  // internal 'WO' series: the two workflows are separate, and interleaving
+  // them in one counter would make neither sequence mean anything.
+  | 'JWPO'
+  // The issue and the batch record raised under one. Separate series for the
+  // same reason: 'MI' and internal batch numbers belong to the other workflow.
+  | 'JWMI'
+  | 'JWB';
 
 /**
  * Allocates human-readable document numbers: PR-2026-0001, GRN-2026-0014.
@@ -55,6 +65,11 @@ export type DocumentType =
  */
 @Injectable()
 export class NumberingService {
+  // Injected for `peek` alone. Every RESERVING call takes the caller's
+  // transaction client instead — see the note above on why a number must be
+  // allocated inside the transaction that writes the document.
+  constructor(private readonly prisma: PrismaService) {}
+
   /**
    * Reserves the next number for a document type in the current year.
    *
@@ -83,6 +98,34 @@ export class NumberingService {
     // `create` sets nextValue to 2 and this document takes 1; `update` returns
     // the already-incremented value, so the number just used is one less.
     const value = sequence.nextValue - 1;
+
+    return `${docType}-${year}-${String(value).padStart(4, '0')}`;
+  }
+
+  /**
+   * What the next number WOULD be, without reserving it.
+   *
+   * For a form that wants to show the number it is about to take. Deliberately
+   * not `next`: reserving one to display it would burn a number every time
+   * somebody opened a form and closed it again, and a sequence with gaps is
+   * exactly what the counter table exists to avoid.
+   *
+   * ADVISORY, therefore. Two people with the same form open see the same
+   * number and one of them is wrong; the real number is allocated inside the
+   * transaction that writes the document, under a row lock. Nothing may be
+   * stored on the strength of this.
+   */
+  async peek(tenantId: string, docType: DocumentType): Promise<string> {
+    const year = new Date().getUTCFullYear();
+
+    const sequence = await this.prisma.scoped.documentSequence.findUnique({
+      where: { tenantId_docType_year: { tenantId, docType, year } },
+      select: { nextValue: true },
+    });
+
+    // No row yet means nothing of this type has been numbered this year, and
+    // the first document will take 1.
+    const value = sequence?.nextValue ?? 1;
 
     return `${docType}-${year}-${String(value).padStart(4, '0')}`;
   }

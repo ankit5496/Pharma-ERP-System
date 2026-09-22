@@ -14,11 +14,26 @@ import { TenantContextService } from '../tenant/tenant-context.service';
 
 import type {
   CreateJobWorkMaterialReceiptDto,
+  DecideJobWorkReceiptDto,
   JobWorkMaterialReceiptLineDto,
 } from './dto/job-work-receipt.dto';
 import { JobWorkOrdersService, parseQuantity } from './job-work-orders.service';
 
 const ZERO = new Prisma.Decimal(0);
+
+/**
+ * How a status reads inside a refusal.
+ *
+ * Lower case and in the middle of a sentence — "JWR-2026-0001 is pending
+ * approval" — rather than the title-case labels the screens use.
+ */
+const RECEIPT_STATUS_WORDS: Record<string, string> = {
+  DRAFT: 'still a draft',
+  PENDING_APPROVAL: 'pending approval',
+  APPROVED: 'approved',
+  ON_HOLD: 'on hold',
+  REJECTED: 'rejected',
+};
 
 /**
  * Free-of-cost material from the principal — US-JW-02.
@@ -159,20 +174,22 @@ export class JobWorkReceiptsService {
   }
 
   /**
-   * Records a challan and the principal-owned lots it creates, atomically.
+   * Adds a delivery to the order's open receipt, creating it if there is none.
    *
-   * ONE TRANSACTION FOR THE WHOLE DELIVERY. The receipt and the stock are the
-   * same event — a receipt with no lot is material the store has taken in and
-   * cannot issue, and a lot with no receipt is stock with no challan behind it
-   * — and so are the materials with respect to each other: a challan listing
-   * three is one delivery, and recording two of the three because the third was
-   * rejected leaves the store reconciling against a document that does not
-   * match what is on the shelf. Either all of it lands or none does (section 21
-   * of the brief).
+   * ONE RECEIPT PER ORDER, PER RECEIVING CYCLE. A principal sends material for
+   * one order across several challans — the API on Monday, the cartons on
+   * Thursday — and booking each as its own document left a register with four
+   * rows for one delivery and nothing to approve as a whole. So the materials
+   * join the order’s DRAFT receipt, whichever challan they came on, and the
+   * challan number travels on the line.
    *
-   * EVERY LINE IS VALIDATED BEFORE ANY IS WRITTEN, which is what makes that
-   * promise cheap to keep: by the time the transaction opens, the only thing
-   * that can fail is the database itself.
+   * A receipt that has been submitted is closed to additions: it is a document
+   * somebody is being asked to approve, and adding to it after the fact would
+   * change what they were shown. Material arriving then opens a fresh draft.
+   *
+   * NOTHING IS ISSUABLE YET. Every lot lands in QUARANTINE and stays there
+   * until the receipt is approved — which is the whole point of the workflow
+   * this sits in, and is enforced by the lot status rather than by a flag.
    */
   async create(dto: CreateJobWorkMaterialReceiptDto): Promise<JobWorkMaterialReceiptView> {
     const tenantId = this.tenantContext.requireTenantId();
@@ -180,9 +197,9 @@ export class JobWorkReceiptsService {
 
     const order = await this.orders.requireOrder(dto.jobWorkOrderId);
 
-    // THE FROZEN MODEL ON THE ORDER, not the agreement's current one. If the
+    // THE FROZEN MODEL ON THE ORDER, not the agreement’s current one. If the
     // agreement were renegotiated to OWN_PROCUREMENT tomorrow, material already
-    // in flight against this order is still the principal's.
+    // in flight against this order is still the principal’s.
     if (order.billingModel !== 'PURE_CONVERSION') {
       throw new ConflictException(
         `${order.orderNumber} is an own-procurement order, so its material is bought through the ` +
@@ -194,11 +211,10 @@ export class JobWorkReceiptsService {
 
     const challan = dto.deliveryChallanNumber.trim();
 
-    // THE MATERIALS THE FORMULATION ACTUALLY CALLS FOR. The form offers these
-    // and nothing else, and checking them again here is what makes that true
-    // rather than merely displayed: a hand-made request naming some other
-    // item — or the same item twice — is refused, so a principal's challan
-    // cannot quietly introduce stock the order never expected.
+    // THE MATERIALS THE ORDER ACTUALLY EXPECTS — its formulation and its pack
+    // specification. Checked here and not only on the form: a hand-made request
+    // naming some other item is refused, so a principal’s challan cannot
+    // quietly introduce stock the order never expected.
     const expected = await this.materialsFor(order.id);
     const expectedById = new Map(expected.map((material) => [material.item.id, material.item]));
 
@@ -217,31 +233,30 @@ export class JobWorkReceiptsService {
       );
     }
 
-    // INSPECTED BY DEFAULT, matching the rule purchased material already lives
-    // under: a receipt does not make material usable, incoming QC does. Someone
-    // booking the consignment may say it is not needed — a principal shipping
-    // under an agreed quality arrangement, say — and that choice is recorded on
-    // the receipt and audited with the rest of the create.
-    const qcRequired = dto.qcRequired ?? true;
-    const lotStatus = qcRequired ? 'QUARANTINE' : 'USABLE';
-
     const receiptId = await this.prisma.transaction(async (tx) => {
-      const receiptNumber = await this.numbering.next(tx, tenantId, 'JWR');
-
-      const receipt = await tx.jobWorkMaterialReceipt.create({
-        data: {
-          tenantId,
-          receiptNumber,
-          jobWorkOrderId: order.id,
-          deliveryChallanNumber: challan,
-          receiptDate: fromIsoDate(dto.receiptDate),
-          qcRequired,
-          status: qcRequired ? 'PENDING_QC' : 'RELEASED',
-          notes: dto.notes?.trim() || null,
-          receivedById: userId,
-        },
+      // The order’s open receipt, or a new one. Read inside the transaction so
+      // two people booking at once cannot both decide there is none.
+      const open = await tx.jobWorkMaterialReceipt.findFirst({
+        where: { jobWorkOrderId: order.id, status: 'DRAFT', deletedAt: null },
+        select: { id: true },
       });
 
+      const receipt =
+        open ??
+        (await tx.jobWorkMaterialReceipt.create({
+          data: {
+            tenantId,
+            receiptNumber: await this.numbering.next(tx, tenantId, 'JWR'),
+            jobWorkOrderId: order.id,
+            receiptDate: fromIsoDate(dto.receiptDate),
+            notes: dto.notes?.trim() || null,
+            receivedById: userId,
+          },
+          select: { id: true },
+        }));
+
+      // A material already on the open receipt is a second delivery of it, and
+      // that is ordinary — the two lots stay separate, as they physically are.
       for (const line of prepared) {
         // The lot takes a LOT-series number like every other lot, because it is
         // one: the store finds it in the same register and the same reports.
@@ -252,6 +267,7 @@ export class JobWorkReceiptsService {
             tenantId,
             receiptId: receipt.id,
             itemId: line.item.id,
+            deliveryChallanNumber: challan,
             batchNumber: line.batchNumber,
             receivedQuantity: line.quantity,
             manufacturingDate: line.manufacturingDate,
@@ -272,18 +288,20 @@ export class JobWorkReceiptsService {
             // No goods receipt line: there was no purchase. This is why the
             // column had to become nullable.
             goodsReceiptLineId: null,
-            // The principal's own batch marking, kept in the field that means
-            // "the supplier's number for this", which is exactly what it is.
+            // The principal’s own batch marking, kept in the field that means
+            // "the supplier’s number for this", which is exactly what it is.
             vendorBatchNumber: line.batchNumber,
             manufacturingDate: line.manufacturingDate,
             expiryDate: line.expiryDate,
             quantityReceived: line.quantity,
             quantityAvailable: line.quantity,
-            status: lotStatus,
+            // Quarantined until the receipt is approved. There is no longer a
+            // per-consignment choice about this.
+            status: 'QUARANTINE',
           },
         });
 
-        // The same ledger every other movement is written to, so a principal's
+        // The same ledger every other movement is written to, so a principal’s
         // material has a movement history for the same reason ours does. The
         // ledger is append-only at the database level.
         await tx.stockLedgerEntry.create({
@@ -291,18 +309,14 @@ export class JobWorkReceiptsService {
             tenantId,
             itemId: line.item.id,
             stockLotId: lot.id,
-            // The entry says what actually happened to the stock. Quarantined
-            // material has arrived but is not usable, which is precisely what
-            // GRN_QUARANTINE means; material taken in without an inspection
-            // step enters the usable pool, which is QC_ACCEPTED.
-            entryType: qcRequired ? 'GRN_QUARANTINE' : 'QC_ACCEPTED',
+            // Arrived, not yet usable — which is precisely what this type means.
+            entryType: 'GRN_QUARANTINE',
             quantityDelta: line.quantity,
-            affectsUsableStock: !qcRequired,
-            reference: receiptNumber,
+            affectsUsableStock: false,
+            reference: challan,
             notes:
               `Principal-owned material for ${order.orderNumber} on delivery challan ` +
-              `${challan}. Free of cost — not a purchase.` +
-              (qcRequired ? ' Held for incoming QC.' : ''),
+              `${challan}. Free of cost — not a purchase. Held pending approval.`,
             createdById: userId,
           },
         });
@@ -314,6 +328,162 @@ export class JobWorkReceiptsService {
     return this.findOne(receiptId);
   }
 
+  /**
+   * Says the delivery is completely recorded, and asks for it to be approved.
+   *
+   * NOT THE APPROVAL. This is the store officer stating that what is on the
+   * receipt is what arrived; the quality decision is somebody else’s, on the
+   * Quality Check screen. Keeping the two apart is the point of the stage —
+   * one action would let whoever booked the material also clear it.
+   */
+  async submit(id: string): Promise<JobWorkMaterialReceiptView> {
+    const receipt = await this.requireReceipt(id);
+
+    if (receipt.status !== 'DRAFT') {
+      throw new ConflictException(
+        `${receipt.receiptNumber} has already been sent for approval — it is ` +
+          `${RECEIPT_STATUS_WORDS[receipt.status]}. A receipt is submitted once.`,
+      );
+    }
+
+    if (receipt.lines.length === 0) {
+      throw new BadRequestException(
+        `${receipt.receiptNumber} has no material on it yet. Record what arrived before ` +
+          'sending it for approval.',
+      );
+    }
+
+    await this.prisma.scoped.jobWorkMaterialReceipt.update({
+      where: { id: receipt.id },
+      data: {
+        status: 'PENDING_APPROVAL',
+        submittedById: this.tenantContext.getUserId(),
+        submittedAt: new Date(),
+      },
+    });
+
+    return this.findOne(receipt.id);
+  }
+
+  /**
+   * The quality decision on a whole consignment.
+   *
+   * ONE DECISION FOR THE RECEIPT, and every lot under it follows. A principal
+   * delivers a consignment and it is accepted or it is not; deciding drum by
+   * drum was the purchased-material model, and it left a store officer with
+   * four decisions to make about one delivery.
+   *
+   * A QcResult IS STILL WRITTEN PER LOT. That is the existing quality record —
+   * the same table incoming QC writes, carrying the same inspector, reference
+   * and remarks — so a principal’s material has the same evidence behind it as
+   * anything bought, and a recall reads one register rather than two.
+   */
+  async decide(
+    id: string,
+    dto: DecideJobWorkReceiptDto,
+  ): Promise<JobWorkMaterialReceiptView> {
+    const tenantId = this.tenantContext.requireTenantId();
+    // A quality decision must be attributable; an unattributed one is not a
+    // quality record at all.
+    const inspectedById = this.tenantContext.getUserId();
+
+    if (!inspectedById) {
+      throw new BadRequestException('A quality decision has to be recorded by a signed-in user.');
+    }
+
+    const receipt = await this.requireReceipt(id);
+
+    if (receipt.status !== 'PENDING_APPROVAL') {
+      throw new ConflictException(
+        `${receipt.receiptNumber} is ${RECEIPT_STATUS_WORDS[receipt.status]}. Only a receipt ` +
+          'waiting for approval can be decided.',
+      );
+    }
+
+    if (dto.decision !== 'APPROVED' && !dto.notes?.trim()) {
+      // A rejection or a hold has consequences for the principal and may end in
+      // material going back. Requiring the reason at the point of decision is
+      // the only time anyone reliably records it.
+      throw new BadRequestException(
+        'A reason is required when holding or rejecting a consignment.',
+      );
+    }
+
+    const decision = dto.decision;
+    const lotStatus = decision === 'APPROVED' ? 'USABLE' : decision === 'REJECTED' ? 'REJECTED' : 'ON_HOLD';
+
+    await this.prisma.transaction(async (tx) => {
+      for (const line of receipt.lines) {
+        if (!line.stockLot) continue;
+
+        const quantity = line.stockLot.quantityAvailable;
+
+        await tx.qcResult.create({
+          data: {
+            tenantId,
+            stockLotId: line.stockLot.id,
+            decision: decision === 'APPROVED' ? 'ACCEPTED' : decision,
+            testReference: dto.testReference?.trim() || null,
+            remarks: dto.notes?.trim() || null,
+            inspectedById,
+          },
+        });
+
+        await tx.stockLot.update({
+          where: { id: line.stockLot.id },
+          data: { status: lotStatus },
+        });
+
+        // Quarantine empties either way; usable stock gains only on approval.
+        await tx.stockLedgerEntry.create({
+          data: {
+            tenantId,
+            itemId: line.itemId,
+            stockLotId: line.stockLot.id,
+            entryType:
+              decision === 'APPROVED'
+                ? 'QC_ACCEPTED'
+                : decision === 'REJECTED'
+                  ? 'QC_REJECTED'
+                  : 'QC_HOLD',
+            quantityDelta: decision === 'APPROVED' ? quantity : quantity.negated(),
+            affectsUsableStock: decision === 'APPROVED',
+            reference: receipt.receiptNumber,
+            notes:
+              decision === 'APPROVED'
+                ? `Approved on ${receipt.receiptNumber}; released into principal-owned stock.`
+                : `${RECEIPT_STATUS_WORDS[decision]} on ${receipt.receiptNumber}: ${
+                    dto.notes?.trim() ?? 'no reason recorded'
+                  }.`,
+            createdById: inspectedById,
+          },
+        });
+      }
+
+      await tx.jobWorkMaterialReceipt.update({
+        where: { id: receipt.id },
+        data: {
+          status: decision,
+          decidedById: inspectedById,
+          decidedAt: new Date(),
+          decisionNotes: dto.notes?.trim() || null,
+        },
+      });
+    });
+
+    return this.findOne(receipt.id);
+  }
+
+  private async requireReceipt(id: string) {
+    const receipt = await this.prisma.scoped.jobWorkMaterialReceipt.findFirst({
+      where: { id, deletedAt: null },
+      include: RECEIPT_INCLUDE,
+    });
+
+    if (!receipt) throw new BadRequestException('That material receipt does not exist.');
+
+    return receipt;
+  }
   async findOne(id: string): Promise<JobWorkMaterialReceiptView> {
     const receipt = await this.prisma.scoped.jobWorkMaterialReceipt.findFirst({
       where: { id, deletedAt: null },
@@ -323,44 +493,6 @@ export class JobWorkReceiptsService {
     if (!receipt) throw new BadRequestException('That material receipt does not exist.');
 
     return toReceiptView(receipt);
-  }
-
-  /**
-   * Brings a receipt's status back in line with its lines.
-   *
-   * CALLED AFTER AN INCOMING-QC DECISION, from the QC service. The header's
-   * status is a summary of its lots and nothing else, so it is recomputed from
-   * them rather than advanced by hand — which is what stops a consignment
-   * reading "released" while one of its drums sits rejected.
-   *
-   * Takes the transaction it is called in, so the decision and the summary
-   * land together or not at all.
-   */
-  async syncStatus(
-    tx: Prisma.TransactionClient,
-    receiptId: string,
-  ): Promise<JobWorkReceiptStatus> {
-    const lines = await tx.jobWorkMaterialReceiptLine.findMany({
-      where: { receiptId, deletedAt: null },
-      select: { stockLot: { select: { status: true } } },
-    });
-
-    const statuses = lines.map((line) => line.stockLot?.status ?? null);
-
-    // Worst-first: one rejected drum makes the consignment rejected, and one
-    // drum still in quarantine means the consignment is not through QC yet.
-    // Anything else — every lot usable, or consumed and gone — is released.
-    const status: JobWorkReceiptStatus = statuses.includes('REJECTED')
-      ? 'REJECTED'
-      : statuses.includes('ON_HOLD')
-        ? 'ON_HOLD'
-        : statuses.includes('QUARANTINE')
-          ? 'PENDING_QC'
-          : 'RELEASED';
-
-    await tx.jobWorkMaterialReceipt.update({ where: { id: receiptId }, data: { status } });
-
-    return status;
   }
 
   /**
@@ -410,15 +542,30 @@ export class JobWorkReceiptsService {
 // Shapes and helpers
 // -----------------------------------------------------------------------------
 
-const RECEIPT_INCLUDE = {
+/**
+ * Exported so the production order can embed a receipt without a second mapper.
+ *
+ * One shape for "a receipt as the screens see it" — a production order showing
+ * different material from the receipt it names would be the worst kind of bug,
+ * silent and plausible.
+ */
+export const RECEIPT_INCLUDE = {
   jobWorkOrder: {
     select: {
       id: true,
       orderNumber: true,
       principal: { select: { id: true, name: true } },
+      mapping: {
+        select: {
+          principalBrandName: true,
+          bom: { select: { product: { select: { code: true, name: true } } } },
+        },
+      },
     },
   },
   receivedBy: { select: { fullName: true } },
+  submittedBy: { select: { fullName: true } },
+  decidedBy: { select: { fullName: true } },
   lines: {
     where: { deletedAt: null },
     include: {
@@ -443,7 +590,7 @@ interface PreparedLine {
   notes: string | null;
 }
 
-function toReceiptView(receipt: ReceiptWithRelations): JobWorkMaterialReceiptView {
+export function toReceiptView(receipt: ReceiptWithRelations): JobWorkMaterialReceiptView {
   return {
     id: receipt.id,
     receiptNumber: receipt.receiptNumber,
@@ -453,17 +600,40 @@ function toReceiptView(receipt: ReceiptWithRelations): JobWorkMaterialReceiptVie
     principalId: receipt.jobWorkOrder.principal.id,
     principalName: receipt.jobWorkOrder.principal.name,
 
-    deliveryChallanNumber: receipt.deliveryChallanNumber,
+    productName: receipt.jobWorkOrder.mapping.bom.product.name,
+    productCode: receipt.jobWorkOrder.mapping.bom.product.code,
+    principalBrandName: receipt.jobWorkOrder.mapping.principalBrandName,
+
     receiptDate: toIsoDate(receipt.receiptDate),
 
-    qcRequired: receipt.qcRequired,
     status: receipt.status as JobWorkReceiptStatus,
+
+    submittedBy: receipt.submittedBy?.fullName ?? null,
+    submittedAt: receipt.submittedAt?.toISOString() ?? null,
+
+    decidedBy: receipt.decidedBy?.fullName ?? null,
+    decidedAt: receipt.decidedAt?.toISOString() ?? null,
+    decisionNotes: receipt.decisionNotes,
+
+    // In the order they were first seen, which is the order the material came.
+    deliveryChallanNumbers: [
+      ...new Set(receipt.lines.map((line) => line.deliveryChallanNumber)),
+    ],
+
+    rawMaterialCount: receipt.lines.filter((line) => line.item.type !== 'PACKING_MATERIAL')
+      .length,
+    packingMaterialCount: receipt.lines.filter((line) => line.item.type === 'PACKING_MATERIAL')
+      .length,
 
     notes: receipt.notes,
 
     lines: receipt.lines.map((line) => ({
       id: line.id,
       item: toItemSummary(line.item),
+      // Read off the item master rather than stored: an item reclassified later
+      // then reads correctly here without a data fix.
+      kind: line.item.type === 'PACKING_MATERIAL' ? 'PACKING' : 'RAW',
+      deliveryChallanNumber: line.deliveryChallanNumber,
       batchNumber: line.batchNumber,
       receivedQuantity: line.receivedQuantity.toString(),
       manufacturingDate: line.manufacturingDate ? toIsoDate(line.manufacturingDate) : null,
