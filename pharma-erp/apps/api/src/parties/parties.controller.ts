@@ -21,8 +21,10 @@ import type { Response } from 'express';
 
 import {
   DOCUMENT_MAX_BYTES,
+  PARTY_TYPES,
   type CustomerDocumentSummary,
   type PartySummary,
+  type PartyType,
 } from '@pharma-erp/types';
 
 import { Roles } from '../auth/auth.decorators';
@@ -55,6 +57,23 @@ export class PartiesController {
   @SkipAudit('Read-only master data.')
   async list(@Query('type') type?: string): Promise<PartySummary[]> {
     return this.parties.list(type);
+  }
+
+  /**
+   * The code the next party of a type would take, for the form to show before
+   * anything is saved.
+   *
+   * Declared BEFORE any `:id` route so the literal segment matches first —
+   * otherwise "next-code" is read as a party id and refused by the UUID pipe.
+   */
+  @Get('next-code')
+  @SkipAudit('Reads a number; reserves nothing.')
+  async nextCode(@Query('type') type: string): Promise<{ code: string }> {
+    if (!PARTY_TYPES.includes(type as PartyType)) {
+      throw new BadRequestException('Choose a party type.');
+    }
+
+    return this.parties.previewCode(type as PartyType);
   }
 
   @Post()

@@ -204,6 +204,15 @@ export function ItemMasterForm({
                 : 'Assigned automatically from the category when this item is saved.'
             }
           />
+          {/* FIXED ONCE THE ITEM EXISTS. The category picks the code's prefix —
+              RM-00001 against PM-00011 — and the code is already printed on
+              every document citing the item. Changing the category afterwards
+              would leave a raw material numbered as packing, so the two would
+              contradict each other on documents that cannot be reissued.
+
+              Still submitted, not disabled: these forms post the whole record,
+              and a category missing from the payload reads to the API as a
+              category being cleared. */}
           <SelectField
             name="category"
             error={errorFor('category')}
@@ -212,6 +221,8 @@ export function ItemMasterForm({
             options={CATEGORY_OPTIONS}
             value={category}
             onChange={setCategory}
+            readOnly={Boolean(item)}
+            hint={item ? 'Fixed once created — the item code is derived from it.' : undefined}
           />
           {/* THE GENERIC NAME IS THE REQUIRED ONE, and the brand is optional.
 

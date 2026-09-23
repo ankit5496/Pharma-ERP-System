@@ -2,7 +2,7 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 
 import type { Party, Prisma } from '@pharma-erp/database';
 import type { PartySummary, PartyStatus, PartyType } from '@pharma-erp/types';
-import { PARTY_TYPE_LABELS } from '@pharma-erp/types';
+import { PARTY_CODE_DIGITS, PARTY_CODE_PREFIXES, PARTY_TYPE_LABELS } from '@pharma-erp/types';
 
 import { fieldConflict } from '../common/field-error';
 import { withCreatedBy } from '../common/created-by';
@@ -67,30 +67,67 @@ export class PartiesService {
     });
 
     try {
-      const party = await this.prisma.scoped.party.create({
-        data: {
-          tenantId,
-          createdById: this.tenantContext.getUserId(),
-          code: dto.code.trim(),
-          name: dto.name.trim(),
-          partyType: dto.partyType,
-          status,
-          gstin: dto.gstin?.trim().toUpperCase() || null,
-          email: dto.email?.trim() || null,
-          phone: dto.phone?.trim() || null,
-          address: dto.address?.trim() || null,
-          paymentTermsDays: dto.paymentTermsDays ?? 30,
-          drugLicenceNumber: dto.drugLicenceNumber?.trim() || null,
-          drugLicenceValidTo: dto.drugLicenceValidTo ? fromIsoDate(dto.drugLicenceValidTo) : null,
-          creditLimit: dto.creditLimit ?? null,
-          creditPeriodDays: dto.creditPeriodDays ?? null,
-        },
-      });
+      // ALLOCATED, not accepted from the request. Inside the transaction that
+      // writes the party, so a code and the row it belongs to land together or
+      // not at all — and two people adding a party at once cannot be handed the
+      // same one, because the counter is incremented under a row lock.
+      const party = await this.prisma.transaction(async (tx) =>
+        tx.party.create({
+          data: {
+            tenantId,
+            createdById: this.tenantContext.getUserId(),
+            code: await nextPartyCode(tx, tenantId, dto.partyType),
+            name: dto.name.trim(),
+            partyType: dto.partyType,
+            status,
+            gstin: dto.gstin?.trim().toUpperCase() || null,
+            email: dto.email?.trim() || null,
+            phone: dto.phone?.trim() || null,
+            address: dto.address?.trim() || null,
+            paymentTermsDays: dto.paymentTermsDays ?? 30,
+            drugLicenceNumber: dto.drugLicenceNumber?.trim() || null,
+            drugLicenceValidTo: dto.drugLicenceValidTo ? fromIsoDate(dto.drugLicenceValidTo) : null,
+            creditLimit: dto.creditLimit ?? null,
+            creditPeriodDays: dto.creditPeriodDays ?? null,
+          },
+        }),
+      );
 
       return toPartySummary(party);
     } catch (error) {
-      throw translate(error, dto.code.trim());
+      // No code to name in the message any more: the caller did not choose one.
+      // A collision here would mean the counter has drifted behind the data
+      // rather than anything the caller can fix.
+      throw translate(error, '');
     }
+  }
+
+  /**
+   * The code the next party of a type would take — a PREDICTION, not a
+   * reservation.
+   *
+   * Nothing is held: if a colleague saves a party of the same type first they
+   * take this code and the next one moves on. The form shows it so the code is
+   * not a surprise that appears only after saving.
+   *
+   * Reads the SAME row the allocator increments, keyed identically. Computing
+   * it any other way — from the highest existing code, say — is how a preview
+   * comes to disagree with what is actually allocated.
+   */
+  async previewCode(type: PartyType): Promise<{ code: string }> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const prefix = PARTY_CODE_PREFIXES[type];
+
+    const sequence = await this.prisma.scoped.documentSequence.findUnique({
+      where: { tenantId_docType_year: { tenantId, docType: prefix, year: PARTY_CODE_YEAR } },
+      select: { nextValue: true },
+    });
+
+    // No counter yet means no party of this type has ever been created, so the
+    // first one takes 1.
+    return {
+      code: `${prefix}-${String(sequence?.nextValue ?? 1).padStart(PARTY_CODE_DIGITS, '0')}`,
+    };
   }
 
   async update(id: string, dto: UpdatePartyDto): Promise<PartySummary> {
@@ -107,6 +144,11 @@ export class PartiesService {
     // have already been made against orders, invoices and agreements citing
     // this row. Turning a customer into a supplier would leave that paperwork
     // describing a party it no longer matches.
+    //
+    // The party CODE is now derived from the type as well (VEN-00001 against
+    // CUS-00001), which makes this rule load-bearing rather than merely
+    // sensible: a vendor moved to customer would keep a VEN- code while filed
+    // as a customer, and that code is already printed on documents.
     //
     // The same value is accepted silently: an edit form that round-trips every
     // field should not be refused for sending back what is already stored.
@@ -206,6 +248,50 @@ function assertLicensedWhenActiveCustomer(party: {
         'Save it as inactive until the licence is on file.',
     );
   }
+}
+
+/**
+ * Party codes are not year-scoped, so they park on year 0.
+ *
+ * `document_sequences` keys on (tenant, docType, year) because the series it
+ * was built for restart each January. A party code does not: VEN-00412 is the
+ * four-hundred-and-twelfth vendor this company has ever recorded, and
+ * restarting it annually would hand out a code that already exists.
+ *
+ * The same sentinel the item codes use, for the same reason. 0 cannot collide
+ * with a real year.
+ */
+const PARTY_CODE_YEAR = 0;
+
+/**
+ * The next code for a party type, allocated inside the caller's transaction.
+ *
+ * ONE ATOMIC UPSERT, not a read-then-write. Two parties created in the same
+ * instant would both read the same highest number and compute the same next
+ * one; the unique index would then refuse the loser with a failure nobody
+ * could act on. An UPDATE ... RETURNING takes a row lock, so the second caller
+ * waits and gets the following value instead.
+ *
+ * `docType` is a VarChar(16), so VEN/CUS/PRI need no migration to store —
+ * only a counter row, created on the first party of that type.
+ */
+async function nextPartyCode(
+  tx: Prisma.TransactionClient,
+  tenantId: string,
+  type: PartyType,
+): Promise<string> {
+  const prefix = PARTY_CODE_PREFIXES[type];
+
+  const sequence = await tx.documentSequence.upsert({
+    where: { tenantId_docType_year: { tenantId, docType: prefix, year: PARTY_CODE_YEAR } },
+    create: { tenantId, docType: prefix, year: PARTY_CODE_YEAR, nextValue: 2 },
+    update: { nextValue: { increment: 1 } },
+    select: { nextValue: true },
+  });
+
+  // `create` sets nextValue to 2 and this party takes 1; `update` returns the
+  // already-incremented value, so the number just used is one less.
+  return `${prefix}-${String(sequence.nextValue - 1).padStart(PARTY_CODE_DIGITS, '0')}`;
 }
 
 /** Turns a database refusal into something the person who hit it can read. */

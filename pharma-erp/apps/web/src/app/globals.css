@@ -351,12 +351,13 @@ td {
 }
 
 /*
- * The save confirmation, which is dismissed rather than timed out.
+ * The save confirmation, which shows for two seconds and then fades.
  *
- * TWO animations, not the toast's one. A toast knows when it will leave, so its
- * whole life fits in a single keyframe sequence. This card leaves when somebody
- * presses Done, so the exit has to be a separate animation the component plays
- * BEFORE it unmounts — see SavedDialog, which holds an `isLeaving` flag for
+ * TWO animations, not the toast's one, even though this is now also timed. A
+ * toast's whole life fits in a single keyframe sequence because nothing can cut
+ * it short; this card can also be dismissed early by Escape or a click on the
+ * backdrop, so the exit has to be a separate animation the component plays
+ * BEFORE it unmounts — see SavedDialog, which holds a `leaving` flag for
  * exactly the length of `saved-dialog-out`.
  *
  * The backdrop fades on its own track: it is a sibling, not a parent, and
@@ -402,14 +403,18 @@ td {
   }
 }
 
-/* Slightly longer in than out: an arrival is worth watching, a dismissal the
-   person just asked for should get out of the way. */
+/* A LONGER, SOFTER EXIT than the entrance — the reverse of the usual rule,
+   and deliberate. The card now goes on a timer rather than on a click: nobody
+   asked for it to leave, so it should dissolve rather than snap away, and a
+   quick exit on something unprompted reads as a glitch. `ease-out` fades most
+   of the opacity early, so the message stops competing for attention well
+   before the element is gone. 420ms here matches LEAVE_MS in SavedDialog. */
 .saved-dialog-card {
   animation: saved-dialog-in 260ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 .saved-dialog-card[data-leaving='true'] {
-  animation: saved-dialog-out 180ms ease-in forwards;
+  animation: saved-dialog-out 420ms ease-out forwards;
 }
 
 .saved-dialog-backdrop {
@@ -417,7 +422,7 @@ td {
 }
 
 .saved-dialog-backdrop[data-leaving='true'] {
-  animation: saved-backdrop-out 180ms ease-in forwards;
+  animation: saved-backdrop-out 420ms ease-out forwards;
 }
 
 @media (prefers-reduced-motion: reduce) {

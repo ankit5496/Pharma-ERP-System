@@ -2,9 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { BatchView } from '@pharma-erp/types';
-import { BATCH_RELEASE_STATUSES, BATCH_RELEASE_STATUS_LABELS } from '@pharma-erp/types';
+import {
+  BATCH_RELEASE_STATUSES,
+  BATCH_RELEASE_STATUS_LABELS,
+  formatDateDMY,
+} from '@pharma-erp/types';
 
 import { Quantity, ReleaseBadge } from './shared';
+import { ProductionTabs } from './tabs';
 import {
   createdFilters,
   matchesCreated,
@@ -12,6 +17,15 @@ import {
   RegisterToolbar,
   useRegisterView,
 } from './register-toolbar';
+
+/**
+ * The filter value for the derived "Packaging due" state.
+ *
+ * Prefixed so it cannot collide with a real `BatchReleaseStatus`, now or when
+ * one is added: this travels through the same filter field as the stored
+ * values, and a clash would silently match the wrong rows.
+ */
+const PACKAGING_DUE = '__packagingDue';
 
 /**
  * The batch register: a toolbar, a list, and one batch open at a time.
@@ -47,10 +61,21 @@ export function BatchRecords({
     [],
   );
 
-  const matchesFilter = useCallback(
-    (batch: BatchView, value: string) => batch.releaseStatus === value,
-    [],
-  );
+  const matchesFilter = useCallback((batch: BatchView, value: string) => {
+    // The derived state, which is not a `releaseStatus` value — see
+    // ReleaseBadge for why it is not stored as one.
+    if (value === PACKAGING_DUE) {
+      return batch.releaseStatus === 'PENDING' && batch.packedOn === null;
+    }
+
+    // "Pending" now means awaiting a DECISION, so a batch still waiting on its
+    // packing belongs under the option above rather than in both.
+    if (value === 'PENDING') {
+      return batch.releaseStatus === 'PENDING' && batch.packedOn !== null;
+    }
+
+    return batch.releaseStatus === value;
+  }, []);
 
   // MANUFACTURED ON, not a creation timestamp. A batch carries no createdBy —
   // nothing records who opened it — and the date a batch is looked up by is
@@ -122,10 +147,18 @@ export function BatchRecords({
           noun="batches"
           filter={view.filter}
           onFilter={view.setFilter}
-          filterOptions={BATCH_RELEASE_STATUSES.map((status) => ({
-            value: status,
-            label: BATCH_RELEASE_STATUS_LABELS[status],
-          }))}
+          // PENDING SPLIT IN TWO, to match what the badges actually say. The
+          // filter offered "Pending" while no row on screen carried that word:
+          // an unpacked batch reads "Packaging due" and a packed one "Pending",
+          // and a filter naming a state nobody can see is one that looks
+          // broken when it returns rows that all say something else.
+          filterOptions={[
+            { value: PACKAGING_DUE, label: 'Packaging due' },
+            ...BATCH_RELEASE_STATUSES.map((status) => ({
+              value: status,
+              label: BATCH_RELEASE_STATUS_LABELS[status],
+            })),
+          ]}
           fields={createdFilters([], 'Manufactured')}
           fieldValues={view.fieldValues}
           onField={view.setField}
@@ -161,7 +194,7 @@ export function BatchRecords({
                       <span className="font-mono text-xs font-semibold text-slate-900">
                         {batch.batchNumber}
                       </span>
-                      <ReleaseBadge status={batch.releaseStatus} />
+                      <ReleaseBadge status={batch.releaseStatus} packedOn={batch.packedOn} />
                     </div>
                     <p className="mt-1 truncate text-sm text-slate-700">{batch.product.name}</p>
                     <p className="mt-0.5 font-mono text-[11px] text-slate-500">
@@ -210,10 +243,10 @@ function BatchDetail({ batch, packingForm }: { batch: BatchView; packingForm?: R
           </h3>
           <p className="mt-0.5 text-xs text-slate-500">
             <span className="font-mono">{batch.orderNumber}</span> · manufactured{' '}
-            {batch.manufacturedOn} · expires {batch.expiryDate}
+            {formatDateDMY(batch.manufacturedOn)} · expires {formatDateDMY(batch.expiryDate)}
           </p>
         </div>
-        <ReleaseBadge status={batch.releaseStatus} />
+        <ReleaseBadge status={batch.releaseStatus} packedOn={batch.packedOn} />
       </header>
 
       <dl className="grid gap-4 border-b border-slate-200 px-6 py-4 text-sm sm:grid-cols-4">
@@ -231,7 +264,57 @@ function BatchDetail({ batch, packingForm }: { batch: BatchView; packingForm?: R
         </Figure>
       </dl>
 
-      <div className="border-b border-slate-200 px-6 py-4">
+      {/* TWO TABS, not one long page. The batch record and the packaging record
+          are separate documents that happen to share a batch: one reports what
+          was MADE and is read, the other records what was PACKED and is filled
+          in. Stacked, the form sat below a consumption table that grows with the
+          formulation, so on a batch with several materials the fields somebody
+          came here to complete started below the fold.
+
+          The hidden panel stays MOUNTED — see ProductionTabs — so a
+          half-filled packing form survives a look at the consumption figures,
+          which is exactly what somebody checks before entering it. */}
+      {/* Inset to match the header and the figures above: ProductionTabs draws
+          a full-width rule under its strip, which run edge to edge would cut
+          across a card whose every other row is padded. */}
+      <div className="px-6 pt-4">
+        <ProductionTabs
+          // REMOUNTED PER BATCH, so choosing another one opens on its record
+          // rather than on whichever tab was last looked at. The packing form is
+          // keyed by batch anyway; without this, switching batches would leave
+          // the pane showing a form for a batch nobody had asked about.
+          key={batch.id}
+          tabs={[
+            {
+              key: 'record',
+              label: 'Batch record',
+              panel: <BatchRecordPanel batch={batch} />,
+            },
+            {
+              key: 'packing',
+              label: 'Packaging record',
+              panel: packingForm ?? (
+                // Nothing to show only when a DECIDED batch never had packing
+                // recorded — a rejected batch, usually. A decided batch that was
+                // packed renders its record read-only, and a pending one
+                // renders the form, so both arrive as `packingForm`.
+                <p className="text-sm text-slate-600">
+                  No packing was recorded for this batch before it went through the quality gate.
+                </p>
+              ),
+            },
+          ]}
+        />
+      </div>
+    </section>
+  );
+}
+
+/** What the batch made, and what it consumed doing so. */
+function BatchRecordPanel({ batch }: { batch: BatchView }) {
+  return (
+    <div className="pb-1">
+      <div>
         <h4 className="text-xs font-medium uppercase tracking-wide text-slate-600">
           Manufacturing &amp; consumption
         </h4>
@@ -290,19 +373,7 @@ function BatchDetail({ batch, packingForm }: { batch: BatchView; packingForm?: R
           </table>
         </div>
       </div>
-
-      {/* Absent once the batch has been through the quality gate — packing
-          cannot be amended after a release decision, so the form would be a
-          control the API refuses. */}
-      {packingForm && (
-        <div className="px-6 py-4">
-          <h4 className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-600">
-            Packaging record
-          </h4>
-          {packingForm}
-        </div>
-      )}
-    </section>
+    </div>
   );
 }
 

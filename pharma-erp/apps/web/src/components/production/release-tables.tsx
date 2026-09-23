@@ -2,7 +2,11 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import type { BatchView, FinishedGoodsLotView } from '@pharma-erp/types';
-import { BATCH_RELEASE_STATUSES, BATCH_RELEASE_STATUS_LABELS } from '@pharma-erp/types';
+import {
+  BATCH_RELEASE_STATUSES,
+  BATCH_RELEASE_STATUS_LABELS,
+  formatDateDMY,
+} from '@pharma-erp/types';
 
 import { MasterDataDrawer } from '@/components/master-data-drawer';
 
@@ -149,7 +153,12 @@ export function PendingReleaseList({
                         onClick={() => setDeciding(batch)}
                         className="whitespace-nowrap rounded-md bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-slate-800"
                       >
-                        Decide
+                        {/* "Release", though the drawer it opens also offers
+                            Hold and Reject. Naming the outcome people are
+                            looking for reads better on the row than the neutral
+                            "Decide" did; the three buttons inside still make
+                            clear that releasing is a choice, not the only one. */}
+                        Release
                       </button>
                     </td>
                   </tr>
@@ -182,7 +191,7 @@ export function PendingReleaseList({
       {deciding && (
         <MasterDataDrawer
           title={`${deciding.batchNumber} — ${deciding.product.name}`}
-          description={`${deciding.orderNumber} · manufactured ${deciding.manufacturedOn} · expires ${deciding.expiryDate}`}
+          description={`${deciding.orderNumber} · manufactured ${formatDateDMY(deciding.manufacturedOn)} · expires ${formatDateDMY(deciding.expiryDate)}`}
           placement="center"
           onClose={() => setDeciding(null)}
         >

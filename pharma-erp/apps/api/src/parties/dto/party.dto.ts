@@ -65,10 +65,15 @@ const PHONE_MESSAGE =
   'must include the country code and be a real number for that country, e.g. +91 98765 43210';
 
 export class CreatePartyDto {
-  @IsString()
-  @MaxLength(64)
-  @Matches(/^\S(.*\S)?$/, { message: 'code must not start or end with whitespace' })
-  code!: string;
+  /**
+   * NO `code` HERE, deliberately.
+   *
+   * It is allocated from a per-type counter — VEN-00001, CUS-00001 — inside
+   * the transaction that writes the party. Accepting one from the request
+   * would let a caller take a number the counter is about to hand out, and
+   * typed codes are what left the register holding "SUP-7", "SUP-007" and
+   * "sup 7" for one supplier.
+   */
 
   @IsString()
   @MaxLength(255)
@@ -82,19 +87,29 @@ export class CreatePartyDto {
   @IsIn(PARTY_STATUSES)
   status?: (typeof PARTY_STATUSES)[number];
 
-  @IsOptional()
+  /**
+   * GSTIN, EMAIL AND PHONE ARE REQUIRED ON A NEW PARTY.
+   *
+   * All three are how a party is actually transacted with: the GSTIN decides
+   * the tax treatment of every invoice raised against it, and a party nobody
+   * can reach is one whose orders stall with no way to chase them.
+   *
+   * REQUIRED ON CREATE ONLY. The columns stay nullable and `UpdatePartyDto`
+   * leaves all three optional, because parties recorded before this rule
+   * existed have them blank — making them mandatory everywhere would leave
+   * those rows uneditable until someone produced a GSTIN that may not exist,
+   * blocking even an unrelated change like a new phone number.
+   */
   @Matches(GSTIN, { message: GSTIN_MESSAGE })
-  gstin?: string;
+  gstin!: string;
 
-  @IsOptional()
   @IsEmail({}, { message: `email ${EMAIL_MESSAGE}` })
   @MaxLength(320)
-  email?: string;
+  email!: string;
 
-  @IsOptional()
   @IsPhoneNumber(undefined, { message: `phone ${PHONE_MESSAGE}` })
   @MaxLength(32)
-  phone?: string;
+  phone!: string;
 
   @IsOptional()
   @IsString()

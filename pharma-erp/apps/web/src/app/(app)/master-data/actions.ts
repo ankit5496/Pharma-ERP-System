@@ -381,7 +381,6 @@ export async function savePartyAction(
     if (typeof value === 'string') values[key] = value;
   }
 
-  const code = String(formData.get('code') ?? '').trim();
   const name = String(formData.get('name') ?? '').trim();
   const partyType = String(formData.get('partyType') ?? '') as PartyType;
   // No `?? 'ACTIVE'` fallback. Status is a starred field on the form, and
@@ -390,8 +389,9 @@ export async function savePartyAction(
   // transact with and one you may not.
   const status = optional(formData, 'status') as PartyStatus | undefined;
 
+  // NO `code`. It is allocated by the API from a per-type counter, so there is
+  // nothing to collect here and nothing to check.
   const partyMissing = requireFields([
-    ['Party code', code, 'code'],
     ['Party name', name, 'name'],
     ['Party type', partyType, 'partyType'],
     ['Status', status, 'status'],
@@ -412,20 +412,45 @@ export async function savePartyAction(
   // for a plain vendor, who is not one.
   const holdsLicence = isCustomer || partyType === 'JOB_WORK_PRINCIPAL';
 
+  const gstin = optional(formData, 'gstin')?.toUpperCase() ?? null;
+  const email = optional(formData, 'email') ?? null;
+  // The form submits a chosen country code and a typed national number; the
+  // API stores E.164 and refuses anything that is not a real number for that
+  // country. Joined here rather than in the browser so a request made without
+  // the form still has to supply a country code.
+  const phone = joinPhoneNumber(
+    String(formData.get('phoneDial') ?? DEFAULT_DIAL_CODE),
+    String(formData.get('phoneNational') ?? ''),
+  );
+
+  /**
+   * GSTIN, EMAIL AND PHONE ARE REQUIRED ON A NEW PARTY — and only on a new one.
+   *
+   * Parties recorded before this rule have them blank, and demanding all three
+   * on every save would make those rows uneditable until someone produced a
+   * GSTIN that may not exist, blocking even an unrelated change. So an edit
+   * asks for nothing extra, and the fields are starred on create only.
+   *
+   * Checked here as well as in the API so the refusal names the control rather
+   * than arriving as a sentence about a payload.
+   */
+  if (!partyId) {
+    const contactMissing = requireFields([
+      ['GSTIN', gstin, 'gstin'],
+      ['Phone number', phone, 'phone'],
+      ['Email', email, 'email'],
+    ]);
+
+    if (contactMissing) return { ok: false, values, ...contactMissing };
+  }
+
   const payload = {
     name,
     partyType,
     status,
-    gstin: optional(formData, 'gstin')?.toUpperCase() ?? null,
-    email: optional(formData, 'email') ?? null,
-    // The form submits a chosen country code and a typed national number; the
-    // API stores E.164 and refuses anything that is not a real number for that
-    // country. Joined here rather than in the browser so a request made without
-    // the form still has to supply a country code.
-    phone: joinPhoneNumber(
-      String(formData.get('phoneDial') ?? DEFAULT_DIAL_CODE),
-      String(formData.get('phoneNational') ?? ''),
-    ),
+    gstin,
+    email,
+    phone,
     address: optional(formData, 'address') ?? null,
     ...(terms ? { paymentTermsDays: Number(terms) } : {}),
     drugLicenceNumber: holdsLicence ? (optional(formData, 'drugLicenceNumber') ?? null) : null,
@@ -445,10 +470,9 @@ export async function savePartyAction(
         method: 'POST',
         authenticated: true,
         // A create cannot send nulls for fields it simply has not got, so the
-        // empty ones are dropped rather than cleared.
-        json: Object.fromEntries(
-          Object.entries({ code, ...payload }).filter(([, value]) => value !== null),
-        ),
+        // empty ones are dropped rather than cleared. No `code`: the API
+        // allocates it.
+        json: Object.fromEntries(Object.entries(payload).filter(([, value]) => value !== null)),
         timeoutMs: 20_000,
       });
 
@@ -766,6 +790,22 @@ export async function setLicenceAlertAction(days: number): Promise<ActionResult>
 export async function nextItemCodeAction(type: string): Promise<string | null> {
   const result = await apiFetch<{ code: string }>(
     `/api/v1/production/items/next-code?type=${encodeURIComponent(type)}`,
+    { authenticated: true, timeoutMs: 20_000 },
+  );
+
+  return result.ok ? result.data.code : null;
+}
+
+/**
+ * The code the next party of this type would take.
+ *
+ * Null when the call fails, and the form then shows "Assigned on save" — the
+ * same trade the item preview makes. A failed prediction must not cost the
+ * ability to add a party; the server allocates the real code regardless.
+ */
+export async function nextPartyCodeAction(type: string): Promise<string | null> {
+  const result = await apiFetch<{ code: string }>(
+    `/api/v1/parties/next-code?type=${encodeURIComponent(type)}`,
     { authenticated: true, timeoutMs: 20_000 },
   );
 

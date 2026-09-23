@@ -511,6 +511,13 @@ export interface BatchView {
   productionOrderId: string;
   packedQuantity: string | null;
   packedOn: string | null;
+  /**
+   * The rest of the packing record, so the form that entered it can show it
+   * back. Null until packing is recorded, and for `packVariant` also null for
+   * a run whose presentation was never named.
+   */
+  rejectedQuantity: string | null;
+  packVariant: string | null;
   materialVariances: BatchMaterialVariance[];
   /** Above this absolute percentage a variance is flagged for review. */
   varianceThresholdPercent: number;

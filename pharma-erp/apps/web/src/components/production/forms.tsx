@@ -1,6 +1,6 @@
 'use client';
 
-import { useActionState, useEffect, useMemo, useState } from 'react';
+import { useActionState, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ItemSummary,
   MaterialIssuePlan,
@@ -8,6 +8,7 @@ import type {
   ProductionStockLot,
   WorkOrderFeasibility,
 } from '@pharma-erp/types';
+import { formatDateDMY, parseDateDMY } from '@pharma-erp/types';
 
 import { useActionToast } from '@/components/toast';
 import { SearchableSelect } from '@/components/searchable-select';
@@ -421,6 +422,7 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
         <div className="sm:col-span-2">
           <label htmlFor="productId" className={LABEL}>
             Product
+            <RequiredMark />
           </label>
           {/* Searchable, and offering the newest few before anything is typed:
               the item register grows without limit, and the product somebody
@@ -442,6 +444,7 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
         <div>
           <label htmlFor="plannedQuantity" className={LABEL}>
             Quantity
+            <RequiredMark />
           </label>
           <input
             id="plannedQuantity"
@@ -519,7 +522,10 @@ export function IssueMaterialForm({
    * fetches it.
    */
   initialPlan?: MaterialIssuePlan | null;
-  /** Stock on hand, for the lot pickers. Only USABLE lots can be dispensed. */
+  /**
+   * Stock on hand, for the lot pickers and for the figures the table shows
+   * against a chosen lot. Only USABLE lots can be dispensed.
+   */
   lots?: ProductionStockLot[];
 }) {
   const [state, action, pending] = useActionState(issueMaterialAction, IDLE);
@@ -570,7 +576,152 @@ export function IssueMaterialForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderId]);
 
-  const plan = planState.data;
+  /**
+   * itemId -> the lot rows open for it. Absent means "use FEFO", which is why
+   * this is a map of the exceptions rather than a flag per line.
+   *
+   * A LIST OF ROW IDS, not a count. A count cannot express removing the middle
+   * row of three: the rows are named `override.<itemId>.<n>.lotId`, so dropping
+   * the count from 3 to 2 deletes the LAST row, and every value below the one
+   * actually removed shifts up onto the wrong lot. Each row now carries an id
+   * that never changes, so removing one takes its own quantity with it and
+   * leaves the others where they were.
+   */
+  const [rows, setRows] = useState<Record<string, number[]>>({});
+
+  // Ever-increasing, so a removed row's id is never reused — reusing one would
+  // let a new row inherit the quantity left behind in `typed` under that key.
+  const nextRowId = useRef(0);
+
+  // `override.<itemId>.<rowId>.lotId` -> the lot currently chosen in that select.
+  //
+  // Tracked in state rather than read off the DOM because the Reason field's
+  // visibility depends on it: US-PROD-02 wants a reason only when the actual
+  // batch differs from the suggested one, so the form has to know what is
+  // selected as it changes, not merely on submit.
+  const [picked, setPicked] = useState<Record<string, string>>({});
+
+  /**
+   * `override.<itemId>.<rowId>.quantity` -> what is typed in that box.
+   *
+   * IN STATE because a row can now be removed. An uncontrolled input keeps its
+   * value in the DOM against a name built from the row's position, so removing
+   * a row re-numbers the survivors and each typed quantity lands on a different
+   * lot than the one it was entered against — silently, and on a form that
+   * decides what physically leaves the store.
+   */
+  const [typed, setTyped] = useState<Record<string, string>>({});
+
+  const serverPlan = planState.data;
+
+  /**
+   * The plan as the table should CURRENTLY read it — the server's, with each
+   * overridden material's allocations replaced by what is chosen below.
+   *
+   * WHY THIS EXISTS. The table at the top states what dispensing would consume:
+   * which lot, its expiry, how much comes out of it. Picking a different lot in
+   * the panel used to leave that table showing FEFO's proposal, so the two
+   * halves of one screen disagreed about what was about to happen — and the
+   * table is the half that looks authoritative.
+   *
+   * COMPUTED, NOT FETCHED. An earlier attempt refetched the plan behind a Save
+   * button, which meant asking the server to re-derive something already known
+   * here, and left a window where the panel and the table were out of step. The
+   * override IS the answer; the table just has to show it.
+   *
+   * Only materials with rows open are touched. A line nobody has overridden
+   * keeps the server's allocation exactly as computed, shortfall included.
+   */
+  const plan = useMemo(() => {
+    if (!serverPlan) return null;
+
+    const overridden = Object.keys(rows);
+
+    if (overridden.length === 0) return serverPlan;
+
+    const lotsById = new Map(lots.map((lot) => [lot.id, lot]));
+
+    const lines = serverPlan.lines.map((line) => {
+      const openRows = rows[line.item.id];
+
+      if (!openRows || openRows.length === 0) return line;
+
+      const allocations = openRows
+        .map((rowId, row) => {
+          const lotId =
+            picked[`override.${line.item.id}.${rowId}.lotId`] ?? line.allocations[row]?.lotId ?? '';
+          const lot = lotsById.get(lotId);
+
+          if (!lot) return null;
+
+          /**
+           * What is TYPED, falling back to what FEFO proposed for this lot.
+           *
+           * THE FALLBACK IS THE POINT. An untouched box does not mean "dispense
+           * nothing from this lot" — it means the suggestion still stands, and
+           * reading it as zero made the From lot column drop to 0 the instant
+           * somebody opened the panel or pressed Add a lot, before they had
+           * typed anything at all. The table appeared to lose the plan merely
+           * because it was being looked at.
+           *
+           * Matched by LOT, not by row position: a row whose dropdown has been
+           * changed inherits the figure FEFO gave that same lot if it proposed
+           * one, and nothing otherwise.
+           */
+          const entered = typed[`override.${line.item.id}.${rowId}.quantity`]?.trim();
+          const suggestedQuantity = line.allocations.find(
+            (allocation) => allocation.lotId === lot.id,
+          )?.quantity;
+
+          const quantity = entered === undefined || entered === '' ? suggestedQuantity : entered;
+
+          return {
+            lotId: lot.id,
+            lotNumber: lot.lotNumber,
+            expiryDate: lot.expiryDate,
+            // A lot FEFO never proposed and nobody has given a figure for
+            // contributes nothing yet — there is no number to show.
+            quantity: quantity ?? '0',
+            quantityAvailable: lot.quantityAvailable,
+            // Marked against FEFO's own proposal for this line, which is what
+            // decides whether a reason is asked for.
+            isFefoOverride: !line.allocations.some((allocation) => allocation.lotId === lot.id),
+          };
+        })
+        .filter((allocation): allocation is NonNullable<typeof allocation> => allocation !== null);
+
+      const allocated = allocations.reduce(
+        (total, allocation) => total + (Number(allocation.quantity) || 0),
+        0,
+      );
+      const required = Number(line.quantityRequired) || 0;
+      // Never negative: dispensing MORE than required is not a shortfall, and
+      // "-2 KG short" would read as a deficit rather than a surplus.
+      const short = Math.max(required - allocated, 0);
+
+      return {
+        ...line,
+        allocations,
+        quantityAllocated: String(allocated),
+        // Matched to the '0' the server sends, which the table tests against
+        // to decide between a dash and a red figure.
+        quantityShort: short === 0 ? '0' : String(short),
+      };
+    });
+
+    return {
+      ...serverPlan,
+      lines,
+      // RECOMPUTED, not carried over. `canIssue` gates the shortfall warning
+      // and the submit button, and the server's answer describes ITS FEFO plan
+      // — keeping it would let the table show every line covered while the
+      // warning above still said the issue was short, or the reverse. The
+      // server decides for real when the form is submitted; this only keeps the
+      // screen honest with itself.
+      canIssue: lines.every((line) => line.quantityShort === '0'),
+    };
+  }, [serverPlan, rows, picked, typed, lots]);
+
   const order = orders.find((candidate) => candidate.id === orderId);
 
   // The number this dispensing record would take. Asked once, when the form
@@ -588,18 +739,6 @@ export function IssueMaterialForm({
       cancelled = true;
     };
   }, []);
-
-  // itemId -> how many lot rows are open for it. Absent means "use FEFO",
-  // which is why this is a map of the exceptions rather than a flag per line.
-  const [rows, setRows] = useState<Record<string, number>>({});
-
-  // `override.<itemId>.<row>.lotId` -> the lot currently chosen in that select.
-  //
-  // Tracked in state rather than read off the DOM because the Reason field's
-  // visibility depends on it: US-PROD-02 wants a reason only when the actual
-  // batch differs from the suggested one, so the form has to know what is
-  // selected as it changes, not merely on submit.
-  const [picked, setPicked] = useState<Record<string, string>>({});
 
   const overriding = Object.keys(rows).length > 0;
 
@@ -707,20 +846,26 @@ export function IssueMaterialForm({
             {plan.lines.map((line) => {
               const candidates = usableLotsFor(line.item.id);
               const suggested = new Set(line.allocations.map((allocation) => allocation.lotId));
-              const open = rows[line.item.id] ?? 0;
+              const openRows = rows[line.item.id] ?? [];
 
               // Whether any open row names a lot FEFO did not propose. This is
               // the "Actual Batch ≠ Suggested Batch" of US-PROD-02, and it is
               // what decides whether a reason is asked for — mirroring the same
               // comparison the API makes before it will accept the issue.
-              const deviates = Array.from({ length: open }, (_, row) => {
-                const chosen =
-                  picked[`override.${line.item.id}.${row}.lotId`] ??
-                  line.allocations[row]?.lotId ??
-                  '';
+              //
+              // The row's POSITION still picks the fallback suggestion, because
+              // FEFO proposes an ordered list; its stable id only names the
+              // field.
+              const deviates = openRows
+                .map((rowId, row) => {
+                  const chosen =
+                    picked[`override.${line.item.id}.${rowId}.lotId`] ??
+                    line.allocations[row]?.lotId ??
+                    '';
 
-                return chosen !== '' && !suggested.has(chosen);
-              }).some(Boolean);
+                  return chosen !== '' && !suggested.has(chosen);
+                })
+                .some(Boolean);
 
               return (
                 <div
@@ -736,14 +881,18 @@ export function IssueMaterialForm({
                       </span>
                     </div>
 
+                    {/* Only the mode toggle sits by the material name. "Add a
+                        lot" lives UNDER the rows instead — see below: it adds
+                        to the bottom of the list, so that is where the eye
+                        already is once the last row has been filled in. */}
                     <button
                       type="button"
                       onClick={() =>
                         setRows((current) => {
                           const next = { ...current };
 
-                          if (open > 0) delete next[line.item.id];
-                          else next[line.item.id] = 1;
+                          if (openRows.length > 0) delete next[line.item.id];
+                          else next[line.item.id] = [nextRowId.current++];
 
                           return next;
                         })
@@ -753,16 +902,17 @@ export function IssueMaterialForm({
                     >
                       {candidates.length === 0
                         ? 'No usable lots'
-                        : open > 0
+                        : openRows.length > 0
                           ? 'Use the suggestion'
                           : 'Choose lots myself'}
                     </button>
                   </div>
 
-                  {open > 0 && (
+                  {openRows.length > 0 && (
                     <div className="mt-3 space-y-2">
-                      {Array.from({ length: open }, (_, row) => {
-                        const field = `override.${line.item.id}.${row}.lotId`;
+                      {openRows.map((rowId, row) => {
+                        const field = `override.${line.item.id}.${rowId}.lotId`;
+                        const quantityField = `override.${line.item.id}.${rowId}.quantity`;
                         // The FEFO proposal for this row, which the select starts
                         // on — "Actual Batch Issued, manually confirmed, defaults
                         // to the suggestion". It used to start blank, so opening
@@ -771,14 +921,24 @@ export function IssueMaterialForm({
                         const fallback = line.allocations[row]?.lotId ?? '';
                         const current = picked[field] ?? fallback;
 
+                        // The quantity FEFO proposed FOR THE LOT NOW SHOWING,
+                        // which the box starts on for the same reason the
+                        // dropdown starts on the lot: confirming the suggestion
+                        // should not mean retyping it. Matched by lot rather
+                        // than by row, so changing the dropdown to another
+                        // proposed lot brings that lot's figure with it.
+                        const suggestedQuantity =
+                          line.allocations.find((allocation) => allocation.lotId === current)
+                            ?.quantity ?? '';
+
                         return (
-                          <div key={row} className="flex flex-wrap items-end gap-2">
+                          <div key={rowId} className="flex flex-wrap items-end gap-2">
                             <div className="min-w-[16rem] flex-1">
-                              <label htmlFor={`lot-${line.item.id}-${row}`} className="sr-only">
+                              <label htmlFor={`lot-${line.item.id}-${rowId}`} className="sr-only">
                                 Lot of {line.item.code}
                               </label>
                               <select
-                                id={`lot-${line.item.id}-${row}`}
+                                id={`lot-${line.item.id}-${rowId}`}
                                 name={field}
                                 value={current}
                                 onChange={(event) =>
@@ -790,7 +950,9 @@ export function IssueMaterialForm({
                                 {candidates.map((lot) => (
                                   <option key={lot.id} value={lot.id}>
                                     {lot.lotNumber} · {lot.quantityAvailable} {line.item.uom} ·{' '}
-                                    {lot.expiryDate ? `exp ${lot.expiryDate}` : 'no expiry'}
+                                    {lot.expiryDate
+                                      ? `exp ${formatDateDMY(lot.expiryDate)}`
+                                      : 'no expiry'}
                                     {suggested.has(lot.id) ? ' · suggested' : ''}
                                   </option>
                                 ))}
@@ -798,12 +960,26 @@ export function IssueMaterialForm({
                             </div>
 
                             <div className="w-36">
-                              <label htmlFor={`qty-${line.item.id}-${row}`} className="sr-only">
+                              <label htmlFor={`qty-${line.item.id}-${rowId}`} className="sr-only">
                                 Quantity from this lot
                               </label>
                               <input
-                                id={`qty-${line.item.id}-${row}`}
-                                name={`override.${line.item.id}.${row}.quantity`}
+                                id={`qty-${line.item.id}-${rowId}`}
+                                name={quantityField}
+                                // Controlled, so removing a row takes this value
+                                // with it — see the note on `typed`. Falls back
+                                // to the suggestion until somebody types, so the
+                                // box agrees with the From lot column above
+                                // rather than sitting empty beside a figure the
+                                // table is already showing. The posted value is
+                                // whatever is displayed, fallback included.
+                                value={typed[quantityField] ?? suggestedQuantity}
+                                onChange={(event) =>
+                                  setTyped((now) => ({
+                                    ...now,
+                                    [quantityField]: event.target.value,
+                                  }))
+                                }
                                 inputMode="decimal"
                                 placeholder={`0 ${line.item.uom}`}
                                 pattern="\d{1,11}(\.\d{1,3})?"
@@ -812,20 +988,72 @@ export function IssueMaterialForm({
                               />
                             </div>
 
-                            {row === open - 1 && candidates.length > open && (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setRows((current) => ({ ...current, [line.item.id]: open + 1 }))
-                                }
-                                className="rounded-md border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
-                              >
-                                Add a lot
-                              </button>
-                            )}
+                            {/* REMOVE, on every row rather than only the last.
+                                Taking a lot back out used to mean clearing the
+                                whole material and starting again, because the
+                                only way back was "Use the suggestion". The row's
+                                own quantity and chosen lot go with it. */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setRows((current) => {
+                                  const left = (current[line.item.id] ?? []).filter(
+                                    (id) => id !== rowId,
+                                  );
+                                  const next = { ...current };
+
+                                  // The last row removed means "use the
+                                  // suggestion again" — an open panel with no
+                                  // rows in it would offer nothing to do.
+                                  if (left.length === 0) delete next[line.item.id];
+                                  else next[line.item.id] = left;
+
+                                  return next;
+                                });
+
+                                setPicked((now) => {
+                                  const next = { ...now };
+                                  delete next[field];
+                                  return next;
+                                });
+
+                                setTyped((now) => {
+                                  const next = { ...now };
+                                  delete next[quantityField];
+                                  return next;
+                                });
+                              }}
+                              className="rounded-md border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                            >
+                              Remove
+                            </button>
                           </div>
                         );
                       })}
+
+                      {/* UNDER THE ROWS, because that is where the row it adds
+                          will appear. It sat beside the material name for a
+                          while, which put it above the list it extends — and
+                          before that at the end of the last row, wedged between
+                          a quantity box and Remove. Adding to the bottom of a
+                          list belongs at the bottom of the list.
+
+                          Hidden once every usable lot of this material is
+                          already named: there would be nothing left to add. */}
+                      {candidates.length > openRows.length && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setRows((current) => ({
+                              ...current,
+                              [line.item.id]: [...openRows, nextRowId.current++],
+                            }))
+                          }
+                          className="rounded-md border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                        >
+                          Add a lot
+                        </button>
+                      )}
 
                       {/* US-PROD-02: the reason is asked for ONLY when a lot other
                         than the suggested one is actually chosen. It used to
@@ -852,6 +1080,17 @@ export function IssueMaterialForm({
                             placeholder="Damaged container, retained sample, held for investigation…"
                             className="block w-full rounded-md border border-amber-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-amber-500 focus:outline-none focus:ring-1 focus:ring-amber-500"
                           />
+
+                          {/* WHY the reason is wanted, said HERE rather than in
+                              the refusal. The error that fires when this is left
+                              blank is now one short line — by the time somebody
+                              reads a red banner they want the one thing to do,
+                              not the rationale. The rationale belongs beside the
+                              field, where it is read before the mistake. */}
+                          <p className="mt-1 text-xs text-amber-800">
+                            The suggestion is the nearest-expiry lot, so departing from it has to be
+                            explainable later.
+                          </p>
                         </div>
                       )}
                     </div>
@@ -937,8 +1176,14 @@ function IssuePlanTable({ plan }: { plan: MaterialIssuePlan }) {
                   <span className="text-red-700">No usable stock</span>
                 ) : (
                   <ul className="space-y-1.5">
-                    {line.allocations.map((allocation) => (
-                      <li key={allocation.lotId} className="font-mono text-xs text-slate-700">
+                    {/* KEYED BY POSITION, not by lot. The server never lists a
+                        lot twice within a line, but the manual panel lets two
+                        rows name the same one — and duplicate keys would make
+                        React collapse them, throwing the three stacked columns
+                        out of step with each other. Position is stable here:
+                        these three lists are rendered from one array. */}
+                    {line.allocations.map((allocation, index) => (
+                      <li key={index} className="font-mono text-xs text-slate-700">
                         {allocation.lotNumber}
                       </li>
                     ))}
@@ -947,15 +1192,17 @@ function IssuePlanTable({ plan }: { plan: MaterialIssuePlan }) {
               </td>
               <td className="px-4 py-3">
                 <ul className="space-y-1.5">
-                  {line.allocations.map((allocation) => (
-                    <li key={allocation.lotId} className="flex items-center gap-x-2">
+                  {line.allocations.map((allocation, index) => (
+                    <li key={index} className="flex items-center gap-x-2">
                       {/* A stock lot's expiry is optional — cartons and
                           leaflets usually have none. "no expiry" is the fact,
                           and it differs from a missing value: FEFO
                           deliberately keeps such lots until last. */}
                       {allocation.expiryDate ? (
                         <>
-                          <span className="text-xs text-slate-500">{allocation.expiryDate}</span>
+                          <span className="text-xs text-slate-500">
+                            {formatDateDMY(allocation.expiryDate)}
+                          </span>
                           <ExpiryHint date={allocation.expiryDate} />
                         </>
                       ) : (
@@ -967,8 +1214,8 @@ function IssuePlanTable({ plan }: { plan: MaterialIssuePlan }) {
               </td>
               <td className="px-4 py-3 text-right">
                 <ul className="space-y-1.5">
-                  {line.allocations.map((allocation) => (
-                    <li key={allocation.lotId}>
+                  {line.allocations.map((allocation, index) => (
+                    <li key={index}>
                       <Quantity value={allocation.quantity} uom={line.item.uom} />
                     </li>
                   ))}
@@ -1030,9 +1277,29 @@ export function RecordBatchForm({ orders }: { orders: ProductionOrderSummary[] }
   useReportOnSaved(state);
 
   const [orderId, setOrderId] = useState(orders[0]?.id ?? '');
-  // Empty means "today", which is what the server uses when the field is not
-  // sent — so the expiry preview below has to assume the same thing.
-  const [manufacturedOn, setManufacturedOn] = useState('');
+
+  /**
+   * The manufacturing date AS TYPED, in DD-MM-YYYY.
+   *
+   * Held as text rather than as an ISO value because this is a plain text box:
+   * a native `<input type="date">` draws its placeholder and its picker in the
+   * BROWSER's locale, which showed "mm/dd/yyyy" here and cannot be changed from
+   * markup or CSS. The date on a batch record is read in the same format it is
+   * printed in, so the control now shows exactly that.
+   *
+   * What the SERVER gets is still ISO, from the hidden input below. Empty means
+   * "today" — the API's own default when the field is not sent — and a
+   * half-typed or impossible date parses to empty, so it means the same thing
+   * rather than something wrong.
+   */
+  const [manufacturedOnText, setManufacturedOnText] = useState('');
+
+  const manufacturedOn = parseDateDMY(manufacturedOnText);
+
+  // Typed something that is not a date yet. Distinct from empty, which
+  // legitimately means "today": this is why the expiry preview has stopped
+  // moving, and saying so beats leaving it to be noticed.
+  const dateIncomplete = manufacturedOnText.trim() !== '' && manufacturedOn === '';
 
   const order = orders.find((candidate) => candidate.id === orderId) ?? orders[0];
   const effectiveDate = manufacturedOn || new Date().toISOString().slice(0, 10);
@@ -1097,17 +1364,43 @@ export function RecordBatchForm({ orders }: { orders: ProductionOrderSummary[] }
 
         <div>
           <label htmlFor="manufacturedOn" className={LABEL}>
-            Manufacturing date{' '}
-            <span className="font-normal normal-case text-slate-400">(defaults to today)</span>
+            Manufacturing date
           </label>
+          {/* A TEXT BOX, not `type="date"`. The native control renders its
+              placeholder and its picker in the browser's own locale — US
+              English showed "mm/dd/yyyy" — and no attribute or stylesheet can
+              change that. A batch record's dates are read as DD-MM-YYYY, so the
+              field shows and accepts exactly that.
+
+              `inputMode="numeric"` brings up the digit keypad on a phone, which
+              is most of what the date picker was giving back. */}
           <input
             id="manufacturedOn"
-            name="manufacturedOn"
-            type="date"
-            value={manufacturedOn}
-            onChange={(event) => setManufacturedOn(event.target.value)}
+            type="text"
+            inputMode="numeric"
+            placeholder="DD-MM-YYYY"
+            maxLength={10}
+            value={manufacturedOnText}
+            onChange={(event) => setManufacturedOnText(event.target.value)}
+            aria-invalid={dateIncomplete ? true : undefined}
+            aria-describedby="manufacturedOn-hint"
             className={FIELD}
           />
+
+          {/* WHAT THE SERVER GETS: the ISO date the API expects, so nothing
+              downstream has to know this field is typed. Empty when the box is
+              empty or holds something that is not a date yet — both of which
+              the API reads as "not sent", and its default is today. */}
+          <input type="hidden" name="manufacturedOn" value={manufacturedOn} />
+
+          <p
+            id="manufacturedOn-hint"
+            className={`mt-1 text-xs ${dateIncomplete ? 'text-amber-700' : 'text-slate-500'}`}
+          >
+            {dateIncomplete
+              ? 'Not a date yet — today’s date will be used until this reads DD-MM-YYYY.'
+              : 'DD-MM-YYYY.'}
+          </p>
         </div>
       </div>
 
@@ -1133,7 +1426,7 @@ export function RecordBatchForm({ orders }: { orders: ProductionOrderSummary[] }
 
         <ReadOnlyField
           label="Expiry date"
-          value={expiry ?? undefined}
+          value={expiry ? formatDateDMY(expiry) : undefined}
           hint={
             order && order.product.shelfLifeMonths !== null
               ? `Manufacturing date plus ${order.product.shelfLifeMonths} months.`
@@ -1190,17 +1483,86 @@ export function RecordPackingForm({
   batchId,
   batchNumber,
   packSpecifications = [],
+  packedQuantity = null,
+  rejectedQuantity = null,
+  packVariant = null,
 }: {
   batchId: string;
   batchNumber: string;
   /** The product's active specifications. Empty for a product with none. */
   packSpecifications?: PackSpecification[];
+  /**
+   * WHAT IS ALREADY RECORDED, so the form shows it back.
+   *
+   * Packing can be entered, then corrected — the form stays on the batch until
+   * the quality gate rules. It used to come back EMPTY after a save: the value
+   * was stored and shown in the "Packed" figure above, but the box someone had
+   * just typed it into was blank again, which reads as the entry having been
+   * thrown away. Worse, the next save had to retype every field, and a blank
+   * box beside a filled figure invites the two being made to disagree.
+   */
+  packedQuantity?: string | null;
+  rejectedQuantity?: string | null;
+  packVariant?: string | null;
 }) {
   const [state, action, pending] = useActionState(recordPackingAction, IDLE);
 
-  const [variant, setVariant] = useState(packSpecifications[0]?.packVariant ?? '');
+  // WHAT WAS RECORDED, or nothing chosen.
+  //
+  // It used to open on the first specification even for an unpacked batch,
+  // which recorded a presentation nobody had picked — and with several variants
+  // on file, the one that happened to sort first was as likely to be wrong as
+  // right. The "Packaging consumed" rows below key off this, so a variant
+  // standing there unasked also decided which components got counted.
+  //
+  // A batch that HAS been packed is different: its variant is a fact, and
+  // showing it back is what makes a correction an edit rather than a re-entry.
+  const [variant, setVariant] = useState(packVariant ?? '');
 
   const specification = packSpecifications.find((entry) => entry.packVariant === variant);
+
+  /**
+   * Whether packing has been recorded for this batch.
+   *
+   * `packedQuantity` is the signal because it is the one field the record
+   * cannot exist without — rejects and the variant are both optional.
+   */
+  const recorded = packedQuantity !== null;
+
+  /**
+   * A RECORD ONCE SAVED, a form only while being changed.
+   *
+   * A completed packing record left sitting as an open form reads as unsaved
+   * work: every figure in an input box, a Save button underneath, and nothing
+   * saying the entry had already been accepted. It also invited a second
+   * submission of the same numbers.
+   *
+   * So a saved record shows as figures with an Edit button, and the form comes
+   * back only when Edit is pressed. Correcting one is still allowed — the API
+   * upserts — but it is now a deliberate act rather than the default state.
+   */
+  const [editing, setEditing] = useState(false);
+
+  // Back to the record after a successful save, so the figures just entered are
+  // confirmed rather than left in boxes. `state.ok` alone is not enough: the
+  // idle state is `{ ok: true }` with no message, which would close the form
+  // the moment it opened.
+  const savedMessage = state.ok ? state.message : undefined;
+
+  useEffect(() => {
+    if (savedMessage) setEditing(false);
+  }, [savedMessage]);
+
+  if (recorded && !editing) {
+    return (
+      <PackingRecordSummary
+        packedQuantity={packedQuantity}
+        rejectedQuantity={rejectedQuantity}
+        packVariant={packVariant}
+        onEdit={() => setEditing(true)}
+      />
+    );
+  }
 
   return (
     <form action={action} className="space-y-3 rounded-md bg-slate-50 p-4">
@@ -1226,8 +1588,14 @@ export function RecordPackingForm({
             <RequiredMark />
           </label>
           <input
+            // KEYED ON THE SAVED VALUE, so the control is remounted when it
+            // changes. React 19 resets the form once the action resolves and an
+            // input re-reads `defaultValue` only at mount — without the key the
+            // box would come back empty holding the previous render's default.
+            key={`packed-${packedQuantity ?? ''}`}
             id={`packed-${batchId}`}
             name="packedQuantity"
+            defaultValue={packedQuantity ?? ''}
             required
             inputMode="decimal"
             pattern="\d{1,11}(\.\d{1,3})?"
@@ -1249,8 +1617,10 @@ export function RecordPackingForm({
             // the run still has to be recorded. Free text, and no component
             // rows — the form cannot invent which components a pack uses.
             <input
+              key={`variant-${packVariant ?? ''}`}
               id={`variant-${batchId}`}
               name="packVariant"
+              defaultValue={packVariant ?? ''}
               placeholder="10 x 10 blister carton"
               className={FIELD}
             />
@@ -1262,6 +1632,11 @@ export function RecordPackingForm({
               onChange={(event) => setVariant(event.target.value)}
               className={FIELD}
             >
+              {/* A real, selectable row rather than a `disabled` one. A select
+                  whose value is '' with no empty option to hold it displays the
+                  first entry instead, so the control would read as a variant
+                  chosen while nothing had been. */}
+              <option value="">--None--</option>
               {packSpecifications.map((entry) => (
                 <option key={entry.id} value={entry.packVariant}>
                   {entry.packVariant} — {entry.unitsPerPack} per pack
@@ -1278,8 +1653,10 @@ export function RecordPackingForm({
             Rejects <span className="font-normal normal-case text-slate-400">(optional)</span>
           </label>
           <input
+            key={`rejected-${rejectedQuantity ?? ''}`}
             id={`rejected-${batchId}`}
             name="rejectedQuantity"
+            defaultValue={rejectedQuantity ?? ''}
             inputMode="decimal"
             placeholder="0"
             pattern="\d{1,11}(\.\d{1,3})?"
@@ -1349,10 +1726,117 @@ export function RecordPackingForm({
         {batchNumber} is released. Packed plus rejects cannot exceed what the batch made.
       </p>
 
-      <button type="submit" disabled={pending} className={BUTTON}>
-        {pending ? 'Recording…' : 'Record packing'}
-      </button>
+      <div className="flex flex-wrap items-center gap-2">
+        <button type="submit" disabled={pending} className={BUTTON}>
+          {pending ? 'Saving…' : 'Save'}
+        </button>
+
+        {/* Only when AMENDING. A first entry has nothing to go back to, so a
+            Cancel there would be a button that does nothing visible. */}
+        {recorded && (
+          <button
+            type="button"
+            onClick={() => setEditing(false)}
+            disabled={pending}
+            className="rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Cancel
+          </button>
+        )}
+      </div>
     </form>
+  );
+}
+
+/**
+ * A packing record that has been entered, shown as a record rather than a form.
+ *
+ * The figures only — no inputs, no Save. What was packed is a fact once it is
+ * stored, and presenting it in boxes with a submit button underneath made a
+ * saved record look like unsaved work.
+ *
+ * Edit is offered because the API allows an amendment right up until the
+ * quality gate rules; after that the whole form is absent and the tab says so,
+ * so there is no case here where this button appears but cannot be used.
+ */
+export function PackingRecordSummary({
+  packedQuantity,
+  rejectedQuantity,
+  packVariant,
+  onEdit,
+}: {
+  packedQuantity: string;
+  rejectedQuantity: string | null;
+  packVariant: string | null;
+  /**
+   * Omitted once the batch has been through the quality gate: the API refuses
+   * an amendment then, so the button would be a control that cannot work. The
+   * figures stay readable either way — what was packed is part of the batch's
+   * history, and a decided batch is exactly when somebody looks it up.
+   */
+  onEdit?: () => void;
+}) {
+  return (
+    <div className="space-y-3 rounded-md bg-slate-50 p-4">
+      {/* FOUR COLUMNS, the last holding Edit. The three figures left a gap
+          where a fourth would be, and putting the button there uses it rather
+          than adding a row below — which is also where the eye lands after
+          reading across the record.
+
+          The sentence that sat beside it is gone: Edit being offered says the
+          record can still be changed, and a line repeating that in words is
+          read once and then never again. */}
+      {/* The button is a SIBLING of the list, not a cell inside it: a <dl> may
+          hold only terms and descriptions, and a <div> wrapping a button is
+          neither. The grid lives on this wrapper instead, so the four columns
+          line up exactly as they would have. */}
+      <div className="grid gap-4 text-sm sm:grid-cols-4">
+        <dl className="contents">
+          <div>
+            <dt className={LABEL}>Finished pack quantity</dt>
+            <dd className="mt-1.5 text-slate-900">{packedQuantity}</dd>
+          </div>
+
+          <div>
+            <dt className={LABEL}>Pack variant</dt>
+            <dd className="mt-1.5 text-slate-900">
+              {packVariant ?? <span className="text-slate-400">Not recorded</span>}
+            </dd>
+          </div>
+
+          <div>
+            <dt className={LABEL}>Rejects</dt>
+            {/* A recorded zero is a real answer — nothing was rejected — and
+                differs from never having been asked. */}
+            <dd className="mt-1.5 text-slate-900">
+              {rejectedQuantity ?? <span className="text-slate-400">Not recorded</span>}
+            </dd>
+          </div>
+        </dl>
+
+        {onEdit && (
+          <div className="sm:justify-self-end">
+            <button
+              type="button"
+              onClick={onEdit}
+              className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+            >
+              Edit
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Kept for a DECIDED batch, where there is no Edit button to imply it.
+          Without this the record would simply end, with nothing saying why it
+          cannot be changed. */}
+      {!onEdit && (
+        <p className="border-t border-slate-200 pt-3 text-xs text-slate-500">
+          This batch has been through the quality gate, so its packing record can no longer be
+          changed.
+        </p>
+      )}
+    </div>
   );
 }
 

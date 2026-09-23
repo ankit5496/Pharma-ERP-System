@@ -129,11 +129,7 @@ export class MaterialIssueService {
 
     const bucket = stockBucketFor(order);
 
-    const plan = await this.applyOverrides(
-      await this.plan(productionOrderId),
-      overrides,
-      bucket,
-    );
+    const plan = await this.applyOverrides(await this.plan(productionOrderId), overrides, bucket);
     const short = plan.lines.filter((line) => line.quantityShort !== ZERO.toString());
 
     if (short.length > 0) {
@@ -311,10 +307,11 @@ export class MaterialIssueService {
       const isDeparture = !suggestedByItem.get(override.itemId)?.has(override.lotId);
 
       if (isDeparture && !override.reason?.trim()) {
-        throw new BadRequestException(
-          'Choosing a lot other than the one suggested needs a reason. The suggestion is ' +
-            'the nearest-expiry lot, and departing from it has to be explainable later.',
-        );
+        // SHORT ON PURPOSE. It is read in a red banner over the form, and the
+        // reasoning behind the rule belongs in the hint beside the field, not
+        // in the refusal — by the time this shows, what is wanted is the one
+        // thing to do about it.
+        throw new BadRequestException('Add a reason for not using the suggested lot.');
       }
     }
 
@@ -334,7 +331,9 @@ export class MaterialIssueService {
           // Needed to judge the bucket: ownership is on the lot, but which
           // job-work order a principal-owned lot belongs to is on its receipt.
           include: {
-            jobWorkMaterialReceiptLine: { select: { receipt: { select: { jobWorkOrderId: true } } } },
+            jobWorkMaterialReceiptLine: {
+              select: { receipt: { select: { jobWorkOrderId: true } } },
+            },
           },
         });
 
@@ -413,10 +412,8 @@ export class MaterialIssueService {
         // every check and simply be dispensed.
         if (allocated.greaterThan(required)) {
           throw new BadRequestException(
-            `The lots chosen for ${line.item.code} come to ${allocated.toString()} ` +
-              `${line.item.uom}, but the batch needs ${required.toString()}. An override replaces ` +
-              'the suggestion rather than adding to it, so the quantities have to match the ' +
-              'requirement.',
+            `${line.item.code}: reduce the quantity to ${required.toString()} ` +
+              `${line.item.uom} or less — ${allocated.toString()} is more than the batch needs.`,
           );
         }
 

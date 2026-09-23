@@ -15,7 +15,12 @@ import {
   type PartyType,
 } from '@pharma-erp/types';
 
-import { savePartyAction, uploadCustomerDocumentAction, type ActionResult } from './actions';
+import {
+  nextPartyCodeAction,
+  savePartyAction,
+  uploadCustomerDocumentAction,
+  type ActionResult,
+} from './actions';
 import { CustomerDocuments } from './customer-documents';
 import {
   FormGrid,
@@ -128,6 +133,36 @@ export function PartyMasterForm({
   const router = useRouter();
 
   const [partyType, setPartyType] = useState<string>(party?.partyType ?? '');
+
+  /**
+   * The code this party would take, shown before it is saved.
+   *
+   * Asked per TYPE, because the prefix follows it — choosing "Customer" has to
+   * change VEN-00004 into CUS-00011, not leave the previous answer standing.
+   *
+   * A prediction rather than a reservation: nothing is held, and if a colleague
+   * saves a party of the same type first they take this code and the next moves
+   * on. Not asked at all when editing — the party already has one, and it is
+   * fixed.
+   */
+  const [nextCode, setNextCode] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (party || !partyType) {
+      setNextCode(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    void nextPartyCodeAction(partyType).then((code) => {
+      if (!cancelled) setNextCode(code);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [party, partyType]);
   // No 'ACTIVE' fallback for a NEW party: the field is starred, and opening
   // it already answered means the answer was never given. An existing party
   // keeps the status it has.
@@ -193,19 +228,36 @@ export function PartyMasterForm({
     <form action={formAction} className="flex flex-col gap-8" noValidate>
       <FormSection title="Identity">
         <FormGrid>
+          {/* ALLOCATED BY THE SERVER as VEN-00001, and read-only here.
+              The prefix follows the party type, so the preview changes when the
+              type does.
+
+              It used to be typed, and one supplier ended up in the register as
+              "SUP-7", "SUP-007" and "sup 7". A code quoted on every purchase
+              order and invoice is not something to leave to typing.
+
+              `readOnly` rather than `disabled`: a disabled input is left out of
+              the submission entirely, and the value still has to be readable
+              and copyable. The server ignores what is sent regardless. */}
           <TextField
+            // KEYED ON THE CODE AND THE TYPE, so the control is remounted when
+            // either changes. `defaultValue` is only read on mount, and the
+            // code arrives after the first render and again whenever the type
+            // changes — without the key the box would keep showing the first
+            // answer. The type is in the key too because clearing it changes
+            // only the PLACEHOLDER, which is read on mount for the same reason.
+            key={`${party?.code ?? nextCode ?? 'pending'}:${partyType}`}
             name="code"
-            error={errorFor('code')}
             label="Party code"
-            required
-            maxLength={64}
-            placeholder="SUP-0007"
-            defaultValue={typed('code', party?.code)}
-            readOnly={Boolean(party)}
+            readOnly
+            defaultValue={party?.code ?? nextCode ?? ''}
+            // The prefix comes FROM the party type, so there is no code to show
+            // until one is chosen.
+            placeholder={party ? undefined : partyType ? 'Assigned on save' : 'Select Party type'}
             hint={
               party
                 ? 'Fixed once created — it is on every order and invoice that already cites this party.'
-                : 'Short, unique, and never reused.'
+                : 'Assigned automatically from the party type when this party is saved.'
             }
           />
           {/* FIXED ONCE CREATED, like the code above it.
@@ -276,20 +328,32 @@ export function PartyMasterForm({
                 : 'Inactive parties stay on record but cannot be transacted with.'
             }
           />
+          {/* GSTIN, EMAIL AND CONTACT NUMBER ARE REQUIRED ON A NEW PARTY.
+              The GSTIN decides the tax treatment of every invoice raised
+              against this party, and one nobody can reach is one whose orders
+              stall with no way to chase them.
+
+              STARRED ON CREATE ONLY. Parties recorded before this rule have
+              them blank, and a star on an edit form would promise a refusal
+              that is not coming — the save goes through, because demanding a
+              GSTIN that may not exist would leave those rows uneditable for
+              even an unrelated change. */}
           <TextField
             name="gstin"
             error={errorFor('gstin')}
             label="GSTIN"
+            required={!party}
             maxLength={15}
             placeholder="27AABCU9603R1ZM"
             defaultValue={typed('gstin', party?.gstin)}
-            hint="15 characters. Leave blank for an unregistered supplier."
+            hint="15 characters, from the GST certificate."
           />
           <TextField
             name="email"
             error={errorFor('email')}
             label="Email"
             type="email"
+            required={!party}
             maxLength={320}
             defaultValue={typed('email', party?.email)}
             hint="Checked for a real address — a note to yourself belongs in the address box."
@@ -304,6 +368,7 @@ export function PartyMasterForm({
             // — failed the save with no message anywhere on screen.
             error={errorFor('phone')}
             label="Contact number"
+            required={!party}
             dialOptions={DIAL_OPTIONS}
             dialValue={phoneDial}
             onDialChange={setPhoneDial}

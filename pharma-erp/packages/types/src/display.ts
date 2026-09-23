@@ -199,3 +199,58 @@ export function formatStatus(value: string | null | undefined): string {
     )
     .join('');
 }
+
+/**
+ * An ISO date as DD-MM-YYYY, which is how a date is read on a carton here.
+ *
+ * Takes the first ten characters and reorders them — NO `Date` PARSING. A
+ * stored expiry is a calendar day, not an instant, and `new Date('2027-04-03')`
+ * is midnight UTC: one `toLocaleDateString` west of Greenwich and the label
+ * reads 02-04-2027, a day early on a document that governs whether stock may
+ * be sold. Reordering the string cannot drift.
+ *
+ * Returns what it was given if that is not a well-formed date, rather than
+ * inventing something: a malformed value should look wrong, not plausible.
+ */
+export function formatDateDMY(value: string | null | undefined): string {
+  if (!value) return '';
+
+  const [year, month, day] = value.slice(0, 10).split('-');
+
+  if (!/^\d{4}$/.test(year ?? '') || !/^\d{2}$/.test(month ?? '') || !/^\d{2}$/.test(day ?? '')) {
+    return value;
+  }
+
+  return `${day}-${month}-${year}`;
+}
+
+/**
+ * DD-MM-YYYY back to the ISO date the API stores, or '' if it is not one yet.
+ *
+ * The counterpart to `formatDateDMY`, for a field somebody TYPES rather than
+ * picks. It is deliberately strict: the day and month must be two digits and
+ * the result has to survive a round trip, so "31-02-2026" is rejected rather
+ * than silently becoming 3 March. A manufacturing date decides the expiry
+ * printed on a carton, and a date that quietly moved is worse than one refused.
+ *
+ * Returns '' — not null — because the caller feeds it straight to a hidden
+ * input, and an empty value is what the API reads as "not sent, use today".
+ */
+export function parseDateDMY(value: string): string {
+  const match = /^(\d{2})-(\d{2})-(\d{4})$/.exec(value.trim());
+
+  if (!match) return '';
+
+  const [, day, month, year] = match as unknown as [string, string, string, string];
+  const iso = `${year}-${month}-${day}`;
+
+  // Rejects a day the month does not have. `Date.UTC` rolls 31 February over
+  // into March rather than failing, so the check is that formatting the result
+  // gives back exactly what went in.
+  const parsed = new Date(`${iso}T00:00:00.000Z`);
+
+  if (Number.isNaN(parsed.getTime())) return '';
+  if (parsed.toISOString().slice(0, 10) !== iso) return '';
+
+  return iso;
+}

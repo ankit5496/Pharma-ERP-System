@@ -3,7 +3,7 @@
 import { useActionToast } from '@/components/toast';
 import { useActionState, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { ITEM_TYPE_LABELS, type BomView, type ItemSummary } from '@pharma-erp/types';
+import type { BomView, ItemSummary } from '@pharma-erp/types';
 
 import { saveBomAction, type ActionResult } from './actions';
 import {
@@ -335,7 +335,6 @@ export function BomMasterForm({
   );
 }
 
-/** Code first, because that is what people search and compare on. */
 /**
  * Options for a searchable picklist, NEWEST FIRST.
  *
@@ -344,12 +343,19 @@ export function BomMasterForm({
  * the one they added minutes ago, and it is what the closed dropdown offers
  * before anything is typed. Sorted here rather than asking the API for a second
  * ordering — the whole list is already in the browser.
+ *
+ * CODE AND NAME ONLY. The label used to carry the item's category too —
+ * "(Finished Good)", "(Raw Material)" — which repeated what the field had
+ * already established: each of these three lookups is filtered to one category,
+ * so every row in the list said the same thing and none of it told them apart.
+ * On the longer names it also pushed the code and the name onto two lines.
+ * Code first, because that is what people search and compare on.
  */
 function toOptions(items: readonly ItemSummary[]) {
   return [...items]
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
     .map((item) => ({
       value: item.id,
-      label: `${item.code} — ${item.name} (${ITEM_TYPE_LABELS[item.type]})`,
+      label: `${item.code} — ${item.name}`,
     }));
 }

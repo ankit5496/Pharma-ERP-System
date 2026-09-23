@@ -7,6 +7,7 @@ import type {
   MaterialIssuePlan,
   MaterialIssueView,
   ProductionOrderSummary,
+  ProductionStockLot,
   WorkOrderFeasibility,
 } from '@pharma-erp/types';
 
@@ -124,10 +125,9 @@ export async function issueMaterialAction(
   if (missingReason.size > 0) {
     return {
       ok: false,
-      message:
-        'Choosing a lot other than the suggested one needs a reason. Fill in the reason for ' +
-        `${missingReason.size === 1 ? 'the material' : 'each material'} where you picked a ` +
-        'different lot.',
+      message: `Add a reason for not using the suggested lot${
+        missingReason.size === 1 ? '' : 's'
+      }.`,
     };
   }
 
@@ -350,6 +350,32 @@ export async function issuePlanAction(
     `/api/v1/production/orders/${productionOrderId}/issue-plan`,
     { authenticated: true, timeoutMs: 20_000 },
   );
+
+  if (!result.ok) return { ok: false, message: result.error };
+
+  return { ok: true, data: result.data };
+}
+
+/**
+ * Stock lots as they stand right now.
+ *
+ * The dispense form is handed its lots by the server component that renders it
+ * and then holds them for as long as it is open. That is a snapshot: a
+ * colleague can dispense from the same lot, or QC can quarantine it, while
+ * somebody is deciding — and the form would go on offering a quantity that is
+ * no longer there, only to be refused at the moment it mattered.
+ *
+ * Asked for by the panel's Save, so the lot figures beside each chosen lot are
+ * the current ones before the dispense is submitted. Nothing is reserved by
+ * asking; this is a read.
+ */
+export async function stockLotsAction(): Promise<
+  { ok: true; data: ProductionStockLot[] } | { ok: false; message: string }
+> {
+  const result = await apiFetch<ProductionStockLot[]>('/api/v1/production/stock-lots', {
+    authenticated: true,
+    timeoutMs: 20_000,
+  });
 
   if (!result.ok) return { ok: false, message: result.error };
 

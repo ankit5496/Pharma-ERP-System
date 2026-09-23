@@ -129,19 +129,26 @@ export function joinPhoneNumber(dial: string, national: string): string | null {
 /**
  * What the create endpoint accepts.
  *
+ * NO `code`: it is allocated from a per-type counter — VEN-00001, CUS-00001 —
+ * inside the transaction that writes the party, so there is nothing to send.
+ *
+ * GSTIN, email and phone ARE required here, and stay optional on the update
+ * below. Parties recorded before that rule have them blank, and demanding all
+ * three on every save would make those rows uneditable until someone produced
+ * a GSTIN that may not exist.
+ *
  * The licence fields are optional even though an ACTIVE customer cannot be
  * saved without them. Deliberate: it lets someone record the party as
  * INACTIVE today and activate it when the paperwork arrives, rather than
  * inventing a licence number to get past a form.
  */
 export interface CreatePartyRequest {
-  code: string;
   name: string;
   partyType: PartyType;
   status?: PartyStatus;
-  gstin?: string;
-  email?: string;
-  phone?: string;
+  gstin: string;
+  email: string;
+  phone: string;
   address?: string;
   paymentTermsDays?: number;
   drugLicenceNumber?: string;
