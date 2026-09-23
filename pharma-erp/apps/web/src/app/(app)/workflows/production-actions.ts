@@ -215,6 +215,17 @@ export async function recordPackingAction(
     consumptions.push({ itemId: value, quantityConsumed: quantity });
   }
 
+  // CONSUMPTION WITHOUT A VARIANT IS NOT RECORDABLE. The component rows exist
+  // because a pack specification named them, so figures arriving with no
+  // variant mean the select was left on --None-- while the rows were filled in
+  // — and the record would be stored with consumption nobody could tie back to
+  // a presentation. Refused here rather than dropped silently, which is what
+  // used to happen: the save succeeded, the rows vanished, and the numbers just
+  // entered were gone.
+  if (consumptions.length > 0 && !packVariant) {
+    return { ok: false, message: 'Choose the pack variant that was run.' };
+  }
+
   const result = await apiFetch<BatchView>(`/api/v1/production/batches/${batchId}/packing`, {
     method: 'POST',
     authenticated: true,

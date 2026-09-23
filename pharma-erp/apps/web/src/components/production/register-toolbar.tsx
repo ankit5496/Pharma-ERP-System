@@ -298,7 +298,16 @@ export function RegisterToolbar({
       query={query}
       onQuery={onQuery}
       searchPlaceholder={placeholder}
-      title={title ?? noun.charAt(0).toUpperCase() + noun.slice(1)}
+      // TITLE CASE, matching the field names and column headings around it.
+      // Capitalising only the first letter left "Dispensing records" and "Work
+      // orders" as headings beside "Issue No." and "Planned Material Use".
+      title={
+        title ??
+        noun
+          .split(' ')
+          .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+          .join(' ')
+      }
       total={total}
       noun={noun}
       singular={singular ?? noun.replace(/s$/, '')}

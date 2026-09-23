@@ -518,6 +518,18 @@ export interface BatchView {
    */
   rejectedQuantity: string | null;
   packVariant: string | null;
+  /**
+   * What the pack actually consumed, per component.
+   *
+   * Returned so an amendment starts from the figures already entered rather
+   * than from empty boxes. Keyed by ITEM ID because that is what the form
+   * posts back and what identifies the component across a specification
+   * change; the row order on screen comes from the specification, not here.
+   *
+   * Empty when nothing was recorded, which is a run whose components were
+   * never counted — distinct from a run that counted zero of one.
+   */
+  packagingConsumed: { itemId: string; quantityConsumed: string }[];
   materialVariances: BatchMaterialVariance[];
   /** Above this absolute percentage a variance is flagged for review. */
   varianceThresholdPercent: number;

@@ -160,17 +160,17 @@ export const WORKFLOWS: readonly Workflow[] = [
       },
       {
         key: 'production-orders',
-        label: 'Production orders',
+        label: 'Production Orders',
         state: 'ready',
       },
       {
         key: 'material-issue',
-        label: 'Material issue',
+        label: 'Material Issue',
         state: 'ready',
       },
       {
         key: 'batch-record',
-        label: 'Batch record',
+        label: 'Batch Record',
         state: 'ready',
       },
       // REMOVED, NOT BUILT: 'in-process-checks' and 'finished-goods-testing'
@@ -192,7 +192,7 @@ export const WORKFLOWS: readonly Workflow[] = [
       // mechanism they used is still in place for the other workflows.
       {
         key: 'batch-release',
-        label: 'Batch release',
+        label: 'Batch Release',
         state: 'ready',
       },
     ],
@@ -279,7 +279,7 @@ export const WORKFLOWS: readonly Workflow[] = [
       {
         key: 'quality-check',
         label: 'Quality check',
-        purpose: "Approving what a principal sent, before any of it may be issued.",
+        purpose: 'Approving what a principal sent, before any of it may be issued.',
         state: 'ready',
       },
       {

@@ -376,7 +376,10 @@ export class BatchService {
 
   private include() {
     return {
-      packingRecord: true,
+      // The consumption rows come WITH the record: the packing form seeds its
+      // component boxes from them on an amendment, and fetching them
+      // separately would be a second query per batch on a list of eighteen.
+      packingRecord: { include: { consumptions: true } },
       releaseDecidedBy: { select: { fullName: true } },
       productionOrder: {
         include: {
@@ -462,6 +465,11 @@ export class BatchService {
       // can show it back on a correction rather than asking for it again.
       rejectedQuantity: batch.packingRecord?.rejectedQuantity.toString() ?? null,
       packVariant: batch.packingRecord?.packVariant ?? null,
+      packagingConsumed:
+        batch.packingRecord?.consumptions.map((consumption) => ({
+          itemId: consumption.itemId,
+          quantityConsumed: consumption.quantityConsumed.toString(),
+        })) ?? [],
       materialVariances: await this.materialVariances(batch),
       varianceThresholdPercent: BatchService.VARIANCE_THRESHOLD_PERCENT,
     };
@@ -548,6 +556,7 @@ interface BatchWithIncludes {
     packedOn: Date;
     rejectedQuantity: Prisma.Decimal;
     packVariant: string | null;
+    consumptions: { itemId: string; quantityConsumed: Prisma.Decimal }[];
   } | null;
   productionOrder: {
     orderNumber: string;

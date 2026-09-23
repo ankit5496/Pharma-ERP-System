@@ -261,7 +261,6 @@ export function SelectField({
   value,
   onChange,
   searchable,
-  readOnly,
   ...shell
 }: FieldShell & {
   options: readonly { value: string; label: string }[];
@@ -283,22 +282,6 @@ export function SelectField({
   /** Controlled value. When given, `onChange` must be given too. */
   value?: string;
   onChange?: (value: string) => void;
-  /**
-   * Shown, submitted, but not changeable — for a field the record is allowed to
-   * keep but not to reconsider.
-   *
-   * A `<select>` has no `readOnly` of its own: the attribute exists on inputs
-   * only, and the one control that would do it — `disabled` — drops the field
-   * from the submission entirely. That is the wrong trade here, because these
-   * forms post the whole record and a category missing from the payload reads
-   * to the API as a category being cleared.
-   *
-   * So the selection is held instead: the other options are removed, leaving
-   * the chosen one as the only thing the control can be. Keyboard, screen
-   * reader and mouse all then agree it cannot move, `aria-disabled` announces
-   * why, and the value still posts.
-   */
-  readOnly?: boolean;
 }) {
   const ref = useRef<HTMLSelectElement>(null);
 
@@ -362,12 +345,6 @@ export function SelectField({
     );
   }
 
-  // Held to the one option it already has. Offering the rest — or the empty
-  // placeholder — would let the control be moved, which is the whole thing
-  // `readOnly` is here to prevent.
-  const settled = value ?? defaultValue ?? '';
-  const shown = readOnly ? options.filter((option) => option.value === settled) : options;
-
   return (
     <Shell {...shell}>
       <select
@@ -379,18 +356,7 @@ export function SelectField({
         onChange={onChange ? (event) => onChange(event.target.value) : undefined}
         aria-invalid={shell.error ? true : undefined}
         aria-describedby={shell.error ? `${shell.name}-error` : undefined}
-        // ANNOUNCED as disabled without BEING disabled: a disabled select is
-        // left out of the submission, and this field still has to post.
-        aria-disabled={readOnly ? true : undefined}
-        // A read-only control that still highlights and shows a text caret
-        // invites the click that does nothing. Greyed, with the arrow cursor,
-        // it reads as settled rather than broken.
-        className={fieldClass(
-          `${shell.compact ? 'field-sm mt-1 w-full' : 'field mt-1.5'}${
-            readOnly ? 'cursor-default bg-slate-50 text-slate-600' : ''
-          }`,
-          shell.error,
-        )}
+        className={fieldClass(shell.compact ? 'field-sm mt-1 w-full' : 'field mt-1.5', shell.error)}
       >
         {/* NOT `disabled`, deliberately. A disabled option cannot hold the
             selection, so a select whose value is "" fell through to the first
@@ -401,12 +367,9 @@ export function SelectField({
 
             Selectable-and-empty is what makes "nothing chosen" a real state.
             `required` on the select is what refuses it, and the browser then
-            says so before the request is ever made.
-
-            Left out entirely when read-only: there is nothing to prompt for,
-            and an empty entry would be somewhere for the selection to go. */}
-        {placeholder !== null && !readOnly && <option value="">{placeholder}</option>}
-        {shown.map((option) => (
+            says so before the request is ever made. */}
+        {placeholder !== null && <option value="">{placeholder}</option>}
+        {options.map((option) => (
           <option key={option.value} value={option.value}>
             {option.label}
           </option>
@@ -458,7 +421,7 @@ export function PhoneField({
           name={`${shell.name}Dial`}
           value={dialValue}
           onChange={(event) => onDialChange(event.target.value)}
-          aria-label="Country code"
+          aria-label="Country Code"
           // Sized to "IN +91" rather than a country name, so the number beside
           // it keeps the width. Its own right border is the divider; no outer
           // ring, because the group already has one.
@@ -757,7 +720,7 @@ export function LineRow({
   return (
     <li className="rounded-md border border-slate-200 bg-slate-50/60 p-3">
       <div className="flex items-center justify-between gap-3">
-        <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        <span className="text-[11px] font-semibold tracking-wide text-slate-500">
           Line {index + 1}
         </span>
         <button

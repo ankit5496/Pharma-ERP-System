@@ -119,7 +119,7 @@ export function LicenceComplianceMasterForm({
           <SelectField
             name="licenceType"
             error={errorFor('licenceType')}
-            label="Licence type"
+            label="Licence Type"
             required
             options={TYPE_OPTIONS}
             value={licenceType}
@@ -148,7 +148,7 @@ export function LicenceComplianceMasterForm({
           <TextField
             name="issuingAuthority"
             error={errorFor('issuingAuthority')}
-            label="Issuing authority"
+            label="Issuing Authority"
             required
             maxLength={255}
             placeholder="Food and Drug Administration, Maharashtra"
@@ -165,7 +165,7 @@ export function LicenceComplianceMasterForm({
           <TextField
             name="expiryDate"
             error={errorFor('expiryDate')}
-            label="Expiry date"
+            label="Expiry Date"
             required
             type="date"
             defaultValue={typed('expiryDate', licence?.expiryDate)}

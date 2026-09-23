@@ -88,7 +88,7 @@ export function OrderTable({ orders }: { orders: ProductionOrderSummary[] }) {
         <div className="table-scroll overflow-x-auto">
           <table className="w-full min-w-[52rem] text-left text-sm">
             <thead>
-              <tr className="text-xs uppercase tracking-wide text-slate-500">
+              <tr className="text-xs tracking-wide text-slate-500">
                 <Th>Order</Th>
                 <Th>Product</Th>
                 <Th align="right">Planned</Th>

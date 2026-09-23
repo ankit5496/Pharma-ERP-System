@@ -190,7 +190,7 @@ export function ItemMasterForm({
             // for the same reason.
             key={`${item?.code ?? nextCode ?? 'pending'}:${category}`}
             name="code"
-            label="Item code"
+            label="Item Code"
             readOnly
             defaultValue={item?.code ?? nextCode ?? ''}
             // The prefix comes FROM the category, so there is no code to show
@@ -210,20 +210,43 @@ export function ItemMasterForm({
               would leave a raw material numbered as packing, so the two would
               contradict each other on documents that cannot be reissued.
 
-              Still submitted, not disabled: these forms post the whole record,
-              and a category missing from the payload reads to the API as a
-              category being cleared. */}
-          <SelectField
-            name="category"
-            error={errorFor('category')}
-            label="Category"
-            required
-            options={CATEGORY_OPTIONS}
-            value={category}
-            onChange={setCategory}
-            readOnly={Boolean(item)}
-            hint={item ? 'Fixed once created — the item code is derived from it.' : undefined}
-          />
+              A READ-ONLY TEXT FIELD on an edit, like the item code above it,
+              rather than a select holding one option. Keeping the <select>
+              stopped the value CHANGING but not the control opening: it still
+              carried a chevron, still dropped a menu, and still read as
+              somewhere a choice could be made. A box that cannot be typed in
+              looks settled, which is what this field is.
+
+              A disabled control was not the alternative: it would be dropped
+              from the submission entirely, and the action reads `category` to
+              decide the payload. Hence the hidden input below. */}
+          {item ? (
+            <>
+              <TextField
+                name="categoryDisplay"
+                label="Category"
+                readOnly
+                defaultValue={ITEM_TYPE_LABELS[item.type]}
+                hint="Fixed once created — the item code is derived from it."
+              />
+              {/* SUBMITTED, though it cannot be changed. The visible field above
+                  is `categoryDisplay`, so without this the form would send no
+                  `category` at all and the action would refuse the save for a
+                  missing required field. The API rejects a change to it
+                  regardless, so sending the stored value is safe. */}
+              <input type="hidden" name="category" value={item.type} />
+            </>
+          ) : (
+            <SelectField
+              name="category"
+              error={errorFor('category')}
+              label="Category"
+              required
+              options={CATEGORY_OPTIONS}
+              value={category}
+              onChange={setCategory}
+            />
+          )}
           {/* THE GENERIC NAME IS THE REQUIRED ONE, and the brand is optional.
 
               It used to be "one or the other", which meant neither could carry
@@ -234,7 +257,7 @@ export function ItemMasterForm({
           <TextField
             name="brandName"
             error={errorFor('brandName')}
-            label="Brand name"
+            label="Brand Name"
             maxLength={255}
             placeholder="Calpol 500"
             defaultValue={typed('brandName', item?.brandName)}
@@ -243,7 +266,7 @@ export function ItemMasterForm({
           <TextField
             name="genericName"
             error={errorFor('genericName')}
-            label="Generic name / composition"
+            label="Generic Name / Composition"
             required
             maxLength={512}
             placeholder="Paracetamol IP 500 mg"
@@ -252,7 +275,7 @@ export function ItemMasterForm({
           />
           <SelectField
             name="scheduleClassification"
-            label="Schedule classification"
+            label="Schedule Classification"
             options={SCHEDULE_OPTIONS}
             value={schedule}
             onChange={setSchedule}
@@ -266,7 +289,7 @@ export function ItemMasterForm({
           <SelectField
             name="uom"
             error={errorFor('uom')}
-            label="Unit of measure"
+            label="Unit of Measure"
             required
             options={UOM_OPTIONS}
             value={uom}
@@ -276,14 +299,14 @@ export function ItemMasterForm({
       </FormSection>
 
       <FormSection
-        title="Tax and pricing"
+        title="Tax and Pricing"
         description="HSN and GST are required on every item — an invoice cannot be raised without them."
       >
         <FormGrid>
           <TextField
             name="hsnCode"
             error={errorFor('hsnCode')}
-            label="HSN code"
+            label="HSN Code"
             required
             inputMode="numeric"
             maxLength={8}
@@ -301,7 +324,7 @@ export function ItemMasterForm({
           <SelectField
             name="gstRate"
             error={errorFor('gstRate')}
-            label="GST rate"
+            label="GST Rate"
             required
             options={GST_RATE_OPTIONS}
             value={gstRate}
@@ -320,7 +343,7 @@ export function ItemMasterForm({
           />
           <CheckboxField
             name="dpcoCeiling"
-            label="Falls under a DPCO ceiling price"
+            label="Falls Under a DPCO Ceiling Price"
             defaultChecked={
               state.values ? state.values.dpcoCeiling !== undefined : (item?.dpcoCeiling ?? false)
             }
@@ -329,11 +352,11 @@ export function ItemMasterForm({
         </FormGrid>
       </FormSection>
 
-      <FormSection title="Stock and shelf life">
+      <FormSection title="Stock and Shelf Life">
         <FormGrid>
           <TextField
             name="storageConditions"
-            label="Storage conditions"
+            label="Storage Conditions"
             maxLength={255}
             placeholder="Store below 25 °C, protect from light and moisture"
             defaultValue={typed('storageConditions', item?.storageConditions)}
@@ -341,7 +364,7 @@ export function ItemMasterForm({
           />
           <TextField
             name="reorderLevel"
-            label="Reorder level"
+            label="Reorder Level"
             type="number"
             min="0"
             step="0.001"
@@ -350,7 +373,7 @@ export function ItemMasterForm({
           />
           <TextField
             name="reorderQuantity"
-            label="Reorder quantity"
+            label="Reorder Quantity"
             type="number"
             min="0"
             step="0.001"

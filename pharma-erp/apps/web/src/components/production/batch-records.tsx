@@ -315,8 +315,8 @@ function BatchRecordPanel({ batch }: { batch: BatchView }) {
   return (
     <div className="pb-1">
       <div>
-        <h4 className="text-xs font-medium uppercase tracking-wide text-slate-600">
-          Manufacturing &amp; consumption
+        <h4 className="text-xs font-medium tracking-wide text-slate-600">
+          Manufacturing &amp; Consumption
         </h4>
         <p className="mt-1 text-xs text-slate-500">
           Anything beyond ±{batch.varianceThresholdPercent}% is flagged for review.
@@ -325,7 +325,7 @@ function BatchRecordPanel({ batch }: { batch: BatchView }) {
         <div className="mt-3 overflow-x-auto">
           <table className="w-full text-left text-xs">
             <thead>
-              <tr className="border-b border-slate-200 text-[10px] uppercase tracking-wide text-slate-500">
+              <tr className="border-b border-slate-200 text-[10px] tracking-wide text-slate-500">
                 <th scope="col" className="py-2 pr-4 font-medium">
                   Material
                 </th>
@@ -380,7 +380,7 @@ function BatchRecordPanel({ batch }: { batch: BatchView }) {
 function Figure({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div>
-      <dt className="text-xs uppercase tracking-wide text-slate-500">{label}</dt>
+      <dt className="text-xs tracking-wide text-slate-500">{label}</dt>
       <dd className="mt-1">{children}</dd>
     </div>
   );

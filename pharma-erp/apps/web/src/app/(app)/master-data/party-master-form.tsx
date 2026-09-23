@@ -248,7 +248,7 @@ export function PartyMasterForm({
             // only the PLACEHOLDER, which is read on mount for the same reason.
             key={`${party?.code ?? nextCode ?? 'pending'}:${partyType}`}
             name="code"
-            label="Party code"
+            label="Party Code"
             readOnly
             defaultValue={party?.code ?? nextCode ?? ''}
             // The prefix comes FROM the party type, so there is no code to show
@@ -276,7 +276,7 @@ export function PartyMasterForm({
             <>
               <TextField
                 name="partyTypeDisplay"
-                label="Party type"
+                label="Party Type"
                 readOnly
                 defaultValue={PARTY_TYPE_LABELS[party.partyType]}
                 hint="Fixed once created — orders and agreements already cite this party as this type."
@@ -297,7 +297,7 @@ export function PartyMasterForm({
             <SelectField
               name="partyType"
               error={errorFor('partyType')}
-              label="Party type"
+              label="Party Type"
               required
               options={TYPE_OPTIONS}
               value={partyType}
@@ -308,7 +308,7 @@ export function PartyMasterForm({
           <TextField
             name="name"
             error={errorFor('name')}
-            label="Party name"
+            label="Party Name"
             required
             maxLength={255}
             defaultValue={typed('name', party?.name)}
@@ -367,7 +367,7 @@ export function PartyMasterForm({
             // Without this a number the API refuses — a legacy 9-digit one, say
             // — failed the save with no message anywhere on screen.
             error={errorFor('phone')}
-            label="Contact number"
+            label="Contact Number"
             required={!party}
             dialOptions={DIAL_OPTIONS}
             dialValue={phoneDial}
@@ -388,13 +388,13 @@ export function PartyMasterForm({
       </FormSection>
 
       <FormSection
-        title="Supplier terms"
+        title="Supplier Terms"
         description="Applied when a purchase order is raised on this party."
       >
         <FormGrid>
           <TextField
             name="paymentTermsDays"
-            label="Payment terms (days)"
+            label="Payment Terms (days)"
             type="number"
             min="0"
             step="1"
@@ -416,7 +416,7 @@ export function PartyMasterForm({
           here would refuse records the database is perfectly willing to store. */}
       {holdsLicence && (
         <FormSection
-          title="Drug licence"
+          title="Drug Licence"
           description={
             isCustomer
               ? 'Required before this party can be active — the number and its validity are both checked, by the API and by the database.'
@@ -427,7 +427,7 @@ export function PartyMasterForm({
             <TextField
               name="drugLicenceNumber"
               error={errorFor('drugLicenceNumber')}
-              label="Drug licence number"
+              label="Drug Licence Number"
               required={needsLicence}
               maxLength={64}
               placeholder="20B/MH/2019/000123"
@@ -437,7 +437,7 @@ export function PartyMasterForm({
             <TextField
               name="drugLicenceValidTo"
               error={errorFor('drugLicenceValidTo')}
-              label="Drug licence valid until"
+              label="Drug Licence Valid Until"
               required={needsLicence}
               type="date"
               defaultValue={typed('drugLicenceValidTo', party?.drugLicenceValidTo)}
@@ -449,14 +449,14 @@ export function PartyMasterForm({
 
       {isCustomer && (
         <FormSection
-          title="Customer terms"
+          title="Customer Terms"
           description="What this party may owe, and for how long."
         >
           <FormGrid>
             <TextField
               name="creditLimit"
               error={errorFor('creditLimit')}
-              label="Credit limit (₹)"
+              label="Credit Limit (₹)"
               type="number"
               min="0"
               step="0.01"
@@ -465,7 +465,7 @@ export function PartyMasterForm({
             />
             <TextField
               name="creditPeriodDays"
-              label="Credit period (days)"
+              label="Credit Period (days)"
               type="number"
               min="0"
               step="1"
