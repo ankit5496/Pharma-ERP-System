@@ -257,6 +257,38 @@ export class JobWorkReceiptsService {
 
       // A material already on the open receipt is a second delivery of it, and
       // that is ordinary — the two lots stay separate, as they physically are.
+      //
+      // THE SAME CHALLAN AND THE SAME BATCH IS NOT A SECOND DELIVERY. It is the
+      // same drum booked twice, which is what a double-submitted form produces:
+      // a receipt in the field came back with every material on it twice, same
+      // quantity, same challan number. Two lots were created for one physical
+      // drum and the principal's account was overstated by exactly double.
+      //
+      // Checked against what is ALREADY STORED, not just within this request —
+      // the within-request check above cannot see the first submission.
+      const already = await tx.jobWorkMaterialReceiptLine.findMany({
+        where: {
+          receiptId: receipt.id,
+          deliveryChallanNumber: challan,
+          itemId: { in: prepared.map((line) => line.item.id) },
+          deletedAt: null,
+        },
+        select: { itemId: true, batchNumber: true },
+      });
+
+      const seen = new Set(already.map((line) => `${line.itemId}:${line.batchNumber}`));
+
+      const repeated = prepared.find((line) => seen.has(`${line.item.id}:${line.batchNumber}`));
+
+      if (repeated) {
+        throw new ConflictException(
+          `${repeated.item.code} batch ${repeated.batchNumber} is already recorded on challan ` +
+            `${challan} for this receipt. That delivery has been booked — recording it again ` +
+            'would create a second lot for one drum. Use a different batch number if this is a ' +
+            'genuinely separate consignment.',
+        );
+      }
+
       for (const line of prepared) {
         // The lot takes a LOT-series number like every other lot, because it is
         // one: the store finds it in the same register and the same reports.

@@ -4,6 +4,7 @@ import { Prisma } from '@pharma-erp/database';
 import {
   INVOICE_BASIS_FOR_BILLING_MODEL,
   STOCK_BUCKET_FOR_BILLING_MODEL,
+  type BatchReleaseStatus,
   type BillingModel,
   type ConversionRateBasis,
   type JobWorkDispatchableBatch,
@@ -67,6 +68,81 @@ export class JobWorkDispatchService {
   async dispatchable(jobWorkOrderId: string): Promise<JobWorkDispatchableBatch[]> {
     const order = await this.orders.requireOrder(jobWorkOrderId);
 
+    const [internal, own] = await Promise.all([
+      this.dispatchableInternalBatches(order.id),
+      this.dispatchableJobWorkBatches(order.id),
+    ]);
+
+    // Job Work's own batches first: on a pure-conversion order they are what
+    // this screen is now for, and the internal ones are the legacy route.
+    return [...own, ...internal];
+  }
+
+  /**
+   * Released batches from Job Work's OWN production workflow.
+   *
+   * WHAT IS LEFT is the packed quantity less what has already gone back — there
+   * is no finished-goods lot to read, because these goods were never ours to
+   * sell. They are the principal's throughout, which is the whole point of pure
+   * conversion, and they leave on a challan rather than out of stock.
+   */
+  private async dispatchableJobWorkBatches(
+    jobWorkOrderId: string,
+  ): Promise<JobWorkDispatchableBatch[]> {
+    const batches = await this.prisma.scoped.jobWorkBatch.findMany({
+      where: {
+        deletedAt: null,
+        releaseStatus: 'RELEASED',
+        productionOrder: { jobWorkOrderId, deletedAt: null },
+      },
+      include: {
+        productionOrder: {
+          select: {
+            orderNumber: true,
+            jobWorkOrder: {
+              select: { billingModel: true, mapping: { select: { bom: { select: { product: true } } } } },
+            },
+          },
+        },
+        invoices: { where: { deletedAt: null }, select: { dispatchedQuantity: true } },
+      },
+      orderBy: { expiryDate: 'asc' },
+    });
+
+    return batches
+      .map((batch) => {
+        const dispatched = batch.invoices.reduce(
+          (total, invoice) => total.add(invoice.dispatchedQuantity),
+          ZERO,
+        );
+
+        // Nothing packed means nothing to send, whatever was made: the packed
+        // figure is what physically leaves.
+        const packed = batch.packedQuantity ?? ZERO;
+        const remaining = packed.sub(dispatched);
+
+        return { batch, remaining };
+      })
+      .filter(({ remaining }) => remaining.greaterThan(ZERO))
+      .map(({ batch, remaining }) => ({
+        batchId: batch.id,
+        batchNumber: batch.batchNumber,
+        productionOrderNumber: batch.productionOrder.orderNumber,
+        expiryDate: toIsoDate(batch.expiryDate),
+        releaseStatus: batch.releaseStatus as BatchReleaseStatus,
+        quantityAvailable: remaining.toString(),
+        item: toItemSummary(batch.productionOrder.jobWorkOrder.mapping.bom.product),
+        stockOwnership:
+          STOCK_BUCKET_FOR_BILLING_MODEL[
+            batch.productionOrder.jobWorkOrder.billingModel as BillingModel
+          ],
+      }));
+  }
+
+  /** Released batches from the internal Production & Quality Gate workflow. */
+  private async dispatchableInternalBatches(
+    jobWorkOrderId: string,
+  ): Promise<JobWorkDispatchableBatch[]> {
     const batches = await this.prisma.scoped.batch.findMany({
       where: {
         deletedAt: null,
@@ -74,7 +150,7 @@ export class JobWorkDispatchService {
         // Only batches made against THIS job-work order. A released batch of
         // the same product made for our own brand is not the principal's to
         // receive.
-        productionOrder: { jobWorkOrderId: order.id, deletedAt: null },
+        productionOrder: { jobWorkOrderId, deletedAt: null },
       },
       include: {
         productionOrder: {
@@ -134,6 +210,27 @@ export class JobWorkDispatchService {
 
     if (quantity.lessThanOrEqualTo(ZERO)) {
       throw new BadRequestException('The quantity dispatched has to be more than zero.');
+    }
+
+    // JOB WORK'S OWN BATCH FIRST. The id may name either table; the browser is
+    // not asked which, because which workflow made a batch is the API's
+    // business and a request that had to say could say the wrong one.
+    const ownBatch = await this.prisma.scoped.jobWorkBatch.findFirst({
+      where: { id: dto.batchId, deletedAt: null },
+      include: {
+        productionOrder: {
+          select: {
+            jobWorkOrderId: true,
+            orderNumber: true,
+            jobWorkOrder: { select: { mapping: { select: { bom: { select: { product: true } } } } } },
+          },
+        },
+        invoices: { where: { deletedAt: null }, select: { dispatchedQuantity: true } },
+      },
+    });
+
+    if (ownBatch) {
+      return this.dispatchOwnBatch(ownBatch, order, billingModel, quantity, dto);
     }
 
     const batch = await this.prisma.scoped.batch.findFirst({
@@ -216,6 +313,144 @@ export class JobWorkDispatchService {
           jobWorkOrderId: order.id,
           batchId: batch.id,
           // AUTO-DERIVED, both of them, from the order's frozen model.
+          invoiceBasis: pricing.invoiceBasis,
+          billingModel,
+          dispatchDate: dto.dispatchDate ? fromIsoDate(dto.dispatchDate) : todayUtc(),
+          dispatchedQuantity: quantity,
+          rateApplied: pricing.rate,
+          rateBasis: pricing.rateBasis,
+          taxableValue: pricing.taxableValue,
+          gstRatePercent: pricing.gstRatePercent,
+          gstAmount: pricing.gstAmount,
+          totalValue: pricing.totalValue,
+          notes: dto.notes?.trim() || null,
+          createdById: userId,
+        },
+      });
+
+      return tx.jobWorkInvoice.findFirstOrThrow({
+        where: { id: created.id },
+        include: INVOICE_INCLUDE,
+      });
+    });
+
+    return toInvoiceView(invoice);
+  }
+
+  /**
+   * Sends one of Job Work's own released batches back, and invoices it.
+   *
+   * THE SAME CONTROLS AS THE INTERNAL ROUTE — the batch must belong to this
+   * order, it must be released, and the quantity must be there — measured
+   * against what is left of the PACKED figure rather than a finished-goods lot,
+   * because these goods were never ours to hold in stock.
+   *
+   * THE GUARDED INSERT IS THE RE-CHECK. There is no stock row to decrement, so
+   * the race is guarded by re-reading the release status and re-summing what
+   * has been dispatched inside the transaction: two dispatches prepared at once
+   * cannot both take the last of a batch.
+   */
+  private async dispatchOwnBatch(
+    batch: {
+      id: string;
+      batchNumber: string;
+      packedQuantity: Prisma.Decimal | null;
+      releaseStatus: string;
+      productionOrder: {
+        jobWorkOrderId: string;
+        orderNumber: string;
+        jobWorkOrder: { mapping: { bom: { product: { code: string; gstRate: Prisma.Decimal | null } } } };
+      };
+      invoices: { dispatchedQuantity: Prisma.Decimal }[];
+    },
+    order: Awaited<ReturnType<JobWorkOrdersService['requireOrder']>>,
+    billingModel: BillingModel,
+    quantity: Prisma.Decimal,
+    dto: CreateJobWorkDispatchDto,
+  ): Promise<JobWorkInvoiceView> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const userId = this.tenantContext.getUserId();
+
+    if (batch.productionOrder.jobWorkOrderId !== order.id) {
+      throw new ConflictException(
+        `Batch ${batch.batchNumber} was not made against ${order.orderNumber}. A job-work ` +
+          'dispatch can only send back goods manufactured for that order.',
+      );
+    }
+
+    // CONTROL 6, on this module's own gate.
+    if (batch.releaseStatus !== 'RELEASED') {
+      throw new ConflictException(
+        `Batch ${batch.batchNumber} is ${batch.releaseStatus === 'PENDING' ? 'still awaiting a release decision' : batch.releaseStatus.toLowerCase().replace('_', ' ')}, ` +
+          'so it cannot be dispatched. Only a released batch may leave.',
+      );
+    }
+
+    const packed = batch.packedQuantity ?? ZERO;
+
+    if (packed.lessThanOrEqualTo(ZERO)) {
+      throw new ConflictException(
+        `Batch ${batch.batchNumber} has no packed quantity recorded, so there is nothing to send ` +
+          'back. Record the packing under Batch record first.',
+      );
+    }
+
+    const already = batch.invoices.reduce(
+      (total, invoice) => total.add(invoice.dispatchedQuantity),
+      ZERO,
+    );
+
+    // CONTROL 8, against the packed figure.
+    if (quantity.greaterThan(packed.sub(already))) {
+      throw new ConflictException(
+        `Only ${packed.sub(already).toString()} of batch ${batch.batchNumber} is left to send ` +
+          `(${packed.toString()} packed, ${already.toString()} already dispatched); ` +
+          `${quantity.toString()} was requested.`,
+      );
+    }
+
+    const product = batch.productionOrder.jobWorkOrder.mapping.bom.product;
+    const pricing = this.price(order, billingModel, quantity, product, dto);
+
+    const invoice = await this.prisma.transaction(async (tx) => {
+      const invoiceNumber = await this.numbering.next(tx, tenantId, 'JWI');
+
+      // Re-read inside the transaction: a quality officer taking the batch off
+      // release, or another dispatch, must not be overtaken by this one.
+      const current = await tx.jobWorkBatch.findFirstOrThrow({
+        where: { id: batch.id },
+        select: {
+          releaseStatus: true,
+          packedQuantity: true,
+          invoices: { where: { deletedAt: null }, select: { dispatchedQuantity: true } },
+        },
+      });
+
+      if (current.releaseStatus !== 'RELEASED') {
+        throw new ConflictException(
+          `Batch ${batch.batchNumber} was taken off release while this dispatch was being ` +
+            'prepared. Nothing has been sent.',
+        );
+      }
+
+      const remaining = (current.packedQuantity ?? ZERO).sub(
+        current.invoices.reduce((total, row) => total.add(row.dispatchedQuantity), ZERO),
+      );
+
+      if (quantity.greaterThan(remaining)) {
+        throw new ConflictException(
+          `Batch ${batch.batchNumber} no longer has ${quantity.toString()} left — it was ` +
+            'dispatched while this one was being prepared. Nothing has been sent.',
+        );
+      }
+
+      const created = await tx.jobWorkInvoice.create({
+        data: {
+          tenantId,
+          invoiceNumber,
+          jobWorkOrderId: order.id,
+          // The OTHER column. The CHECK constraint refuses a row naming both.
+          jobWorkBatchId: batch.id,
           invoiceBasis: pricing.invoiceBasis,
           billingModel,
           dispatchDate: dto.dispatchDate ? fromIsoDate(dto.dispatchDate) : todayUtc(),
@@ -391,6 +626,7 @@ const INVOICE_INCLUDE = {
     select: { id: true, orderNumber: true, principal: { select: { id: true, name: true } } },
   },
   batch: { select: { batchNumber: true } },
+  jobWorkBatch: { select: { batchNumber: true } },
   createdBy: { select: { fullName: true } },
 } satisfies Prisma.JobWorkInvoiceInclude;
 
@@ -406,8 +642,10 @@ function toInvoiceView(invoice: InvoiceWithRelations): JobWorkInvoiceView {
     principalId: invoice.jobWorkOrder.principal.id,
     principalName: invoice.jobWorkOrder.principal.name,
 
-    batchId: invoice.batchId,
-    batchNumber: invoice.batch.batchNumber,
+    // WHICHEVER OF THE TWO the row names — the CHECK guarantees exactly one,
+    // so the fallback is unreachable and only satisfies the type.
+    batchId: invoice.batchId ?? invoice.jobWorkBatchId ?? '',
+    batchNumber: invoice.batch?.batchNumber ?? invoice.jobWorkBatch?.batchNumber ?? '—',
 
     invoiceBasis: invoice.invoiceBasis,
     billingModel: invoice.billingModel as BillingModel,

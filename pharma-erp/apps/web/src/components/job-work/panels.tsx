@@ -12,8 +12,8 @@ import {
   type JobWorkAgreementSummary,
   type JobWorkBatchView,
   type JobWorkDispatchableBatch,
+  type JobWorkEligibleReceipt,
   type JobWorkInvoiceView,
-  type JobWorkIssuableMaterial,
   type JobWorkIssuePlan,
   type JobWorkMaterialIssueView,
   type JobWorkMaterialReceiptView,
@@ -1049,25 +1049,32 @@ export async function JobWorkProductionPanel() {
     );
   }
 
-  // WHICH ORDERS COULD HAVE ONE RAISED, and out of which consignments. Asked
-  // per order rather than guessed: "approved" is the API's judgement, and a
-  // form offering a consignment it would refuse is a form that wastes a save.
-  const eligible = await Promise.all(
-    (jobWorkOrdersResult.ok ? jobWorkOrdersResult.data : []).map(async (order) => ({
-      order,
-      receipts: await get<JobWorkMaterialReceiptView[]>(
-        `/api/v1/job-work/orders/${order.id}/eligible-receipts`,
-      ),
-    })),
+  // WHICH ORDERS COULD HAVE ONE RAISED, and out of which consignments.
+  //
+  // ONE CALL. This used to ask per job-work order — seventy-four requests to
+  // draw one page, twenty-six seconds of them, which is what tripped the
+  // thirty-second timeout. "Approved" is still the API's judgement; it is just
+  // answered for every order at once.
+  const eligibleResult = await get<Record<string, JobWorkEligibleReceipt[]>>(
+    '/api/v1/job-work/eligible-receipts',
   );
 
-  const raisable = eligible.filter((entry) => entry.receipts.ok && entry.receipts.data.length > 0);
+  const receiptsByOrder = eligibleResult.ok ? eligibleResult.data : {};
 
-  const receiptsByOrder: Record<string, JobWorkMaterialReceiptView[]> = {};
-
-  for (const entry of raisable) {
-    receiptsByOrder[entry.order.id] = entry.receipts.ok ? entry.receipts.data : [];
-  }
+  // WHICH ORDERS CAN HAVE ONE RAISED, and the answer differs by billing model.
+  //
+  // PURE CONVERSION needs an approved consignment behind it — the material is
+  // the principal's and the quality decision on it is what makes it issuable.
+  //
+  // OWN PROCUREMENT needs none: we bought the material ourselves through
+  // Procure-to-Pay, so there is no consignment and no second quality check. The
+  // filter used to demand a receipt of every order, which is precisely why
+  // every own-procurement order was missing from the dropdown.
+  const raisable = (jobWorkOrdersResult.ok ? jobWorkOrdersResult.data : []).filter((order) =>
+    order.billingModel === 'PURE_CONVERSION'
+      ? (receiptsByOrder[order.id]?.length ?? 0) > 0
+      : true,
+  );
 
   // The View/Edit menu per row, built HERE because it carries the server action
   // binding; the client table only decides which rows are on screen.
@@ -1077,22 +1084,21 @@ export async function JobWorkProductionPanel() {
     rowActions[order.id] = <JobWorkProductionRowActions key={order.id} order={order} />;
   }
 
+  // NO `form` ON THE REGISTER. The form opens its own modal — the one the
+  // Purchase Requisition form uses — so the register would have wrapped a
+  // dialog in a drawer. Its trigger goes in the toolbar instead, which is where
+  // the register's own button sat.
   return (
-    <ProductionRegister
-      newLabel={raisable.length > 0 ? 'New production order' : undefined}
-      newTitle="New — Job-work production order"
-      // The form carries the consignment's material table, which is wide.
-      formWidth="wide"
-      form={
-        raisable.length > 0 ? (
-          <RaiseJobWorkProductionOrderForm
-            orders={raisable.map((entry) => entry.order)}
-            receiptsByOrder={receiptsByOrder}
-          />
-        ) : undefined
-      }
-    >
-      <JobWorkOrderTable orders={ordersResult.data} actionFor={rowActions} />
+    <ProductionRegister>
+      <JobWorkOrderTable
+        orders={ordersResult.data}
+        actionFor={rowActions}
+        toolbarAction={
+          raisable.length > 0 ? (
+            <RaiseJobWorkProductionOrderForm orders={raisable} receiptsByOrder={receiptsByOrder} />
+          ) : undefined
+        }
+      />
     </ProductionRegister>
   );
 }
@@ -1143,23 +1149,38 @@ export async function JobWorkMaterialIssuePanel() {
   // failed preload should cost a round trip, not the ability to dispense.
   const initialPlan = planResult?.ok ? planResult.data : null;
 
-  // THE PRINCIPAL'S MATERIAL, per open order. Fetched from the receipt behind
-  // each one, which is the record of arrival rather than a copy of it.
-  const material = (
-    await Promise.all(
-      open.map(async (order) => {
-        const result = await get<JobWorkIssuableMaterial[]>(
-          `/api/v1/job-work/production-orders/${order.id}/issuable-material`,
-        );
-
-        return (result.ok ? result.data : []).map((line) => ({
-          ...line,
-          productionOrderNumber: order.orderNumber,
-          principalName: order.principalName,
-        }));
-      }),
-    )
-  ).flat();
+  // THE PRINCIPAL'S MATERIAL, DERIVED FROM WHAT IS ALREADY HERE.
+  //
+  // NO EXTRA REQUESTS. Each production order already carries its consignment
+  // and every line's lot — number, status and what is left on it — so asking
+  // the API again, once per open order, was fetching data the page was holding.
+  // What has been issued is the drum's received quantity less what remains,
+  // which is the same arithmetic the API was doing.
+  const material = open.flatMap((order) =>
+    // Own procurement has no consignment to list here: its material is company
+    // stock, and the dispensing form reads it straight off the shelf.
+    (order.materialReceipt?.lines ?? [])
+      .filter((line) => line.lotId !== null)
+      .map((line) => ({
+        receiptLineId: line.id,
+        lotId: line.lotId!,
+        lotNumber: line.lotNumber ?? '—',
+        item: line.item,
+        kind: line.kind,
+        batchNumber: line.batchNumber,
+        deliveryChallanNumber: line.deliveryChallanNumber,
+        manufacturingDate: line.manufacturingDate,
+        expiryDate: line.expiryDate,
+        receivedQuantity: line.receivedQuantity,
+        quantityAvailable: line.lotQuantityAvailable ?? '0',
+        alreadyIssued: (
+          Number(line.receivedQuantity) - Number(line.lotQuantityAvailable ?? 0)
+        ).toString(),
+        lotStatus: line.lotStatus ?? 'QUARANTINE',
+        productionOrderNumber: order.orderNumber,
+        principalName: order.principalName,
+      })),
+  );
 
   const issues = issuesResult.data;
 
@@ -1171,19 +1192,15 @@ export async function JobWorkMaterialIssuePanel() {
           label: 'Material issue',
           badge: String(issues.length),
           panel: (
-            <ProductionRegister
-              newLabel={open.length > 0 ? 'Dispense material' : undefined}
-              newTitle="Dispense material"
-              // The plan is a table of every material with its drums; at the
-              // default width those columns wrapped and had to be scrolled.
-              formWidth="wide"
-              form={
-                open.length > 0 ? (
-                  <IssueJobWorkMaterialForm orders={open} initialPlan={initialPlan} />
-                ) : undefined
-              }
-            >
-              <JobWorkIssueTable issues={issues} />
+            <ProductionRegister>
+              <JobWorkIssueTable
+                issues={issues}
+                toolbarAction={
+                  open.length > 0 ? (
+                    <IssueJobWorkMaterialForm orders={open} initialPlan={initialPlan} />
+                  ) : undefined
+                }
+              />
             </ProductionRegister>
           ),
         },
@@ -1248,12 +1265,10 @@ export async function JobWorkBatchRecordPanel() {
     packingForms[batch.id] = <RecordJobWorkPackingForm key={batch.id} batch={batch} />;
   }
 
+  // NO `form` ON THE REGISTER — the form opens its own modal, the requisition
+  // form's. Its trigger goes in the toolbar, where the register's own sat.
   return (
-    <ProductionRegister
-      newLabel={awaitingBatch.length > 0 ? 'New batch' : undefined}
-      newTitle="New — Batch record"
-      form={awaitingBatch.length > 0 ? <RecordJobWorkBatchForm orders={awaitingBatch} /> : undefined}
-    >
+    <ProductionRegister>
       <div className="p-6">
         {batches.length === 0 ? (
           <ProductionEmptyState>
@@ -1262,7 +1277,15 @@ export async function JobWorkBatchRecordPanel() {
               : 'No batches yet. Issue the principal’s material against a production order first.'}
           </ProductionEmptyState>
         ) : (
-          <JobWorkBatchRecords batches={batches} packingFormFor={packingForms} />
+          <JobWorkBatchRecords
+            batches={batches}
+            packingFormFor={packingForms}
+            toolbarAction={
+              awaitingBatch.length > 0 ? (
+                <RecordJobWorkBatchForm orders={awaitingBatch} />
+              ) : undefined
+            }
+          />
         )}
       </div>
     </ProductionRegister>

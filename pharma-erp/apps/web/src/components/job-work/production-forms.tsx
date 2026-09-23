@@ -3,15 +3,24 @@
 import { useActionState, useEffect, useState } from 'react';
 import type {
   JobWorkBatchView,
+  JobWorkEligibleReceipt,
   JobWorkIssuePlan,
-  JobWorkMaterialReceiptView,
+  JobWorkMaterialSource,
+  JobWorkMaterialSufficiency,
   JobWorkOrderSummary,
   JobWorkProductionOrderView,
 } from '@pharma-erp/types';
 import { BILLING_MODEL_LABELS, JOB_WORK_MATERIAL_KIND_LABELS } from '@pharma-erp/types';
 
 import { IDLE, type ActionState } from '@/components/procurement/action-state';
-import { useIsInsideRegister, useReportSaved } from '@/components/production/register';
+import {
+  Disclosure,
+  Field,
+  FormFooter,
+  SubmitButton,
+  useAction,
+} from '@/components/procurement/form-kit';
+import { useIsInsideRegister } from '@/components/production/register';
 import { ExpiryHint, Quantity } from '@/components/production/shared';
 import { SavedDialog } from '@/components/saved-dialog';
 import { SearchableSelect } from '@/components/searchable-select';
@@ -20,6 +29,7 @@ import { useActionToast } from '@/components/toast';
 import {
   decideJobWorkBatchAction,
   jobWorkIssuePlanAction,
+  loadJobWorkMaterialSufficiencyAction,
   nextJobWorkNumberAction,
   raiseJobWorkProductionOrderAction,
   recordJobWorkBatchAction,
@@ -32,10 +42,10 @@ import {
  *
  * SAME SHAPE, SAME BEHAVIOUR: a read-only field for the number the record is
  * about to take, a searchable picker for what it is against, a plan or a
- * preview of what the save will produce, and a register that closes the drawer
- * and confirms. The helpers that make that work — `useReportSaved`,
- * `useIsInsideRegister`, `SearchableSelect`, `SavedDialog`, `useActionToast` —
- * are the application's own, imported rather than reimplemented.
+ * preview of what the save will produce, and a modal that closes on success.
+ * The helpers that make that work — `Disclosure`, `Field`, `FormFooter`,
+ * `SubmitButton`, `useAction`, `SearchableSelect` — are the requisition form's
+ * own, imported rather than reimplemented.
  *
  * WHAT DIFFERS is what the material is. The internal issue form dispenses
  * company stock against a formulation; this one dispenses the drums a principal
@@ -56,23 +66,6 @@ const LABEL = 'block text-xs font-medium uppercase tracking-wide text-slate-600'
 const BUTTON =
   'rounded-md bg-slate-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-400';
 
-/**
- * Hands a finished save to the register, which closes the drawer and confirms.
- *
- * THE MESSAGE IS WHAT MAKES IT A SUCCESS, not the status alone — the idle state
- * carries no message, so testing anything weaker would fire the moment the form
- * mounted and every form would close as soon as it opened.
- */
-function useReportOnSaved(state: ActionState) {
-  const reportSaved = useReportSaved();
-  const message = state.status === 'success' ? state.message : undefined;
-
-  useEffect(() => {
-    if (!message) return;
-
-    reportSaved(message);
-  }, [message, reportSaved]);
-}
 
 /**
  * Announces a finished submission.
@@ -163,17 +156,46 @@ function useNextNumber(document: 'production-order' | 'issue' | 'batch') {
 // 1. Raising a production order
 // ---------------------------------------------------------------------------
 
+/** One system-filled value in the summary strip. Matches the requisition form. */
+function SystemField({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="font-medium uppercase tracking-wide text-slate-500">{label}</dt>
+      <dd className="mt-0.5 text-slate-800">{value}</dd>
+    </div>
+  );
+}
+
+/** A titled group of fields, three across. Matches the requisition form. */
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <fieldset>
+      <legend className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+        {title}
+      </legend>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{children}</div>
+    </fieldset>
+  );
+}
+
 /**
- * Raising a job-work production order against an approved consignment.
+ * New Job Work Production Order.
  *
- * THE CONSIGNMENT IS THE CHOICE, where the internal form chooses a product: the
- * product, the principal, the agreement and the billing model all follow from
- * the job-work order, and letting a form name its own would be a way to raise
- * an order for one principal against another's material.
+ * BUILT ON THE PURCHASE REQUISITION FORM'S KIT — `Disclosure`, `Field`,
+ * `FormFooter`, `SubmitButton`, `useAction` and the `field-sm` control size —
+ * so the modal width and padding, the close cross, the Cancel at bottom-left
+ * and the primary action at bottom-right are that form's, not a second set of
+ * conventions that drift from it.
  *
- * The material table below is the approved receipt's own lines — the raw and
- * packing materials the principal actually sent — so what the batch will be
- * made from is visible before the order exists.
+ * THE QUANTITY IS NOT A FIELD. It is the quantity the job-work order already
+ * agreed with the principal, shown read-only and never submitted: the API reads
+ * it from the order and rejects the field outright, so there is no way — form
+ * or otherwise — to commit to a different batch size from the one on the order.
+ *
+ * THE MATERIAL CHECK IS THE POINT OF THE LOWER HALF. Raw and packing are listed
+ * separately with required against received, and the button is refused while
+ * anything is short. The API re-computes all of it and refuses too; this only
+ * means nobody is surprised by that refusal.
  */
 export function RaiseJobWorkProductionOrderForm({
   orders,
@@ -182,11 +204,9 @@ export function RaiseJobWorkProductionOrderForm({
   /** Job-work orders with at least one approved consignment. Never empty. */
   orders: JobWorkOrderSummary[];
   /** The approved receipts per job-work order id. */
-  receiptsByOrder: Record<string, JobWorkMaterialReceiptView[]>;
+  receiptsByOrder: Record<string, JobWorkEligibleReceipt[]>;
 }) {
-  const [state, action, pending] = useActionState(raiseJobWorkProductionOrderAction, IDLE);
-
-  useReportOnSaved(state);
+  const [state, formAction] = useAction(raiseJobWorkProductionOrderAction);
 
   const orderNumber = useNextNumber('production-order');
 
@@ -205,229 +225,424 @@ export function RaiseJobWorkProductionOrderForm({
     setReceiptId(receiptsByOrder[jobWorkOrderId]?.[0]?.id ?? '');
   }, [jobWorkOrderId, receiptsByOrder]);
 
-  const order = orders.find((candidate) => candidate.id === jobWorkOrderId);
-  const receipt = receipts.find((candidate) => candidate.id === receiptId) ?? null;
+  const chosen = orders.find((candidate) => candidate.id === jobWorkOrderId);
+
+  // THE BILLING MODEL COMES OFF THE CHOSEN ORDER, never from this form. It is
+  // inherited from the agreement and frozen there, and it decides everything
+  // below: whether a consignment is named at all, and which pool the material
+  // check measures against.
+  const fromConsignment = chosen?.billingModel === 'PURE_CONVERSION';
+
+  const [check, setCheck] = useState<{
+    loading: boolean;
+    error: string | null;
+    data: JobWorkMaterialSufficiency | null;
+  }>({ loading: false, error: null, data: null });
+
+  useEffect(() => {
+    // Own procurement has no consignment to name, so the check runs on the
+    // order alone; pure conversion waits until one is chosen.
+    if (!jobWorkOrderId || (fromConsignment && !receiptId)) {
+      setCheck({ loading: false, error: null, data: null });
+      return;
+    }
+
+    setCheck((current) => ({ ...current, loading: true, error: null }));
+
+    let cancelled = false;
+
+    void loadJobWorkMaterialSufficiencyAction(
+      jobWorkOrderId,
+      fromConsignment ? receiptId : undefined,
+    ).then((result) => {
+      // The guard matters: the two selects can change in quick succession, and
+      // a stale answer overwriting a fresh one would show one consignment's
+      // shortfall under another's number.
+      if (cancelled) return;
+
+      setCheck(
+        result.ok
+          ? { loading: false, error: null, data: result.data }
+          : { loading: false, error: result.message, data: null },
+      );
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [jobWorkOrderId, receiptId, fromConsignment]);
+
+  const order = chosen;
+  const sufficiency = check.data;
+
+  // Refused only on a KNOWN shortage. While the check is in flight, or if it
+  // could not run at all, the button stays live and the server decides — a form
+  // that locks itself because a preview call failed is one nobody can use when
+  // that endpoint is down.
+  const blocked = sufficiency !== null && !sufficiency.sufficient;
 
   if (orders.length === 0) {
     return (
-      <p className="px-6 py-5 text-sm text-slate-600">
-        No job-work order has a consignment that has passed Quality check. Record what the
-        principal sent, send it for approval, and approve it first — a production order with no
-        approved material behind it is one nothing can be issued against.
+      <p className="px-1 py-4 text-sm text-slate-600">
+        No job-work order is ready to manufacture. A pure-conversion order needs a consignment
+        that has passed Quality check; an own-procurement order needs only to exist, since we buy
+        its material ourselves.
       </p>
     );
   }
 
   return (
-    <form action={action} className="space-y-4 px-6 py-5">
-      <Result state={state} pending={pending} />
+    <Disclosure
+      label="New Job Work Production Order"
+      title="New Job Work Production Order"
+      subtitle="The billing model, the product and the quantity all come from the job-work order."
+      closeWhen={state.status === 'success'}
+    >
+      {(close) => (
+        <form action={formAction} className="w-full space-y-4">
+          <input type="hidden" name="jobWorkOrderId" value={jobWorkOrderId} />
+          {/* SENT ONLY UNDER PURE CONVERSION. The API rejects the field on an
+              own-procurement order rather than ignoring it, so posting a blank
+              would be a 400 for a form that was filled in correctly. */}
+          {fromConsignment && (
+            <input type="hidden" name="materialReceiptId" value={receiptId} />
+          )}
 
-      <input type="hidden" name="jobWorkOrderId" value={jobWorkOrderId} />
-      <input type="hidden" name="materialReceiptId" value={receiptId} />
+          {/* What the system fills in. Stated once, plainly — the same strip
+              the requisition form opens with. */}
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-md border border-slate-200 bg-white p-3 text-xs sm:grid-cols-4">
+            <SystemField label="Production order no." value={orderNumber ?? 'Generated on save'} />
+            <SystemField label="Principal" value={order?.principalName ?? '—'} />
+            <SystemField
+              label="Billing model"
+              value={order ? BILLING_MODEL_LABELS[order.billingModel] : '—'}
+            />
+            <SystemField label="Status" value="Draft" />
+          </dl>
 
-      {/* Ordered as the record reads: the number and the order it is against,
-          then what follows from that order, then the consignment. */}
-      <div className="grid items-end gap-4 sm:grid-cols-2">
-        <ReadOnlyField
-          label="Production order no."
-          value={orderNumber ? <span className="font-mono">{orderNumber}</span> : undefined}
-          placeholder="…"
-        />
+          <Section title="What to make">
+            <Field
+              label="Job-work order"
+              htmlFor="jwpo-order"
+              required
+              hint="Pure-conversion orders with an approved consignment, and every own-procurement order."
+            >
+              <SearchableSelect
+                id="jwpo-order"
+                options={orders.map((candidate) => ({
+                  value: candidate.id,
+                  label: candidate.orderNumber,
+                  hint: candidate.principalName,
+                }))}
+                required
+                value={jobWorkOrderId}
+                onChange={setJobWorkOrderId}
+                emptyLabel="Select job-work order"
+              />
+            </Field>
 
-        <div>
-          <label htmlFor="jwpo-order" className={LABEL}>
-            Job-work order
-          </label>
-          <SearchableSelect
-            id="jwpo-order"
-            options={orders.map((candidate) => ({
-              value: candidate.id,
-              label: `${candidate.orderNumber} — ${candidate.principalName}`,
-            }))}
-            required
-            value={jobWorkOrderId}
-            onChange={setJobWorkOrderId}
+            {/* ONE FIELD, TWO MEANINGS, decided by the model. Pure conversion
+                picks which approved consignment the batch consumes; own
+                procurement has none to pick, and says where the material comes
+                from instead. */}
+            {fromConsignment ? (
+              <Field
+                label="Material receipt"
+                htmlFor="jwpo-receipt"
+                required
+                hint="The consignment this batch will be made from."
+              >
+                <SearchableSelect
+                  id="jwpo-receipt"
+                  options={receipts.map((candidate) => ({
+                    value: candidate.id,
+                    label: candidate.receiptNumber,
+                    hint: `${candidate.rawMaterialCount} raw · ${candidate.packingMaterialCount} packing`,
+                  }))}
+                  required
+                  disabled={receipts.length === 0}
+                  value={receiptId}
+                  onChange={setReceiptId}
+                  emptyLabel="Select consignment"
+                />
+              </Field>
+            ) : (
+              <Field
+                label="Material source"
+                htmlFor="jwpo-source"
+                hint="Bought through Procure-to-Pay, so no consignment and no incoming check."
+              >
+                <input
+                  id="jwpo-source"
+                  value="Our own inventory"
+                  readOnly
+                  disabled
+                  className="field-sm w-full bg-slate-100 text-slate-600"
+                />
+              </Field>
+            )}
+
+            {/* NOT AN INPUT. The quantity is the job-work order's, and the API
+                will not accept another — so there is nothing here to type into
+                and nothing submitted. */}
+            <Field label="Planned quantity" htmlFor="jwpo-qty" hint="From the job-work order.">
+              <input
+                id="jwpo-qty"
+                value={
+                  order ? `${order.quantity} ${order.product.uom}` : ''
+                }
+                readOnly
+                disabled
+                className="field-sm w-full bg-slate-100 text-slate-600"
+              />
+            </Field>
+
+            <Field label="Product" htmlFor="jwpo-product">
+              <input
+                id="jwpo-product"
+                value={order ? `${order.product.productName} (${order.product.productCode})` : ''}
+                readOnly
+                disabled
+                className="field-sm w-full bg-slate-100 text-slate-600"
+              />
+            </Field>
+
+            <Field label="Brand" htmlFor="jwpo-brand" hint="The principal's own brand name.">
+              <input
+                id="jwpo-brand"
+                value={order?.product.principalBrandName ?? ''}
+                readOnly
+                disabled
+                className="field-sm w-full bg-slate-100 text-slate-600"
+              />
+            </Field>
+
+            <Field label="Agreement" htmlFor="jwpo-agreement">
+              <input
+                id="jwpo-agreement"
+                value={order?.agreementReference ?? 'No reference'}
+                readOnly
+                disabled
+                className="field-sm w-full bg-slate-100 text-slate-600"
+              />
+            </Field>
+          </Section>
+
+          <Section title="When">
+            <Field label="Planned start" htmlFor="jwpo-start">
+              <input
+                id="jwpo-start"
+                name="plannedStartOn"
+                type="date"
+                className="field-sm w-full"
+              />
+            </Field>
+
+            <Field label="Planned completion" htmlFor="jwpo-completion">
+              <input
+                id="jwpo-completion"
+                name="plannedCompletionOn"
+                type="date"
+                className="field-sm w-full"
+              />
+            </Field>
+
+            <Field label="Notes" htmlFor="jwpo-notes">
+              <input
+                id="jwpo-notes"
+                name="notes"
+                maxLength={1000}
+                className="field-sm w-full"
+              />
+            </Field>
+          </Section>
+
+          <MaterialSufficiency
+            state={check}
+            source={fromConsignment ? 'PRINCIPAL_CONSIGNMENT' : 'OWN_INVENTORY'}
           />
-        </div>
-      </div>
 
-      {/* Everything the order decides. Read-only because it IS decided: a
-          control here would be a way to contradict the agreement. */}
-      <div className="grid gap-4 sm:grid-cols-3">
-        <ReadOnlyField label="Principal" value={order?.principalName} />
-        <ReadOnlyField
-          label="Agreement"
-          value={order?.agreementReference ?? undefined}
-          placeholder="No reference"
-        />
-        <ReadOnlyField
-          label="Billing model"
-          value={order ? BILLING_MODEL_LABELS[order.billingModel] : undefined}
-        />
-
-        <ReadOnlyField
-          label="Product"
-          value={
-            order ? `${order.product.productName} (${order.product.productCode})` : undefined
-          }
-        />
-        <ReadOnlyField label="Brand" value={order?.product.principalBrandName} />
-        <ReadOnlyField label="UOM" value={order?.product.uom} />
-      </div>
-
-      <div className="grid items-end gap-4 sm:grid-cols-3">
-        <div className="sm:col-span-2">
-          <label htmlFor="jwpo-receipt" className={LABEL}>
-            Material receipt
-          </label>
-          <SearchableSelect
-            id="jwpo-receipt"
-            options={receipts.map((candidate) => ({
-              value: candidate.id,
-              label: candidate.receiptNumber,
-              hint: `${candidate.rawMaterialCount} raw · ${candidate.packingMaterialCount} packing · ${candidate.deliveryChallanNumbers.join(', ')}`,
-            }))}
-            required
-            disabled={receipts.length === 0}
-            value={receiptId}
-            onChange={setReceiptId}
-          />
-          <p className="mt-1 text-xs text-slate-500">
-            Only consignments that have passed Quality check are offered.
-          </p>
-        </div>
-
-        <div>
-          <label htmlFor="jwpo-quantity" className={LABEL}>
-            Planned quantity{' '}
-            <span className="font-normal normal-case text-slate-400">(optional)</span>
-          </label>
-          <input
-            id="jwpo-quantity"
-            name="plannedQuantity"
-            inputMode="decimal"
-            placeholder={order?.quantity ?? '100000'}
-            pattern="\d{1,11}(\.\d{1,3})?"
-            title="A positive number, up to 3 decimal places"
-            className={FIELD}
-          />
-          <p className="mt-1 text-xs text-slate-500">
-            Defaults to what the job-work order asked for.
-          </p>
-        </div>
-      </div>
-
-      <div className="grid gap-4 sm:grid-cols-2">
-        <div>
-          <label htmlFor="jwpo-start" className={LABEL}>
-            Planned start{' '}
-            <span className="font-normal normal-case text-slate-400">(optional)</span>
-          </label>
-          <input id="jwpo-start" name="plannedStartOn" type="date" className={FIELD} />
-        </div>
-
-        <div>
-          <label htmlFor="jwpo-completion" className={LABEL}>
-            Planned completion{' '}
-            <span className="font-normal normal-case text-slate-400">(optional)</span>
-          </label>
-          <input
-            id="jwpo-completion"
-            name="plannedCompletionOn"
-            type="date"
-            className={FIELD}
-          />
-        </div>
-      </div>
-
-      {receipt && <ReceiptMaterialGrid receipt={receipt} />}
-
-      <div>
-        <label htmlFor="jwpo-notes" className={LABEL}>
-          Notes <span className="font-normal normal-case text-slate-400">(optional)</span>
-        </label>
-        <input id="jwpo-notes" name="notes" maxLength={1000} className={FIELD} />
-      </div>
-
-      <button type="submit" disabled={pending || !receiptId} className={BUTTON}>
-        {pending ? 'Raising…' : 'Raise production order'}
-      </button>
-    </form>
+          <FormFooter onCancel={close}>
+            <SubmitButton pendingLabel="Raising…" disabled={blocked}>
+              {blocked ? 'Material short' : 'Raise production order'}
+            </SubmitButton>
+          </FormFooter>
+        </form>
+      )}
+    </Disclosure>
   );
 }
 
 /**
- * What the principal sent on this consignment, raw and packing.
+ * Required against received, raw and packing separately.
  *
- * The receipt's OWN lines, rendered from the record rather than restated: this
- * is the same data the Material received from principal tab shows, and a second
- * copy is how two accounts of one delivery come to disagree.
+ * SEPARATELY BECAUSE THEY ARE CHASED FROM DIFFERENT PEOPLE: a batch short of
+ * cartons is a different phone call from one short of API, and a single merged
+ * table makes somebody read the Kind column to work out which.
  */
-function ReceiptMaterialGrid({ receipt }: { receipt: JobWorkMaterialReceiptView }) {
-  const raw = receipt.lines.filter((line) => line.kind === 'RAW');
-  const packing = receipt.lines.filter((line) => line.kind === 'PACKING');
+function MaterialSufficiency({
+  state,
+  source,
+}: {
+  state: { loading: boolean; error: string | null; data: JobWorkMaterialSufficiency | null };
+  /** Known before the answer arrives, so even "checking…" can say which pool. */
+  source: JobWorkMaterialSource;
+}) {
+  if (state.loading) {
+    return (
+      <p className="text-xs text-slate-500">
+        {source === 'OWN_INVENTORY'
+          ? 'Checking what is in stock…'
+          : 'Checking what the principal has sent…'}
+      </p>
+    );
+  }
+
+  if (state.error) {
+    return (
+      <p role="alert" className="text-xs text-red-700">
+        Could not check the material received: {state.error}
+      </p>
+    );
+  }
+
+  if (!state.data) return null;
+
+  const { data } = state;
+
+  if (data.blockedReason) {
+    return (
+      <p
+        role="alert"
+        className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"
+      >
+        {data.blockedReason}
+      </p>
+    );
+  }
 
   return (
-    <div className="rounded-md border border-slate-200">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
+    <div
+      className={`rounded-md border ${
+        data.sufficient ? 'border-emerald-200 bg-emerald-50/40' : 'border-red-200 bg-red-50/40'
+      }`}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-inherit px-4 py-2.5">
         <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-          Received from the principal · {receipt.receiptNumber}
+          {data.materialSource === 'PRINCIPAL_CONSIGNMENT'
+            ? `Received from the principal · ${data.receiptNumber}`
+            : 'From our own inventory'}{' '}
+          · for {data.plannedQuantity} {data.product.uom}
         </span>
-        <span className="rounded-full bg-violet-50 px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-violet-800 ring-1 ring-inset ring-violet-200">
-          {raw.length} raw · {packing.length} packing
+        <span
+          className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide ring-1 ring-inset ${
+            data.sufficient
+              ? 'bg-emerald-50 text-emerald-800 ring-emerald-200'
+              : 'bg-red-50 text-red-800 ring-red-200'
+          }`}
+        >
+          {data.sufficient
+            ? data.materialSource === 'PRINCIPAL_CONSIGNMENT'
+              ? 'Material received'
+              : 'Stock available'
+            : 'Material short'}
         </span>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-left text-sm">
-          <thead>
-            <tr className="text-[11px] uppercase tracking-wide text-slate-500">
-              <th scope="col" className="px-4 py-2 font-medium">
-                Material
-              </th>
-              <th scope="col" className="px-4 py-2 font-medium">
-                Kind
-              </th>
-              <th scope="col" className="px-4 py-2 font-medium">
-                Batch / challan
-              </th>
-              <th scope="col" className="px-4 py-2 font-medium">
-                Expiry
-              </th>
-              <th scope="col" className="px-4 py-2 text-right font-medium">
-                Received
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-200/70">
-            {[...raw, ...packing].map((line) => (
-              <tr key={line.id}>
-                <td className="px-4 py-2">
-                  <span className="font-mono text-xs text-slate-700">{line.item.code}</span>{' '}
-                  <span className="text-slate-600">{line.item.name}</span>
-                </td>
-                <td className="px-4 py-2 text-xs text-slate-600">
-                  {JOB_WORK_MATERIAL_KIND_LABELS[line.kind]}
-                </td>
-                <td className="px-4 py-2">
-                  <span className="text-xs text-slate-700">{line.batchNumber}</span>
-                  {line.deliveryChallanNumber && (
-                    <div className="text-[11px] text-slate-500">
-                      challan {line.deliveryChallanNumber}
-                    </div>
-                  )}
-                </td>
-                <td className="px-4 py-2 text-xs text-slate-600">
-                  {line.expiryDate ?? 'no expiry'}
-                </td>
-                <td className="px-4 py-2 text-right">
-                  <Quantity value={line.receivedQuantity} uom={line.item.uom} />
-                </td>
+      {/* THE COLUMN IS HEADED FOR THE POOL IT MEASURED. "Received" is what the
+          principal sent; "Available" is what is on our own shelf, less what
+          other open orders have already spoken for. */}
+      <SufficiencyTable title="Raw materials" lines={data.raw} source={data.materialSource} />
+      <SufficiencyTable title="Packing materials" lines={data.packing} source={data.materialSource} />
+
+      {!data.sufficient && (
+        <p className="border-t border-inherit px-4 py-2.5 text-xs text-red-800">
+          {data.materialSource === 'PRINCIPAL_CONSIGNMENT' ? (
+            <>
+              A production order cannot be raised until every required material has been received
+              and approved. Record the rest of the principal&rsquo;s delivery under Material
+              received from principal, send it for approval, and approve it.
+            </>
+          ) : (
+            <>
+              A production order cannot be raised until every required material is in stock. Only
+              company-owned stock released by incoming QC counts, less what other open work orders
+              have already spoken for — buy the shortfall through Procure-to-Pay first.
+            </>
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** One half of the comparison — the required against the received. */
+function SufficiencyTable({
+  title,
+  lines,
+  source,
+}: {
+  title: string;
+  lines: JobWorkMaterialSufficiency['raw'];
+  source: JobWorkMaterialSufficiency['materialSource'];
+}) {
+  return (
+    <div className="border-t border-inherit first:border-t-0">
+      <p className="px-4 pt-2.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+        {title}
+      </p>
+
+      {lines.length === 0 ? (
+        <p className="px-4 pb-2.5 pt-1 text-xs text-slate-500">
+          The formulation calls for none.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead>
+              <tr className="text-[11px] uppercase tracking-wide text-slate-500">
+                <th scope="col" className="px-4 py-2 font-medium">
+                  Material
+                </th>
+                <th scope="col" className="px-4 py-2 text-right font-medium">
+                  Required
+                </th>
+                <th scope="col" className="px-4 py-2 text-right font-medium">
+                  {source === 'PRINCIPAL_CONSIGNMENT' ? 'Received' : 'Available'}
+                </th>
+                <th scope="col" className="px-4 py-2 text-right font-medium">
+                  Short
+                </th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody className="divide-y divide-slate-200/70">
+              {lines.map((line) => (
+                <tr key={line.item.id} className={line.sufficient ? undefined : 'bg-red-50/60'}>
+                  <td className="px-4 py-2">
+                    <span className="font-mono text-xs text-slate-700">{line.item.code}</span>{' '}
+                    <span className="text-slate-600">{line.item.name}</span>
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums">
+                    {line.requiredQuantity}{' '}
+                    <span className="text-xs text-slate-500">{line.item.uom}</span>
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums">
+                    {line.suppliedQuantity}{' '}
+                    <span className="text-xs text-slate-500">{line.item.uom}</span>
+                  </td>
+                  <td
+                    className={`px-4 py-2 text-right tabular-nums ${
+                      line.sufficient ? 'text-slate-400' : 'font-semibold text-red-800'
+                    }`}
+                  >
+                    {line.sufficient ? '—' : `${line.shortQuantity} ${line.item.uom}`}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
@@ -437,16 +652,18 @@ function ReceiptMaterialGrid({ receipt }: { receipt: JobWorkMaterialReceiptView 
 // ---------------------------------------------------------------------------
 
 /**
- * Dispensing the principal's material against a job-work production order.
+ * Dispensing the principal's material to a job-work production order.
  *
- * THE PLAN IS THE FORM. It states what the formulation calls for and which
- * drums would cover it, nearest expiry first — and the quantity boxes open on
- * exactly that, so dispensing the suggestion is a single click and departing
- * from it is a deliberate edit.
+ * THIS SCREEN DISPENSES; IT DOES NOT VALIDATE THE CONSIGNMENT. Whether enough
+ * material was received was settled when the production order was raised — the
+ * order could not exist otherwise — so repeating the comparison here would be
+ * asking the same question twice and inviting two answers.
  *
- * NO COMPANY STOCK APPEARS, ever. Under pure conversion the only material that
- * may go into this batch is what the principal sent, and the API refuses a lot
- * from any other consignment.
+ * What it still checks is what dispensing always checks: the drum belongs to
+ * this order's consignment, it has passed Quality check, and it holds what is
+ * being drawn. The API decides all three.
+ *
+ * Built on the requisition form's kit, like the production-order form above.
  */
 export function IssueJobWorkMaterialForm({
   orders,
@@ -457,9 +674,7 @@ export function IssueJobWorkMaterialForm({
   /** The plan for the first order, computed by the server so the form opens full. */
   initialPlan?: JobWorkIssuePlan | null;
 }) {
-  const [state, action, pending] = useActionState(recordJobWorkIssueAction, IDLE);
-
-  useReportOnSaved(state);
+  const [state, formAction] = useAction(recordJobWorkIssueAction);
 
   const issueNumber = useNextNumber('issue');
 
@@ -502,80 +717,92 @@ export function IssueJobWorkMaterialForm({
   const order = orders.find((candidate) => candidate.id === orderId);
 
   return (
-    <form action={action} className="space-y-4 px-6 py-5">
-      <Result state={state} pending={pending} />
+    <Disclosure
+      label="Dispense material"
+      title="Dispense material"
+      subtitle="From the consignment already approved for this production order."
+      closeWhen={state.status === 'success'}
+      // Wider than the requisition form's default: the plan is a table of every
+      // material with the drum it comes from, and at 48rem those columns wrap.
+      width="60rem"
+    >
+      {(close) => (
+        <form action={formAction} className="w-full space-y-4">
+          <input type="hidden" name="jobWorkProductionOrderId" value={orderId} />
 
-      <input type="hidden" name="jobWorkProductionOrderId" value={orderId} />
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-md border border-slate-200 bg-white p-3 text-xs sm:grid-cols-4">
+            <SystemField label="Issue no." value={issueNumber ?? 'Generated on save'} />
+            <SystemField label="Principal" value={order?.principalName ?? '—'} />
+            <SystemField
+              label="Material source"
+              value={order?.materialReceipt?.receiptNumber ?? 'Our own inventory'}
+            />
+            <SystemField label="Issued by" value="You, on save" />
+          </dl>
 
-      <div className="grid items-end gap-4 sm:grid-cols-2">
-        <ReadOnlyField
-          label="Issue no."
-          value={issueNumber ? <span className="font-mono">{issueNumber}</span> : undefined}
-          placeholder="…"
-        />
+          <Section title="What to dispense against">
+            <Field
+              label="Production order"
+              htmlFor="jwmi-order"
+              required
+              hint="Orders still open for issue."
+            >
+              <SearchableSelect
+                id="jwmi-order"
+                options={orders.map((candidate) => ({
+                  value: candidate.id,
+                  label: candidate.orderNumber,
+                  hint: `${candidate.product.code} · ${candidate.principalName}`,
+                }))}
+                required
+                value={orderId}
+                onChange={setOrderId}
+                emptyLabel="Select production order"
+              />
+            </Field>
 
-        <div>
-          <label htmlFor="jwmi-order" className={LABEL}>
-            Production order
-          </label>
-          <SearchableSelect
-            id="jwmi-order"
-            options={orders.map((candidate) => ({
-              value: candidate.id,
-              label: `${candidate.orderNumber} — ${candidate.product.code}`,
-              hint: candidate.principalName,
-            }))}
-            required
-            value={orderId}
-            onChange={setOrderId}
-          />
-        </div>
-      </div>
+            <Field label="Product" htmlFor="jwmi-product">
+              <input
+                id="jwmi-product"
+                value={order ? `${order.product.name} (${order.product.code})` : ''}
+                readOnly
+                disabled
+                className="field-sm w-full bg-slate-100 text-slate-600"
+              />
+            </Field>
 
-      {order && (
-        <div className="rounded-md border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-          <span className="font-mono font-semibold">{order.orderNumber}</span> ·{' '}
-          {order.product.name} · for {order.principalName} · planned{' '}
-          <Quantity value={order.plannedQuantity} uom={order.product.uom} /> · from{' '}
-          <span className="font-mono text-xs">{order.materialReceipt.receiptNumber}</span>
-        </div>
+            <Field label="Planned quantity" htmlFor="jwmi-planned">
+              <input
+                id="jwmi-planned"
+                value={order ? `${order.plannedQuantity} ${order.product.uom}` : ''}
+                readOnly
+                disabled
+                className="field-sm w-full bg-slate-100 text-slate-600"
+              />
+            </Field>
+          </Section>
+
+          {planState.loading && <p className="text-sm text-slate-500">Working out the plan…</p>}
+
+          {planState.error && (
+            <p
+              role="alert"
+              className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800"
+            >
+              Could not work out what this order would consume: {planState.error}
+            </p>
+          )}
+
+          {plan && plan.lines.length > 0 && <JobWorkIssuePlanTable plan={plan} />}
+
+          <FormFooter onCancel={close}>
+            <SubmitButton pendingLabel="Dispensing…" disabled={!plan || plan.lines.length === 0}>
+              Dispense material
+            </SubmitButton>
+          </FormFooter>
+        </form>
       )}
-
-      {planState.loading && <p className="text-sm text-slate-500">Working out the plan…</p>}
-
-      {planState.error && (
-        <p
-          role="alert"
-          className="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800"
-        >
-          Could not work out what this order would consume: {planState.error}
-        </p>
-      )}
-
-      {plan?.blockedReason && (
-        <p
-          role="alert"
-          className="rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"
-        >
-          {plan.blockedReason}
-        </p>
-      )}
-
-      {plan && plan.lines.length > 0 && <JobWorkIssuePlanTable plan={plan} />}
-
-      {plan && plan.lines.length > 0 && !plan.canIssue && (
-        <p className="text-sm text-amber-800">
-          The principal has not sent enough to cover this batch. Only material received against{' '}
-          {plan.jobWorkOrderNumber} and cleared by Quality check counts — company stock cannot be
-          used on a pure-conversion order. Record the rest of their delivery, or reduce the
-          planned quantity.
-        </p>
-      )}
-
-      <button type="submit" disabled={pending || !plan || plan.lines.length === 0} className={BUTTON}>
-        {pending ? 'Dispensing…' : plan ? `Dispense against ${plan.orderNumber}` : 'Dispense'}
-      </button>
-    </form>
+    </Disclosure>
   );
 }
 
@@ -737,11 +964,16 @@ function previewExpiry(manufacturedOn: string, shelfLifeMonths: number | null): 
     .slice(0, 10);
 }
 
-/** Opening the batch record against an order material has gone to. */
+/**
+ * New Batch Record.
+ *
+ * Built on the Purchase Requisition form's kit, like the production-order and
+ * material-issue forms above it: the same modal width and padding, the same
+ * close cross, Cancel bottom-left, the primary action bottom-right, `field-sm`
+ * controls and three-across sections.
+ */
 export function RecordJobWorkBatchForm({ orders }: { orders: JobWorkProductionOrderView[] }) {
-  const [state, action, pending] = useActionState(recordJobWorkBatchAction, IDLE);
-
-  useReportOnSaved(state);
+  const [state, formAction] = useAction(recordJobWorkBatchAction);
 
   const batchNumber = useNextNumber('batch');
 
@@ -753,133 +985,130 @@ export function RecordJobWorkBatchForm({ orders }: { orders: JobWorkProductionOr
 
   if (orders.length === 0) {
     return (
-      <p className="px-6 py-5 text-sm text-slate-600">
-        No production order is waiting for a batch record. Issue the principal’s material against
-        an order first — a batch record with no traceable inputs is not a batch record.
+      <p className="px-1 py-4 text-sm text-slate-600">
+        No production order is waiting for a batch record. Issue the principal&rsquo;s material
+        against an order first — a batch record with no traceable inputs is not a batch record.
       </p>
     );
   }
 
   return (
-    <form action={action} className="space-y-4 px-6 py-5">
-      <Result state={state} pending={pending} />
+    <Disclosure
+      label="New batch"
+      title="New Batch Record"
+      subtitle="What was made against a production order material has been issued to."
+      closeWhen={state.status === 'success'}
+    >
+      {(close) => (
+        <form action={formAction} className="w-full space-y-4">
+          <input type="hidden" name="jobWorkProductionOrderId" value={orderId} />
 
-      <input type="hidden" name="jobWorkProductionOrderId" value={orderId} />
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-md border border-slate-200 bg-white p-3 text-xs sm:grid-cols-4">
+            <SystemField label="Batch no." value={batchNumber ?? 'Generated on save'} />
+            <SystemField label="Principal" value={order?.principalName ?? '—'} />
+            <SystemField label="Brand" value={order?.principalBrandName ?? '—'} />
+            <SystemField label="Release status" value="Pending" />
+          </dl>
 
-      {/* `items-end` so the CONTROLS line up along one baseline however tall
-          each label turns out to be. */}
-      <div className="grid items-end gap-4 sm:grid-cols-3">
-        <div>
-          <label htmlFor="jwb-order" className={LABEL}>
-            Production order
-          </label>
-          <SearchableSelect
-            id="jwb-order"
-            options={orders.map((candidate) => ({
-              value: candidate.id,
-              label: `${candidate.orderNumber} — ${candidate.product.code}`,
-              hint: candidate.principalName,
-            }))}
-            required
-            value={orderId}
-            onChange={setOrderId}
-          />
-        </div>
+          <Section title="What was made">
+            <Field
+              label="Production order"
+              htmlFor="jwb-order"
+              required
+              hint="Orders with material already issued."
+            >
+              <SearchableSelect
+                id="jwb-order"
+                options={orders.map((candidate) => ({
+                  value: candidate.id,
+                  label: candidate.orderNumber,
+                  hint: `${candidate.product.code} · ${candidate.principalName}`,
+                }))}
+                required
+                value={orderId}
+                onChange={setOrderId}
+                emptyLabel="Select production order"
+              />
+            </Field>
 
-        <div>
-          <label htmlFor="jwb-actual" className={LABEL}>
-            Actual quantity manufactured{' '}
-            <span className="font-normal normal-case text-slate-400">(optional)</span>
-          </label>
-          <input
-            id="jwb-actual"
-            name="actualQuantity"
-            inputMode="decimal"
-            pattern="\d{1,11}(\.\d{1,3})?"
-            title="A positive number, up to 3 decimal places"
-            className={FIELD}
-          />
-        </div>
+            <Field label="Product" htmlFor="jwb-product">
+              <input
+                id="jwb-product"
+                value={order ? `${order.product.name} (${order.product.code})` : ''}
+                readOnly
+                disabled
+                className="field-sm w-full bg-slate-100 text-slate-600"
+              />
+            </Field>
 
-        <div>
-          <label htmlFor="jwb-mfg" className={LABEL}>
-            Manufacturing date
-          </label>
-          <input
-            id="jwb-mfg"
-            name="manufacturedOn"
-            type="date"
-            required
-            value={manufacturedOn}
-            onChange={(event) => setManufacturedOn(event.target.value)}
-            className={FIELD}
-          />
-        </div>
-      </div>
+            <Field label="Planned quantity" htmlFor="jwb-planned" hint="From the production order.">
+              <input
+                id="jwb-planned"
+                value={order ? `${order.plannedQuantity} ${order.product.uom}` : ''}
+                readOnly
+                disabled
+                className="field-sm w-full bg-slate-100 text-slate-600"
+              />
+            </Field>
 
-      {/* The system's three, shown rather than described: the expiry is about
-          to be printed on a carton, and the moment to check it is before the
-          record is opened, not after. */}
-      <div className="grid gap-4 sm:grid-cols-3">
-        <ReadOnlyField
-          label="Batch no."
-          value={batchNumber ? <span className="font-mono">{batchNumber}</span> : undefined}
-          hint="Per the company numbering convention."
-          placeholder="…"
-        />
+            <Field
+              label="Actual quantity manufactured"
+              htmlFor="jwb-actual"
+              hint="Leave blank while the run is still going."
+            >
+              <input
+                id="jwb-actual"
+                name="actualQuantity"
+                inputMode="decimal"
+                pattern="\d{1,11}(\.\d{1,3})?"
+                title="A positive number, up to 3 decimal places"
+                className="field-sm w-full"
+              />
+            </Field>
 
-        <ReadOnlyField
-          label="Planned quantity"
-          value={
-            order ? (
-              <>
-                {order.plannedQuantity}
-                <span className="ml-1 text-xs text-slate-500">{order.product.uom}</span>
-              </>
-            ) : undefined
-          }
-          hint="Carried from the production order."
-        />
+            <Field label="Manufacturing date" htmlFor="jwb-mfg" required>
+              <input
+                id="jwb-mfg"
+                name="manufacturedOn"
+                type="date"
+                required
+                value={manufacturedOn}
+                onChange={(event) => setManufacturedOn(event.target.value)}
+                className="field-sm w-full"
+              />
+            </Field>
 
-        <ReadOnlyField
-          label="Principal"
-          value={order?.principalName}
-          hint={order ? `Sold as ${order.principalBrandName}.` : undefined}
-        />
-      </div>
+            <Field
+              label="Expiry date"
+              htmlFor="jwb-expiry"
+              required
+              hint={
+                order && order.product.shelfLifeMonths !== null
+                  ? `Manufacturing date plus ${order.product.shelfLifeMonths} months.`
+                  : 'The product has no shelf life on file, so this one has to be entered.'
+              }
+            >
+              <input
+                id="jwb-expiry"
+                name="expiryDate"
+                type="date"
+                required
+                defaultValue={expiry ?? ''}
+                className="field-sm w-full"
+              />
+            </Field>
+          </Section>
 
-      <div className="grid items-end gap-4 sm:grid-cols-3">
-        <div>
-          <label htmlFor="jwb-expiry" className={LABEL}>
-            Expiry date
-          </label>
-          <input
-            id="jwb-expiry"
-            name="expiryDate"
-            type="date"
-            required
-            defaultValue={expiry ?? ''}
-            className={FIELD}
-          />
-          <p className="mt-1 text-xs text-slate-500">
-            {order && order.product.shelfLifeMonths !== null
-              ? `Manufacturing date plus ${order.product.shelfLifeMonths} months, from the product master. Change it if the principal's specification differs.`
-              : 'The product has no shelf life on file, so this one has to be entered.'}
-          </p>
-        </div>
+          <Field label="Notes" htmlFor="jwb-notes">
+            <input id="jwb-notes" name="notes" maxLength={1000} className="field-sm w-full" />
+          </Field>
 
-        <div className="sm:col-span-2">
-          <label htmlFor="jwb-notes" className={LABEL}>
-            Notes <span className="font-normal normal-case text-slate-400">(optional)</span>
-          </label>
-          <input id="jwb-notes" name="notes" maxLength={1000} className={FIELD} />
-        </div>
-      </div>
-
-      <button type="submit" disabled={pending} className={BUTTON}>
-        {pending ? 'Recording…' : 'Open batch record'}
-      </button>
-    </form>
+          <FormFooter onCancel={close}>
+            <SubmitButton pendingLabel="Recording…">Open batch record</SubmitButton>
+          </FormFooter>
+        </form>
+      )}
+    </Disclosure>
   );
 }
 
