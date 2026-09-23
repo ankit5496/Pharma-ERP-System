@@ -458,6 +458,10 @@ export class BatchService {
       productionOrderId: batch.productionOrderId,
       packedQuantity: batch.packingRecord?.packedQuantity.toString() ?? null,
       packedOn: batch.packingRecord ? toIsoDate(batch.packingRecord.packedOn) : null,
+      // The rest of the packing record. Returned so the form that entered it
+      // can show it back on a correction rather than asking for it again.
+      rejectedQuantity: batch.packingRecord?.rejectedQuantity.toString() ?? null,
+      packVariant: batch.packingRecord?.packVariant ?? null,
       materialVariances: await this.materialVariances(batch),
       varianceThresholdPercent: BatchService.VARIANCE_THRESHOLD_PERCENT,
     };
@@ -539,7 +543,12 @@ interface BatchWithIncludes {
   releaseNotes: string | null;
   productionOrderId: string;
   releaseDecidedBy: { fullName: string } | null;
-  packingRecord: { packedQuantity: Prisma.Decimal; packedOn: Date } | null;
+  packingRecord: {
+    packedQuantity: Prisma.Decimal;
+    packedOn: Date;
+    rejectedQuantity: Prisma.Decimal;
+    packVariant: string | null;
+  } | null;
   productionOrder: {
     orderNumber: string;
     plannedQuantity: Prisma.Decimal;

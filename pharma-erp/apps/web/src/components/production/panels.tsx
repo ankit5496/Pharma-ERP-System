@@ -29,6 +29,7 @@ import {
   IssueMaterialForm,
   type PackSpecification,
   RecordBatchForm,
+  PackingRecordSummary,
   RecordPackingForm,
   ReleaseDecisionForm,
 } from './forms';
@@ -262,13 +263,37 @@ export async function BatchRecordPanel() {
   const packingForms: Record<string, React.ReactNode> = {};
 
   for (const batch of batches) {
-    if (batch.releaseStatus !== 'PENDING') continue;
+    // DECIDED: the record, with no way to change it. The API refuses an
+    // amendment once the quality gate has ruled, so the form is not offered —
+    // but the figures are still part of the batch's history, and a decided
+    // batch is exactly the one somebody looks up. This used to render nothing
+    // at all, so a released batch's packing was simply unreadable.
+    if (batch.releaseStatus !== 'PENDING') {
+      if (batch.packedQuantity !== null) {
+        packingForms[batch.id] = (
+          <PackingRecordSummary
+            key={batch.id}
+            packedQuantity={batch.packedQuantity}
+            rejectedQuantity={batch.rejectedQuantity}
+            packVariant={batch.packVariant}
+          />
+        );
+      }
+
+      continue;
+    }
 
     packingForms[batch.id] = (
       <RecordPackingForm
         batchId={batch.id}
         batchNumber={batch.batchNumber}
         packSpecifications={specificationsByProduct.get(batch.product.id) ?? []}
+        // WHAT IS ALREADY RECORDED. Packing can be entered and then corrected
+        // while the batch waits at the quality gate, and a form that came back
+        // blank after a save read as the entry having been discarded.
+        packedQuantity={batch.packedQuantity}
+        rejectedQuantity={batch.rejectedQuantity}
+        packVariant={batch.packVariant}
       />
     );
   }
@@ -324,7 +349,28 @@ export async function BatchReleasePanel() {
     );
   }
 
-  const pending = batchesResult.data.filter((batch) => batch.releaseStatus === 'PENDING');
+  /**
+   * AWAITING A DECISION, AND ACTUALLY READY FOR ONE.
+   *
+   * `PENDING` alone is not enough: a batch is pending from the moment it is
+   * opened, so the gate used to list batches whose manufacturing record was
+   * blank and whose packing had never been entered. The quality officer was
+   * being asked to release something nobody had finished making, and the
+   * figures the verdict turns on — quantity manufactured, quantity packed —
+   * were dashes on the row.
+   *
+   * `packedOn` is the signal rather than `packedQuantity`, because it is the
+   * record of the packing HAVING HAPPENED. A run that genuinely packed nothing
+   * still has a date, and would still be a batch someone must decide on;
+   * keying on the quantity would hide it forever.
+   *
+   * A batch still in production is not lost — it sits in the Batch record
+   * register until its packing is entered, which is where the work to finish
+   * it is done.
+   */
+  const pending = batchesResult.data.filter(
+    (batch) => batch.releaseStatus === 'PENDING' && batch.packedOn !== null,
+  );
   const decided = batchesResult.data.filter((batch) => batch.releaseStatus !== 'PENDING');
 
   // The release form per batch, built HERE because it carries the server action

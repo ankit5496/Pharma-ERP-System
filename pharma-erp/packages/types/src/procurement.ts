@@ -92,6 +92,33 @@ export const ITEM_TYPE_LABELS: Record<ItemType, string> = {
 export const PARTY_TYPES = ['VENDOR', 'CUSTOMER', 'JOB_WORK_PRINCIPAL'] as const;
 export type PartyType = (typeof PARTY_TYPES)[number];
 
+/**
+ * The prefix a party's code takes, by what the party IS.
+ *
+ * Same reasoning as the item codes above, and the same failure it prevents:
+ * typed codes drifted into "SUP-7", "SUP-007" and "sup 7" for one supplier.
+ * A party code is quoted on purchase orders and invoices, so it is not
+ * something to leave to whoever is typing.
+ *
+ * Per type rather than one shared series, so the code says what the party is
+ * without a lookup. The consequence is that the TYPE IS FIXED once the party
+ * exists — moving a vendor to customer would leave it numbered VEN- while
+ * filed as a customer, and the code is already on documents that cannot be
+ * reissued. Both the form and the API refuse the change.
+ *
+ * Declared beside the item prefixes, and for the same reason: the form previews
+ * the code before it is saved, and a second copy of this map is how a preview
+ * comes to disagree with what is actually allocated.
+ */
+export const PARTY_CODE_PREFIXES: Record<PartyType, string> = {
+  VENDOR: 'VEN',
+  CUSTOMER: 'CUS',
+  JOB_WORK_PRINCIPAL: 'PRI',
+};
+
+/** Digits in the serial part of a party code: VEN-00001. */
+export const PARTY_CODE_DIGITS = 5;
+
 export const REQUISITION_STATUSES = ['OPEN', 'APPROVED', 'CONVERTED_TO_PO', 'CANCELLED'] as const;
 export type RequisitionStatus = (typeof REQUISITION_STATUSES)[number];
 

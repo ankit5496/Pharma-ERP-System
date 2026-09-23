@@ -190,20 +190,27 @@ export class ProductionService {
 
     if (!existing) throw new NotFoundException('That item does not exist.');
 
-    // Reclassifying an item that a formulation already names would change
-    // what the formulation means — an ingredient becoming a finished good, or
-    // a product becoming a raw material. The BOM rules are enforced at the
-    // point a BOM is created, so letting the type drift afterwards would
-    // quietly leave one that could never have been created.
+    /**
+     * THE CATEGORY IS FIXED once the item exists.
+     *
+     * It used to be refused only for an item some formulation named, on the
+     * grounds that reclassifying it would change what that formulation meant.
+     * That reason still holds, but it is no longer the binding one: the item
+     * CODE is now allocated from the category — RM-00001 against PM-00011 —
+     * and the code is already printed on every purchase order, challan and
+     * invoice that cites the item. Allowing the category to move afterwards
+     * leaves a raw material numbered as packing, with the documents saying one
+     * thing and the register another, and no way to reissue what has been sent.
+     *
+     * So the rule applies to every item rather than only to the ones on a BOM.
+     * The form no longer offers the change either; this is what refuses a
+     * request that did not come from the form.
+     */
     if (dto.type && dto.type !== existing.type) {
-      const usedOnBom = await this.isUsedOnAnyBom(id);
-
-      if (usedOnBom) {
-        throw new ConflictException(
-          `"${existing.code}" appears on a formulation, so its category cannot be changed. ` +
-            'Retire it and add a replacement item instead.',
-        );
-      }
+      throw new ConflictException(
+        `"${existing.code}" is numbered from its category, so the category cannot be changed. ` +
+          'Retire this item and add a replacement in the right category instead.',
+      );
     }
 
     const data: Prisma.ItemUpdateInput = {};

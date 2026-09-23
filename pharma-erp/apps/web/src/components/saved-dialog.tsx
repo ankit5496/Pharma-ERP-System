@@ -32,10 +32,21 @@ import { useCallback, useEffect, useRef, useState } from 'react';
  * How long the exit animation runs. Matches `saved-dialog-out` in globals.css;
  * the two have to agree or the card is removed mid-fade or lingers after it.
  */
-const LEAVE_MS = 180;
+const LEAVE_MS = 420;
+
+/**
+ * How long the card stays before it starts fading, in milliseconds.
+ *
+ * Two seconds is long enough to read one sentence and short enough that it is
+ * gone before anybody reaches for a button. It replaced a Done button: a
+ * confirmation is news, not a question, and asking somebody to acknowledge
+ * their own successful save put a click between them and the next thing they
+ * were going to do.
+ */
+const HOLD_MS = 2000;
 
 export function SavedDialog({ message, onDismiss }: { message: string; onDismiss: () => void }) {
-  const doneRef = useRef<HTMLButtonElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
 
   // Dismissing plays an animation before the card is removed, so `onDismiss`
   // is delayed rather than called straight away. Without this the element is
@@ -62,15 +73,41 @@ export function SavedDialog({ message, onDismiss }: { message: string; onDismiss
     setTimeout(() => onDismissRef.current(), LEAVE_MS);
   }, []);
 
+  /**
+   * GOES BY ITSELF after two seconds.
+   *
+   * The card used to wait for a Done button. A save that has already succeeded
+   * is news rather than a question, and making somebody acknowledge it put a
+   * click between them and whatever they were about to do next — on a form
+   * they may be about to fill in again.
+   *
+   * Escape and a click on the backdrop still dismiss it early; `leave` is
+   * guarded, so whichever happens first wins and the timer firing afterwards
+   * does nothing.
+   */
+  useEffect(() => {
+    const timer = setTimeout(leave, HOLD_MS);
+
+    return () => clearTimeout(timer);
+  }, [leave]);
+
   useEffect(() => {
     // Remembered before focus moves, so dismissing returns the keyboard to
     // whatever was focused when the save completed rather than to the top of
     // the document.
     const opener = document.activeElement as HTMLElement | null;
 
-    // Focus lands on Done, which is both the primary action and the only
-    // control — so Enter dismisses without anybody having to reach for a mouse.
-    doneRef.current?.focus();
+    // FOCUS MOVES TO THE CARD, which is what makes a screen reader announce it
+    // and what gives Escape somewhere to be pressed. It used to land on Done;
+    // with no control left, the card takes focus itself — `tabIndex={-1}` on
+    // it is what allows that.
+    //
+    // Captured now, for the cleanup below: by the time this effect tears down
+    // the card is on its way out and the ref may already read null, which would
+    // leave the keyboard stranded where the dialog used to be.
+    const card = cardRef.current;
+
+    card?.focus();
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === 'Escape') {
@@ -79,20 +116,22 @@ export function SavedDialog({ message, onDismiss }: { message: string; onDismiss
         return;
       }
 
-      // The trap is trivial here because there is one focusable control: Tab
-      // and Shift+Tab both have to land back on it. Without this, Tab walks
-      // into the page behind and the dialog is lost.
-      if (event.key !== 'Tab') return;
-
-      event.preventDefault();
-      doneRef.current?.focus();
+      // NO FOCUS TRAP any more, deliberately. Trapping Tab is for a modal
+      // somebody must answer; this one leaves on its own, and holding the
+      // keyboard hostage for two seconds would be worse than letting Tab
+      // move on into the page that is about to be usable anyway.
     }
 
     document.addEventListener('keydown', handleKeyDown);
 
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
-      opener?.focus?.();
+
+      // Only if focus is still inside this card. By the time it goes the
+      // person may already be typing somewhere else — the card does not wait
+      // for them — and yanking the caret back would be the rudest possible
+      // moment to do it.
+      if (card?.contains(document.activeElement)) opener?.focus?.();
     };
   }, [leave]);
 
@@ -109,13 +148,18 @@ export function SavedDialog({ message, onDismiss }: { message: string; onDismiss
         className="saved-dialog-backdrop absolute inset-0 h-full w-full cursor-default bg-slate-900/30 backdrop-blur-[1px]"
       />
 
+      {/* `alert`, not `alertdialog`, and no `aria-modal`. Both of those describe
+          a box that is waiting for an answer; this one states what happened and
+          leaves. `alert` is what makes a screen reader read it out where it
+          stands, which is the whole job now that there is nothing to press. */}
       <div
-        role="alertdialog"
-        aria-modal="true"
+        ref={cardRef}
+        role="alert"
         aria-labelledby="saved-title"
         aria-describedby="saved-message"
+        tabIndex={-1}
         data-leaving={leaving}
-        className="saved-dialog-card relative w-full max-w-sm rounded-xl bg-white px-6 py-7 text-center shadow-2xl"
+        className="saved-dialog-card relative w-full max-w-sm rounded-xl bg-white px-6 py-7 text-center shadow-2xl focus:outline-none"
       >
         {/* Decorative: the heading and message below already say what happened,
             so announcing a tick as well would just be noise to a screen
@@ -144,15 +188,6 @@ export function SavedDialog({ message, onDismiss }: { message: string; onDismiss
         <p id="saved-message" className="mt-1.5 text-sm text-slate-600">
           {message}
         </p>
-
-        <button
-          ref={doneRef}
-          type="button"
-          onClick={leave}
-          className="mt-6 rounded-md bg-blue-600 px-8 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2"
-        >
-          Done
-        </button>
       </div>
     </div>
   );

@@ -1,5 +1,9 @@
 import type { BatchReleaseStatus, ProductionOrderStatus } from '@pharma-erp/types';
-import { BATCH_RELEASE_STATUS_LABELS, PRODUCTION_ORDER_STATUS_LABELS } from '@pharma-erp/types';
+import {
+  BATCH_RELEASE_STATUS_LABELS,
+  formatDateDMY,
+  PRODUCTION_ORDER_STATUS_LABELS,
+} from '@pharma-erp/types';
 
 /** A titled card. Every step panel is built from these, so they line up. */
 export function Panel({
@@ -58,13 +62,21 @@ export function Quantity({ value, uom }: { value: string | null; uom?: string })
 }
 
 /**
- * A date that is legally meaningful, so it is never reformatted into the
- * reader's locale — the API sends the calendar day and that is what shows.
+ * A date that is legally meaningful, shown as DD-MM-YYYY.
+ *
+ * NEVER reformatted into the reader's LOCALE — that is the thing this avoids.
+ * `formatDateDMY` reorders the ISO string's characters and parses no `Date`,
+ * so the calendar day the API sent is the calendar day that appears. Going
+ * through `toLocaleDateString` would put a stored 2027-04-03 on screen as
+ * 02-04-2027 anywhere west of Greenwich, a day early on an expiry that governs
+ * whether stock may still be sold.
  */
 export function DateCell({ value }: { value: string | null }) {
   if (!value) return <span className="text-slate-300">—</span>;
 
-  return <span className="whitespace-nowrap tabular-nums text-slate-700">{value}</span>;
+  return (
+    <span className="whitespace-nowrap tabular-nums text-slate-700">{formatDateDMY(value)}</span>
+  );
 }
 
 /**
@@ -119,10 +131,40 @@ export function OrderStatusBadge({ status }: { status: ProductionOrderStatus }) 
  *
  * The one badge in the app where the colour carries real weight: it is the
  * answer to "may this be sold", so it should be readable across a room.
+ *
+ * "PACKAGING DUE" IS DERIVED, NOT STORED. A batch is PENDING from the moment it
+ * is opened, which made the register read as a queue of things waiting on the
+ * quality officer when most of them were waiting on the shop floor to enter
+ * their packing. `packedOn` already tells the two apart, so nothing new is
+ * recorded: this only shows what is already known.
+ *
+ * It is NOT a `releaseStatus` value, deliberately. That column is the quality
+ * DECISION — every value in it is something an officer chose — and "nobody has
+ * finished making this yet" is not a decision. Adding it there would need a
+ * migration to record a fact the data already carries, and would put a state
+ * into the release enum that the release form must then be taught to ignore.
  */
-export function ReleaseBadge({ status }: { status: BatchReleaseStatus }) {
-  const tone =
-    status === 'RELEASED'
+export function ReleaseBadge({
+  status,
+  packedOn,
+}: {
+  status: BatchReleaseStatus;
+  /**
+   * When packing was recorded, or null. Omit where the distinction is not
+   * wanted — the badge then behaves exactly as before.
+   */
+  packedOn?: string | null;
+}) {
+  // Only meaningful while the batch is still PENDING: once a decision exists,
+  // the decision is the status, whatever the packing record looks like.
+  const awaitingPacking = status === 'PENDING' && packedOn === null;
+
+  const tone = awaitingPacking
+    ? // Blue rather than amber: this is a normal step of the work, not a
+      // warning. Amber in this badge means ON_HOLD, which is a quality problem,
+      // and a batch that simply has not been packed yet must not look like one.
+      'bg-blue-50 text-blue-800 ring-blue-200'
+    : status === 'RELEASED'
       ? 'bg-emerald-50 text-emerald-800 ring-emerald-200'
       : // Amber for a hold, which may still be released; red for a rejection,
         // which never will. BLOCKED is the legacy value for both and keeps the
@@ -137,7 +179,7 @@ export function ReleaseBadge({ status }: { status: BatchReleaseStatus }) {
     <span
       className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset ${tone}`}
     >
-      {BATCH_RELEASE_STATUS_LABELS[status]}
+      {awaitingPacking ? 'Packaging due' : BATCH_RELEASE_STATUS_LABELS[status]}
     </span>
   );
 }
