@@ -7,6 +7,7 @@ import type {
   JobWorkInvoiceView,
   JobWorkIssuableMaterial,
   JobWorkIssuePlan,
+  JobWorkMaterialSufficiency,
   JobWorkMaterialIssueView,
   JobWorkMaterialReadiness,
   JobWorkOrderMaterial,
@@ -511,22 +512,19 @@ export async function raiseJobWorkProductionOrderAction(
 
   if (!jobWorkOrderId) return { status: 'error', message: 'No job-work order was identified.' };
 
-  if (!materialReceiptId) {
-    return {
-      status: 'error',
-      message:
-        'Choose the approved material receipt this batch will be made from. If there is none, ' +
-        'the consignment has not passed Quality check yet.',
-    };
-  }
-
+  // NO CHECK FOR A CONSIGNMENT HERE. Whether one is required depends on the
+  // job-work order's billing model, which this layer does not know and should
+  // not guess — the API reads it off the order and refuses either way round:
+  // a pure-conversion order with no receipt, or an own-procurement order with
+  // one. The form simply does not render the field where it does not apply.
   const result = await apiFetch<JobWorkProductionOrderView>('/api/v1/job-work/production-orders', {
     method: 'POST',
     authenticated: true,
     json: {
       jobWorkOrderId,
-      materialReceiptId,
-      ...(text(form, 'plannedQuantity') ? { plannedQuantity: text(form, 'plannedQuantity') } : {}),
+      ...(materialReceiptId ? { materialReceiptId } : {}),
+      // NO plannedQuantity. It is the job-work order's own figure, read by the
+      // service from the order; the API rejects the field outright.
       ...(text(form, 'plannedStartOn') ? { plannedStartOn: text(form, 'plannedStartOn') } : {}),
       ...(text(form, 'plannedCompletionOn')
         ? { plannedCompletionOn: text(form, 'plannedCompletionOn') }
@@ -649,6 +647,34 @@ export async function nextJobWorkNumberAction(
   return (
     result.data.orderNumber ?? result.data.issueNumber ?? result.data.batchNumber ?? null
   );
+}
+
+/**
+ * Has the principal sent enough to make this batch?
+ *
+ * The answer the production-order form shows before the button is pressed. The
+ * create endpoint re-computes it and refuses on its own account, so this is a
+ * courtesy rather than the rule.
+ */
+export async function loadJobWorkMaterialSufficiencyAction(
+  jobWorkOrderId: string,
+  /** Omitted under own procurement, which has no consignment to measure. */
+  materialReceiptId?: string,
+): Promise<
+  { ok: true; data: JobWorkMaterialSufficiency } | { ok: false; message: string }
+> {
+  if (!jobWorkOrderId) {
+    return { ok: false, message: 'Choose a job-work order first.' };
+  }
+
+  const query = materialReceiptId ? `?materialReceiptId=${materialReceiptId}` : '';
+
+  const result = await apiFetch<JobWorkMaterialSufficiency>(
+    `/api/v1/job-work/orders/${jobWorkOrderId}/material-sufficiency${query}`,
+    { authenticated: true },
+  );
+
+  return result.ok ? { ok: true, data: result.data } : { ok: false, message: result.error };
 }
 
 /**

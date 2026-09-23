@@ -3,14 +3,12 @@ import { BadRequestException, ConflictException, Injectable } from '@nestjs/comm
 import { Prisma } from '@pharma-erp/database';
 import type {
   BatchReleaseStatus,
-  ItemSummary,
   JobWorkBatchMaterialVariance,
   JobWorkBatchView,
   JobWorkIssuableMaterial,
   JobWorkIssuePlan,
   JobWorkIssuePlanLine,
   JobWorkMaterialIssueView,
-  JobWorkMaterialKind,
 } from '@pharma-erp/types';
 
 import { PrismaService } from '../prisma/prisma.service';
@@ -24,6 +22,8 @@ import type {
   RecordJobWorkIssueDto,
   RecordJobWorkPackingDto,
 } from './dto/job-work-workflow.dto';
+import { loadRecipes, materialRequirementFor, scaleRecipe } from './job-work-requirements';
+
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -66,8 +66,16 @@ export class JobWorkWorkflowService {
   // Material issue
   // ---------------------------------------------------------------------------
 
+  /** One transaction, for the reason given on `listBatches`. */
   async listIssues(productionOrderId?: string): Promise<JobWorkMaterialIssueView[]> {
     const rows = await this.prisma.scoped.jobWorkMaterialIssue.findMany({
+      // ONE QUERY, NOT ONE PER RELATION. This include is six levels deep, and
+      // the default strategy fetches each level in its own round trip — twenty
+      // of them at ~280ms against this database. 'join' asks PostgreSQL for the
+      // lot in a single statement with lateral joins.
+      //
+      // OPT-IN, HERE ONLY. Nothing else in the codebase generates differently.
+      relationLoadStrategy: 'join',
       where: {
         deletedAt: null,
         ...(productionOrderId ? { jobWorkProductionOrderId: productionOrderId } : {}),
@@ -98,6 +106,13 @@ export class JobWorkWorkflowService {
 
     const issuedByLot = new Map(issued.map((row) => [row.lotId, row._sum.quantityIssued ?? ZERO]));
 
+    // OWN PROCUREMENT DRAWS ON OUR OWN SHELF. There is no consignment, so the
+    // drums are the company-owned lots of whatever the formulation calls for —
+    // the same stock an own-brand batch would take, chosen the same way.
+    if (order.materialReceipt === null) {
+      return this.ownStockDrums(order, issuedByLot);
+    }
+
     return order.materialReceipt.lines
       .filter((line) => line.stockLot !== null)
       .map((line) => {
@@ -125,6 +140,58 @@ export class JobWorkWorkflowService {
   }
 
   /**
+   * Company-owned lots of everything this order's formulation calls for.
+   *
+   * A "drum" here is a stock lot we bought, released by incoming QC on its own
+   * goods receipt — which is why own procurement needs no second quality check
+   * and no inward receipt from the principal.
+   *
+   * PRINCIPAL-OWNED STOCK IS EXCLUDED. Another order's consignment may be
+   * sitting in the same store; it belongs to them, and an order we bought the
+   * material for must not quietly consume it.
+   */
+  private async ownStockDrums(
+    order: { jobWorkOrder: { mapping: { bom: { product: { id: string; name: string } } } }; plannedQuantity: Prisma.Decimal },
+    issuedByLot: Map<string, Prisma.Decimal>,
+  ): Promise<JobWorkIssuableMaterial[]> {
+    const required = await this.prisma.transaction(async (tx) =>
+      materialRequirementFor(tx, order.jobWorkOrder.mapping.bom.product, order.plannedQuantity),
+    );
+
+    if (typeof required === 'string') return [];
+
+    const kindByItem = new Map(required.map((line) => [line.item.id, line.kind]));
+
+    const lots = await this.prisma.scoped.stockLot.findMany({
+      where: {
+        itemId: { in: required.map((line) => line.item.id) },
+        ownership: 'COMPANY_OWNED',
+        quantityAvailable: { gt: 0 },
+      },
+      include: { item: true },
+      orderBy: [{ expiryDate: 'asc' }, { lotNumber: 'asc' }],
+    });
+
+    return lots.map((lot) => ({
+      // NO RECEIPT LINE. This lot came from a purchase, not from a challan.
+      receiptLineId: null,
+      lotId: lot.id,
+      lotNumber: lot.lotNumber,
+      item: toItemSummary(lot.item),
+      kind: kindByItem.get(lot.itemId) ?? (lot.item.type === 'PACKING_MATERIAL' ? 'PACKING' : 'RAW'),
+      // The supplier's marking, which is what "batch" means on a bought lot.
+      batchNumber: lot.vendorBatchNumber ?? lot.lotNumber,
+      deliveryChallanNumber: null,
+      manufacturingDate: lot.manufacturingDate ? toIsoDate(lot.manufacturingDate) : null,
+      expiryDate: lot.expiryDate ? toIsoDate(lot.expiryDate) : null,
+      receivedQuantity: lot.quantityReceived.toString(),
+      quantityAvailable: lot.quantityAvailable.toString(),
+      alreadyIssued: (issuedByLot.get(lot.id) ?? ZERO).toString(),
+      lotStatus: lot.status,
+    }));
+  }
+
+  /**
    * What issuing this order would consume, and out of which drums.
    *
    * THE SAME ANSWER MaterialIssuePlan GIVES for own-brand work, computed the
@@ -147,10 +214,14 @@ export class JobWorkWorkflowService {
       jobWorkOrderNumber: order.jobWorkOrder.orderNumber,
       principalName: order.jobWorkOrder.principal.name,
       product: toItemSummary(order.jobWorkOrder.mapping.bom.product),
-      receiptNumber: order.materialReceipt.receiptNumber,
+      // Own procurement has no consignment; the plan says so with a dash
+      // rather than inventing a document number.
+      receiptNumber: order.materialReceipt?.receiptNumber ?? '—',
     };
 
-    const required = await this.requirementFor(order);
+    const required = await this.prisma.transaction(async (tx) =>
+      materialRequirementFor(tx, order.jobWorkOrder.mapping.bom.product, order.plannedQuantity),
+    );
 
     if (typeof required === 'string') {
       return { ...base, canIssue: false, blockedReason: required, lines: [] };
@@ -225,84 +296,6 @@ export class JobWorkWorkflowService {
     };
   }
 
-  /**
-   * The formulation and the pack specification, scaled to the planned quantity.
-   *
-   * Returns the reason as a STRING when there is nothing to scale, so the
-   * caller can put it on screen rather than raising a 400 at a form that was
-   * only asking what a batch would need.
-   *
-   * THE ACTIVE FORMULATION, not the one pinned to the agreement — the same
-   * choice the readiness check makes, and for the same reason: measuring one
-   * version and manufacturing to another produces a screen that passes and a
-   * batch that is short.
-   */
-  private async requirementFor(order: {
-    plannedQuantity: Prisma.Decimal;
-    orderNumber: string;
-    jobWorkOrder: { mapping: { bom: { product: { id: string; name: string } } } };
-  }): Promise<string | { item: ItemSummary; kind: JobWorkMaterialKind; quantity: Prisma.Decimal }[]> {
-    const product = order.jobWorkOrder.mapping.bom.product;
-
-    const [bom, packaging] = await Promise.all([
-      this.prisma.scoped.bom.findFirst({
-        where: { productId: product.id, isActive: true, deletedAt: null },
-        include: { lines: { include: { item: true }, orderBy: { item: { code: 'asc' } } } },
-      }),
-      this.prisma.scoped.packagingRequirement.findFirst({
-        where: { productId: product.id, isActive: true, deletedAt: null },
-        include: { lines: { include: { item: true }, orderBy: { item: { code: 'asc' } } } },
-      }),
-    ]);
-
-    if (!bom) {
-      return (
-        `${product.name} has no active formulation, so there is nothing to work a material ` +
-        'requirement out from. Create one under Formulations first.'
-      );
-    }
-
-    if (bom.lines.length === 0) {
-      return `Formulation version ${bom.version} lists no materials, so nothing could be issued.`;
-    }
-
-    const scale = order.plannedQuantity.div(bom.outputQuantity);
-
-    const raw = bom.lines
-      // A finished product listed as its own input is a data-entry trap; the
-      // receipt form filters it for the same reason.
-      .filter((line) => line.item.type !== 'FINISHED_GOOD')
-      .map((line) => ({
-        item: toItemSummary(line.item),
-        kind: (line.item.type === 'PACKING_MATERIAL' ? 'PACKING' : 'RAW') as JobWorkMaterialKind,
-        quantity: line.quantityPer.mul(scale).toDecimalPlaces(3),
-      }));
-
-    const alreadyListed = new Set(raw.map((line) => line.item.id));
-
-    // THE PACK, scaled by its own basis. A per-batch component is needed once
-    // however big the batch; a per-pack one is needed once per pack, and how
-    // many packs there are depends on how many units go in each.
-    const packing = (packaging?.lines ?? [])
-      .filter((line) => !alreadyListed.has(line.itemId))
-      .map((line) => {
-        const packs =
-          line.quantityBasis === 'PER_BATCH'
-            ? new Prisma.Decimal(1)
-            : packaging && !packaging.unitsPerPack.isZero()
-              ? order.plannedQuantity.div(packaging.unitsPerPack)
-              : new Prisma.Decimal(0);
-
-        return {
-          item: toItemSummary(line.item),
-          kind: 'PACKING' as JobWorkMaterialKind,
-          quantity: line.quantityPer.mul(packs).toDecimalPlaces(3),
-        };
-      });
-
-    return [...raw, ...packing];
-  }
-
   async previewIssueNumber(): Promise<{ issueNumber: string }> {
     return {
       issueNumber: await this.numbering.peek(this.tenantContext.requireTenantId(), 'JWMI'),
@@ -328,27 +321,42 @@ export class JobWorkWorkflowService {
       );
     }
 
-    // THE DRUMS THIS ORDER MAY DRAW ON, which is its own receipt's and nobody
-    // else's. Checked here rather than only on the form: an issue naming a lot
-    // from another principal's consignment would put their material in this
-    // batch.
+    // THE DRUMS THIS ORDER MAY DRAW ON.
+    //
+    // PURE CONVERSION: its own consignment's, and nobody else's — an issue
+    // naming a lot from another principal's delivery would put their material
+    // in this batch.
+    //
+    // OWN PROCUREMENT: any company-owned lot of a material the formulation
+    // calls for. Principal-owned stock is excluded for the mirror-image reason.
+    //
+    // Checked here rather than only on the form, either way.
     const allowed = new Map(
-      order.materialReceipt.lines
-        .filter((line) => line.stockLot !== null)
-        .map((line) => [line.stockLot!.id, line]),
+      (await this.issuableMaterial(order.id)).map((drum) => [drum.lotId, drum]),
+    );
+
+    const lotsById = new Map(
+      (
+        await this.prisma.scoped.stockLot.findMany({
+          where: { id: { in: dto.lines.map((line) => line.lotId) } },
+          include: { item: true },
+        })
+      ).map((lot) => [lot.id, lot]),
     );
 
     const prepared = dto.lines.map((line) => {
       const source = allowed.get(line.lotId);
+      const lot = lotsById.get(line.lotId);
 
-      if (!source) {
+      if (!source || !lot) {
         throw new BadRequestException(
-          'That lot was not received on this production order’s material receipt, so it cannot ' +
-            'be issued to this batch.',
+          order.materialReceipt === null
+            ? 'That lot is not company-owned stock of a material this order’s formulation calls ' +
+                'for, so it cannot be issued to this batch.'
+            : 'That lot was not received on this production order’s material receipt, so it ' +
+                'cannot be issued to this batch.',
         );
       }
-
-      const lot = source.stockLot!;
 
       if (lot.status !== 'USABLE') {
         throw new ConflictException(
@@ -398,9 +406,10 @@ export class JobWorkWorkflowService {
           data: {
             tenantId,
             issueId: issue.id,
-            itemId: source.itemId,
+            itemId: source.item.id,
             lotId: lot.id,
-            receiptLineId: source.id,
+            // Null where the lot came from a purchase rather than a challan.
+            receiptLineId: source.receiptLineId,
             quantityIssued: quantity,
           },
         });
@@ -423,7 +432,7 @@ export class JobWorkWorkflowService {
         await tx.stockLedgerEntry.create({
           data: {
             tenantId,
-            itemId: source.itemId,
+            itemId: source.item.id,
             stockLotId: lot.id,
             entryType: 'ADJUSTMENT',
             quantityDelta: quantity.negated(),
@@ -466,17 +475,39 @@ export class JobWorkWorkflowService {
   // Batch record
   // ---------------------------------------------------------------------------
 
+  /**
+   * ONE TRANSACTION FOR THE WHOLE READ.
+   *
+   * Every operation on `prisma.scoped` opens a transaction of its own — BEGIN,
+   * set_config, the query, COMMIT — which measures at about 1,160ms against
+   * this database where the query alone costs 277ms. Reading a register through
+   * it therefore cost four round trips per query, and this screen's reads
+   * together were pushing the workflow past the thirty-second client timeout.
+   *
+   * Opening one transaction pays for the tenant scope once and leaves each
+   * query at a single round trip. It is a READ: nothing here writes, so holding
+   * the transaction costs no lock contention.
+   */
   async listBatches(productionOrderId?: string): Promise<JobWorkBatchView[]> {
-    const rows = await this.prisma.scoped.jobWorkBatch.findMany({
-      where: {
-        deletedAt: null,
-        ...(productionOrderId ? { jobWorkProductionOrderId: productionOrderId } : {}),
-      },
-      include: BATCH_INCLUDE,
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-    });
+    return this.prisma.transaction(async (tx) => {
+      const rows = await tx.jobWorkBatch.findMany({
+        // ONE QUERY, NOT ONE PER RELATION. This include is six levels deep, and
+        // the default strategy fetches each level in its own round trip — twenty
+        // of them at ~280ms against this database. 'join' asks PostgreSQL for the
+        // lot in a single statement with lateral joins.
+        //
+        // OPT-IN, HERE ONLY. Nothing else in the codebase generates differently.
+        relationLoadStrategy: 'join',
+        where: {
+          deletedAt: null,
+          ...(productionOrderId ? { jobWorkProductionOrderId: productionOrderId } : {}),
+        },
+        include: BATCH_INCLUDE,
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      });
 
-    return Promise.all(rows.map((row) => this.withVariances(row)));
+      return this.withVariances(rows, tx);
+    });
   }
 
   /**
@@ -491,51 +522,77 @@ export class JobWorkWorkflowService {
    * formulation scales to a quantity that does not divide evenly — which is
    * why there is a threshold rather than an equality check.
    */
-  private async withVariances(batch: BatchWithRelations): Promise<JobWorkBatchView> {
-    const [issued, required] = await Promise.all([
-      this.prisma.scoped.jobWorkMaterialIssueLine.groupBy({
-        by: ['itemId'],
-        where: {
-          issue: { jobWorkProductionOrderId: batch.jobWorkProductionOrderId, deletedAt: null },
-        },
-        _sum: { quantityIssued: true },
-      }),
-      this.requirementFor({
-        plannedQuantity: batch.plannedQuantity,
-        orderNumber: batch.productionOrder.orderNumber,
-        jobWorkOrder: batch.productionOrder.jobWorkOrder,
-      }),
-    ]);
+  private async withVariances(
+    batches: BatchWithRelations[],
+    client: Prisma.TransactionClient,
+  ): Promise<JobWorkBatchView[]> {
+    if (batches.length === 0) return [];
 
-    const issuedByItem = new Map(
-      issued.map((row) => [row.itemId, row._sum.quantityIssued ?? ZERO]),
+    // ONE GROUPBY FOR THE WHOLE PAGE, not one per batch. The sum is per
+    // production order AND item, so the rows separate cleanly afterwards.
+    const orderIds = [...new Set(batches.map((batch) => batch.jobWorkProductionOrderId))];
+
+    // ONE READ FOR THE WHOLE PAGE, not one per batch. Prisma's groupBy cannot
+    // group by a relation's column, and the split has to be per production
+    // order as well as per item — so the lines come back raw and are summed
+    // here. Still one query rather than one per batch, which is the point.
+    const lines = await client.jobWorkMaterialIssueLine.findMany({
+      where: { issue: { jobWorkProductionOrderId: { in: orderIds }, deletedAt: null } },
+      select: {
+        itemId: true,
+        quantityIssued: true,
+        issue: { select: { jobWorkProductionOrderId: true } },
+      },
+    });
+    const issuedByOrder = new Map<string, Map<string, Prisma.Decimal>>();
+
+    for (const line of lines) {
+      const orderId = line.issue.jobWorkProductionOrderId;
+      const byItem = issuedByOrder.get(orderId) ?? new Map<string, Prisma.Decimal>();
+
+      byItem.set(line.itemId, (byItem.get(line.itemId) ?? ZERO).add(line.quantityIssued));
+      issuedByOrder.set(orderId, byItem);
+    }
+
+    // THE MASTERS ONCE FOR EVERY PRODUCT ON THE PAGE, in two queries. Scaling
+    // them to each batch size afterwards is arithmetic, so a register of twenty
+    // batches costs the same two reads as a register of one.
+    const recipes = await loadRecipes(
+      client,
+      batches.map((batch) => batch.productionOrder.jobWorkOrder.mapping.bom.product),
     );
 
-    // A batch whose product has since lost its formulation still has to render.
-    // No requirement means no comparison, not a broken screen.
-    const variances: JobWorkBatchMaterialVariance[] =
-      typeof required === 'string'
-        ? []
-        : required.map((line) => {
-            const actual = new Prisma.Decimal(issuedByItem.get(line.item.id) ?? ZERO);
+    return batches.map((batch) => {
+      const product = batch.productionOrder.jobWorkOrder.mapping.bom.product;
+      const required = scaleRecipe(recipes.get(product.id), batch.plannedQuantity);
+      const issuedByItem = issuedByOrder.get(batch.jobWorkProductionOrderId) ?? new Map();
 
-            // Guard the divide rather than relying on the CHECK constraint that
-            // makes a zero requirement impossible.
-            const variance = line.quantity.isZero()
-              ? ZERO
-              : actual.sub(line.quantity).div(line.quantity).mul(100).toDecimalPlaces(2);
+      // A batch whose product has since lost its formulation still has to
+      // render. No requirement means no comparison, not a broken screen.
+      const variances: JobWorkBatchMaterialVariance[] =
+        typeof required === 'string'
+          ? []
+          : required.map((line) => {
+              const actual = new Prisma.Decimal(issuedByItem.get(line.item.id) ?? ZERO);
 
-            return {
-              item: line.item,
-              kind: line.kind,
-              quantityPlanned: line.quantity.toString(),
-              quantityIssued: actual.toString(),
-              variancePercent: variance.toString(),
-              flagged: variance.abs().greaterThan(VARIANCE_THRESHOLD_PERCENT),
-            };
-          });
+              // Guard the divide rather than relying on the CHECK constraint
+              // that makes a zero requirement impossible.
+              const variance = line.quantity.isZero()
+                ? ZERO
+                : actual.sub(line.quantity).div(line.quantity).mul(100).toDecimalPlaces(2);
 
-    return { ...toBatchView(batch), materialVariances: variances };
+              return {
+                item: line.item,
+                kind: line.kind,
+                quantityPlanned: line.quantity.toString(),
+                quantityIssued: actual.toString(),
+                variancePercent: variance.toString(),
+                flagged: variance.abs().greaterThan(VARIANCE_THRESHOLD_PERCENT),
+              };
+            });
+
+      return { ...toBatchView(batch), materialVariances: variances };
+    });
   }
 
   /**
@@ -639,7 +696,12 @@ export class JobWorkWorkflowService {
   }
 
   async findBatch(id: string): Promise<JobWorkBatchView> {
-    return this.withVariances(await this.requireBatch(id));
+    const [view] = await this.prisma.transaction(async (tx) =>
+      this.withVariances([await this.requireBatch(id)], tx),
+    );
+
+    // `withVariances` returns one view per batch and it was given exactly one.
+    return view!;
   }
 
   // ---------------------------------------------------------------------------

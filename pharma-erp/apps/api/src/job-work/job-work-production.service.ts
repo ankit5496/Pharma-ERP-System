@@ -4,6 +4,10 @@ import { Prisma } from '@pharma-erp/database';
 import type {
   BatchReleaseStatus,
   BillingModel,
+  JobWorkMaterialSource,
+  JobWorkEligibleReceipt,
+  JobWorkMaterialSufficiency,
+  JobWorkMaterialSufficiencyLine,
   JobWorkProductionOrderView,
   JobWorkProductionStatus,
 } from '@pharma-erp/types';
@@ -18,7 +22,9 @@ import type {
   UpdateJobWorkProductionOrderDto,
 } from './dto/job-work-production.dto';
 import { JobWorkOrdersService, parseQuantity } from './job-work-orders.service';
+import { JobWorkReadinessService } from './job-work-readiness.service';
 import { toReceiptView, RECEIPT_INCLUDE } from './job-work-receipts.service';
+import { materialRequirementFor } from './job-work-requirements';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -54,11 +60,21 @@ export class JobWorkProductionService {
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
     private readonly numbering: NumberingService,
+    // For the own-procurement material check: the reservation figure the
+    // readiness screen already computes, so the two cannot disagree.
+    private readonly readiness: JobWorkReadinessService,
     private readonly orders: JobWorkOrdersService,
   ) {}
 
   async list(jobWorkOrderId?: string): Promise<JobWorkProductionOrderView[]> {
     const rows = await this.prisma.scoped.jobWorkProductionOrder.findMany({
+      // ONE QUERY, NOT ONE PER RELATION. This include is six levels deep, and
+      // the default strategy fetches each level in its own round trip — twenty
+      // of them at ~280ms against this database. 'join' asks PostgreSQL for the
+      // lot in a single statement with lateral joins.
+      //
+      // OPT-IN, HERE ONLY. Nothing else in the codebase generates differently.
+      relationLoadStrategy: 'join',
       where: { deletedAt: null, ...(jobWorkOrderId ? { jobWorkOrderId } : {}) },
       include: PRODUCTION_INCLUDE,
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -79,10 +95,243 @@ export class JobWorkProductionService {
    * delivery may well cover two batches — but the screen shows what has
    * already been raised so nobody does it twice by accident.
    */
+  /**
+   * Has the principal sent enough to make this batch?
+   *
+   * REQUIRED comes from the masters — the active formulation, and the active
+   * pack specification — scaled to the quantity the job-work order asked for.
+   * RECEIVED is this consignment's own lines, summed per material. Nothing is
+   * stored: both sides are read from the records that already hold them.
+   *
+   * RAW AND PACKING ARE REPORTED SEPARATELY because they come from different
+   * masters and are chased from different people.
+   *
+   * This is the same computation `create` refuses on, called by the form so a
+   * shortage is visible before the button is pressed rather than after.
+   */
+  async materialSufficiency(
+    jobWorkOrderId: string,
+    materialReceiptId?: string,
+  ): Promise<JobWorkMaterialSufficiency> {
+    // ONE TRANSACTION for the reads this makes — see RecipeReader for why the
+    // scoped client costs four round trips a query and this costs one.
+    return this.prisma.transaction(async (tx) =>
+      this.sufficiencyIn(tx, jobWorkOrderId, materialReceiptId),
+    );
+  }
+
+  private async sufficiencyIn(
+    tx: Prisma.TransactionClient,
+    jobWorkOrderId: string,
+    materialReceiptId?: string,
+  ): Promise<JobWorkMaterialSufficiency> {
+    const order = await this.orders.requireOrder(jobWorkOrderId);
+
+    const billingModel = order.billingModel as BillingModel;
+
+    // WHICH POOL, decided by the billing model and nothing else. Under own
+    // procurement we bought the material through Procure-to-Pay, so there is no
+    // consignment to measure and no incoming quality check to wait for.
+    const fromConsignment = billingModel === 'PURE_CONVERSION';
+
+    const receipt = fromConsignment
+      ? await tx.jobWorkMaterialReceipt.findFirst({
+          where: { id: materialReceiptId, deletedAt: null },
+          include: RECEIPT_INCLUDE,
+        })
+      : null;
+
+    if (fromConsignment) {
+      if (!materialReceiptId || !receipt) {
+        throw new BadRequestException('That material receipt does not exist.');
+      }
+
+      if (receipt.jobWorkOrderId !== order.id) {
+        throw new ConflictException(
+          `${receipt.receiptNumber} was received against a different job-work order.`,
+        );
+      }
+    } else if (materialReceiptId) {
+      throw new ConflictException(
+        `${order.orderNumber} is an own-procurement order, so its material comes from our own ` +
+          'stock rather than from the principal. There is no consignment to raise it against.',
+      );
+    }
+
+    // THE FULL ITEM, not the narrow selection the order carries: the view
+    // returns an ItemSummary, which needs the UOM and the rest of the master.
+    const product = await tx.item.findFirstOrThrow({
+      where: { id: order.mapping.bom.product.id },
+    });
+
+    const base = {
+      jobWorkOrderId: order.id,
+      jobWorkOrderNumber: order.orderNumber,
+      billingModel,
+      materialSource: (fromConsignment
+        ? 'PRINCIPAL_CONSIGNMENT'
+        : 'OWN_INVENTORY') as JobWorkMaterialSource,
+      materialReceiptId: receipt?.id ?? null,
+      receiptNumber: receipt?.receiptNumber ?? null,
+      product: toItemSummary(product),
+      // THE JOB-WORK ORDER'S OWN QUANTITY. The production order inherits it and
+      // cannot be given another, so that is what the requirement is scaled to.
+      plannedQuantity: order.quantity.toString(),
+    };
+
+    const required = await materialRequirementFor(tx, product, order.quantity);
+
+    if (typeof required === 'string') {
+      return { ...base, raw: [], packing: [], sufficient: false, blockedReason: required, shortages: [] };
+    }
+
+    const suppliedByItem = receipt
+      ? consignedQuantities(receipt.lines)
+      : await this.availableOwnStock(
+          tx,
+          required.map((requirement) => requirement.item.id),
+        );
+
+    const lines: JobWorkMaterialSufficiencyLine[] = required.map((requirement) => {
+      const received = suppliedByItem.get(requirement.item.id) ?? ZERO;
+      const short = Prisma.Decimal.max(ZERO, requirement.quantity.sub(received));
+
+      return {
+        item: requirement.item,
+        kind: requirement.kind,
+        requiredQuantity: requirement.quantity.toString(),
+        suppliedQuantity: received.toString(),
+        shortQuantity: short.toString(),
+        sufficient: short.isZero(),
+      };
+    });
+
+    const word = fromConsignment ? 'received' : 'in stock';
+
+    const shortages = lines
+      .filter((line) => !line.sufficient)
+      .map(
+        (line) =>
+          `${line.item.code} — required ${line.requiredQuantity} ${line.item.uom}, ${word} ` +
+          `${line.suppliedQuantity}, short ${line.shortQuantity}`,
+      );
+
+    return {
+      ...base,
+      raw: lines.filter((line) => line.kind === 'RAW'),
+      packing: lines.filter((line) => line.kind === 'PACKING'),
+      sufficient: shortages.length === 0,
+      blockedReason: null,
+      shortages,
+    };
+  }
+
+  /**
+   * Usable company stock per material, less what open work is already using.
+   *
+   * THE SAME MEASURE THE READINESS CHECK APPLIES, and deliberately so: that
+   * service already decides what "available" means for an own-procurement
+   * job-work order — company-owned lots, released by incoming QC, in date, less
+   * the requirement of open work orders that have not yet drawn theirs. Two
+   * answers to "is there enough" is one answer too many, and the one a screen
+   * shows must be the one the refusal uses.
+   *
+   * NOTHING IS RESERVED HERE. This reads; the Material issue step is what
+   * actually takes stock off the shelf.
+   */
+  private async availableOwnStock(
+    tx: Prisma.TransactionClient,
+    itemIds: string[],
+  ): Promise<Map<string, Prisma.Decimal>> {
+    if (itemIds.length === 0) return new Map();
+
+    const lots = await tx.stockLot.findMany({
+      where: {
+        itemId: { in: itemIds },
+        // COMPANY-OWNED ONLY. A principal's drums sitting in the same store
+        // belong to them and cannot be consumed by an order we bought for.
+        ownership: 'COMPANY_OWNED',
+        status: 'USABLE',
+        quantityAvailable: { gt: 0 },
+      },
+      select: { itemId: true, quantityAvailable: true, expiryDate: true },
+    });
+
+    const available = new Map<string, Prisma.Decimal>();
+    const today = new Date();
+
+    for (const lot of lots) {
+      // Expired stock is on the shelf but not issuable, so counting it would
+      // promise material the dispensing step would then refuse.
+      if (lot.expiryDate !== null && lot.expiryDate < today) continue;
+
+      available.set(
+        lot.itemId,
+        (available.get(lot.itemId) ?? ZERO).add(lot.quantityAvailable),
+      );
+    }
+
+    const committed = await this.readiness.committedToOpenOrders(itemIds);
+
+    for (const row of committed) {
+      const left = (available.get(row.itemId) ?? ZERO).sub(row.quantity);
+
+      available.set(row.itemId, Prisma.Decimal.max(ZERO, left));
+    }
+
+    return available;
+  }
+
   async previewOrderNumber(): Promise<{ orderNumber: string }> {
     return {
       orderNumber: await this.numbering.peek(this.tenantContext.requireTenantId(), 'JWPO'),
     };
+  }
+
+  /**
+   * Every approved consignment, grouped by the order it arrived against.
+   *
+   * ONE CALL FOR THE WHOLE SCREEN. The Production orders panel used to ask
+   * `eligibleReceipts` once per job-work order to decide which orders could
+   * have an order raised — seventy-four requests to draw one page, which took
+   * twenty-six seconds and is what tripped the thirty-second timeout.
+   */
+  async eligibleReceiptsByOrder(): Promise<Record<string, JobWorkEligibleReceipt[]>> {
+    // WHAT THE LOOKUP SHOWS, AND NOTHING MORE — a number and a count of each
+    // kind. Returning the whole receipt made this one call 443 KB and eight
+    // seconds to render a dropdown; the lines are read server-side by the
+    // material check, which is the thing that actually needs them.
+    const receipts = await this.prisma.scoped.jobWorkMaterialReceipt.findMany({
+      where: { status: 'APPROVED', deletedAt: null },
+      select: {
+        id: true,
+        jobWorkOrderId: true,
+        receiptNumber: true,
+        lines: {
+          where: { deletedAt: null },
+          select: { deliveryChallanNumber: true, item: { select: { type: true } } },
+        },
+      },
+      orderBy: [{ receiptDate: 'desc' }, { receiptNumber: 'desc' }],
+    });
+
+    const byOrder: Record<string, JobWorkEligibleReceipt[]> = {};
+
+    for (const receipt of receipts) {
+      const view: JobWorkEligibleReceipt = {
+        id: receipt.id,
+        receiptNumber: receipt.receiptNumber,
+        rawMaterialCount: receipt.lines.filter((l) => l.item.type !== 'PACKING_MATERIAL').length,
+        packingMaterialCount: receipt.lines.filter((l) => l.item.type === 'PACKING_MATERIAL').length,
+        deliveryChallanNumbers: [
+          ...new Set(receipt.lines.map((l) => l.deliveryChallanNumber)),
+        ],
+      };
+
+      byOrder[receipt.jobWorkOrderId] = [...(byOrder[receipt.jobWorkOrderId] ?? []), view];
+    }
+
+    return byOrder;
   }
 
   async eligibleReceipts(jobWorkOrderId: string) {
@@ -98,11 +347,21 @@ export class JobWorkProductionService {
   }
 
   /**
-   * Raises the order, against an approved consignment.
+   * Raises the order — against an approved consignment, or against our own
+   * stock, according to the job-work order's billing model.
    *
-   * The quantity defaults to what the job-work order asked for, because that is
-   * the figure somebody has already agreed; a planner who wants two batches of
-   * half says so explicitly rather than having a default guess at it.
+   * PURE CONVERSION consumes what the principal sent, so it needs an approved
+   * consignment behind it: the quality decision on that consignment is what
+   * makes the material issuable at all.
+   *
+   * OWN PROCUREMENT consumes material we bought ourselves through
+   * Procure-to-Pay, which has already been through incoming QC on its own goods
+   * receipt. There is no consignment from the principal and no second quality
+   * check to wait for — so those two steps do not apply, and requiring them is
+   * what made the whole billing model unreachable from this screen.
+   *
+   * The quantity is the job-work order's under both, because that is the figure
+   * somebody has already agreed with the principal.
    */
   async create(dto: CreateJobWorkProductionOrderDto): Promise<JobWorkProductionOrderView> {
     const tenantId = this.tenantContext.requireTenantId();
@@ -110,35 +369,89 @@ export class JobWorkProductionService {
 
     const order = await this.orders.requireOrder(dto.jobWorkOrderId);
 
-    const receipt = await this.prisma.scoped.jobWorkMaterialReceipt.findFirst({
-      where: { id: dto.materialReceiptId, deletedAt: null },
-      include: RECEIPT_INCLUDE,
-    });
+    const fromConsignment = order.billingModel === 'PURE_CONVERSION';
 
-    if (!receipt) throw new BadRequestException('That material receipt does not exist.');
+    const receipt = fromConsignment
+      ? await this.prisma.scoped.jobWorkMaterialReceipt.findFirst({
+          where: { id: dto.materialReceiptId, deletedAt: null },
+          include: RECEIPT_INCLUDE,
+        })
+      : null;
 
-    if (receipt.jobWorkOrderId !== order.id) {
+    if (fromConsignment) {
+      if (!dto.materialReceiptId) {
+        throw new BadRequestException(
+          `${order.orderNumber} is a pure-conversion order, so it is made from material the ` +
+            'principal sent. Name the approved consignment it will consume.',
+        );
+      }
+
+      if (!receipt) throw new BadRequestException('That material receipt does not exist.');
+
+      if (receipt.jobWorkOrderId !== order.id) {
+        throw new ConflictException(
+          `${receipt.receiptNumber} was received against a different job-work order. A production ` +
+            'order consumes material delivered for the order it is raised under.',
+        );
+      }
+
+      // THE GATE. Section 15 of the brief in one condition: an unapproved
+      // consignment is quarantined material, and manufacturing against it would
+      // be scheduling work the store cannot issue for.
+      if (receipt.status !== 'APPROVED') {
+        throw new ConflictException(
+          `${receipt.receiptNumber} has not been approved — it is ` +
+            `${RECEIPT_STATUS_WORDS[receipt.status] ?? receipt.status.toLowerCase()}. A production ` +
+            'order can only be raised against material that has passed Quality check.',
+        );
+      }
+    } else if (dto.materialReceiptId) {
+      // REFUSED, NOT IGNORED. Ignoring it would let somebody believe an
+      // own-procurement batch was tied to a consignment that it is not.
       throw new ConflictException(
-        `${receipt.receiptNumber} was received against a different job-work order. A production ` +
-          'order consumes material delivered for the order it is raised under.',
+        `${order.orderNumber} is an own-procurement order: we buy its material ourselves, so ` +
+          'there is no consignment from the principal to raise it against. Remove the material ' +
+          'receipt and the batch will draw on our own stock.',
       );
     }
 
-    // THE GATE. Section 15 of the brief in one condition: an unapproved
-    // consignment is quarantined material, and manufacturing against it would
-    // be scheduling work the store cannot issue for.
-    if (receipt.status !== 'APPROVED') {
-      throw new ConflictException(
-        `${receipt.receiptNumber} has not been approved — it is ` +
-          `${RECEIPT_STATUS_WORDS[receipt.status] ?? receipt.status.toLowerCase()}. A production ` +
-          'order can only be raised against material that has passed Quality check.',
-      );
-    }
-
-    const quantity = parseQuantity(dto.plannedQuantity ?? order.quantity.toString(), 'plannedQuantity');
+    // THE QUANTITY IS THE JOB-WORK ORDER'S, always. It used to be an optional
+    // field on the request that defaulted to this; it is now not accepted at
+    // all, so a production order cannot plan a different quantity from the one
+    // the principal agreed — and the material check below measures against the
+    // same figure rather than against whatever was typed.
+    const quantity = parseQuantity(order.quantity.toString(), 'plannedQuantity');
 
     if (quantity.lessThanOrEqualTo(ZERO)) {
-      throw new BadRequestException('The planned quantity has to be more than zero.');
+      throw new BadRequestException(
+        `${order.orderNumber} has no quantity to manufacture. Correct the job-work order first.`,
+      );
+    }
+
+    // THE MATERIAL GATE. A production order is a commitment to make a batch,
+    // and committing to one the principal has not sent the material for is how
+    // a line gets scheduled around stock that never arrives.
+    //
+    // RE-COMPUTED HERE, not trusted from the form: the screen shows this same
+    // answer so nobody is surprised, but a request made by hand meets the rule
+    // just the same.
+    const sufficiency = await this.materialSufficiency(order.id, receipt?.id);
+
+    if (sufficiency.blockedReason) {
+      throw new ConflictException(sufficiency.blockedReason);
+    }
+
+    if (!sufficiency.sufficient) {
+      throw new ConflictException(
+        fromConsignment
+          ? `${receipt!.receiptNumber} does not carry enough material to make ${quantity.toString()} ` +
+              `of ${sufficiency.product.name}: ${sufficiency.shortages.join('; ')}. Record the rest ` +
+              "of the principal's delivery and approve it before raising this production order."
+          : `There is not enough stock to make ${quantity.toString()} of ${sufficiency.product.name}: ` +
+              `${sufficiency.shortages.join('; ')}. Only company-owned stock released by incoming QC ` +
+              'counts, less what other open work orders have already spoken for. Buy the shortfall ' +
+              'through Procure-to-Pay before raising this production order.',
+      );
     }
 
     assertDatesOrdered(dto.plannedStartOn ?? null, dto.plannedCompletionOn ?? null);
@@ -151,7 +464,7 @@ export class JobWorkProductionService {
           tenantId,
           orderNumber,
           jobWorkOrderId: order.id,
-          materialReceiptId: receipt.id,
+          materialReceiptId: receipt?.id ?? null,
           plannedQuantity: quantity,
           plannedStartOn: dto.plannedStartOn ? fromIsoDate(dto.plannedStartOn) : null,
           plannedCompletionOn: dto.plannedCompletionOn
@@ -344,6 +657,19 @@ function assertDatesOrdered(start: string | null, completion: string | null): vo
   }
 }
 
+/** What the principal sent, per material, summed across the consignment's lines. */
+function consignedQuantities(
+  lines: readonly { itemId: string; receivedQuantity: Prisma.Decimal }[],
+): Map<string, Prisma.Decimal> {
+  const byItem = new Map<string, Prisma.Decimal>();
+
+  for (const line of lines) {
+    byItem.set(line.itemId, (byItem.get(line.itemId) ?? ZERO).add(line.receivedQuantity));
+  }
+
+  return byItem;
+}
+
 function toProductionView(row: ProductionWithRelations): JobWorkProductionOrderView {
   const order = row.jobWorkOrder;
 
@@ -372,7 +698,11 @@ function toProductionView(row: ProductionWithRelations): JobWorkProductionOrderV
 
     notes: row.notes,
 
-    materialReceipt: toReceiptView(row.materialReceipt),
+    materialReceipt: row.materialReceipt ? toReceiptView(row.materialReceipt) : null,
+    materialSource:
+      row.jobWorkOrder.billingModel === 'PURE_CONVERSION'
+        ? 'PRINCIPAL_CONSIGNMENT'
+        : 'OWN_INVENTORY',
 
     batchNumber: row.batches[0]?.batchNumber ?? null,
     releaseStatus: (row.batches[0]?.releaseStatus as BatchReleaseStatus | undefined) ?? null,

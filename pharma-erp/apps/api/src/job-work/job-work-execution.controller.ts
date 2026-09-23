@@ -15,10 +15,12 @@ import {
 import type {
   JobWorkBatchView,
   JobWorkDispatchableBatch,
+  JobWorkEligibleReceipt,
   JobWorkInvoiceView,
   JobWorkIssuableMaterial,
   JobWorkIssuePlan,
   JobWorkMaterialIssueView,
+  JobWorkMaterialSufficiency,
   JobWorkMaterialReadiness,
   JobWorkMaterialReceiptView,
   JobWorkOrderMaterial,
@@ -259,6 +261,36 @@ export class JobWorkExecutionController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<JobWorkProductionOrderView> {
     return this.production.findOne(id);
+  }
+
+  /**
+   * Has the principal sent enough to make the batch?
+   *
+   * The same answer `create` refuses on, so the form can show a shortage
+   * before somebody presses the button rather than after.
+   */
+  @Get('orders/:id/material-sufficiency')
+  @SkipAudit('Computes nothing persistent.')
+  async materialSufficiency(
+    @Param('id', ParseUUIDPipe) id: string,
+    // OPTIONAL: an own-procurement order has no consignment to measure, and
+    // the service refuses one that names it anyway.
+    @Query('materialReceiptId', new ParseUUIDPipe({ optional: true }))
+    materialReceiptId?: string,
+  ): Promise<JobWorkMaterialSufficiency> {
+    return this.production.materialSufficiency(id, materialReceiptId);
+  }
+
+  /**
+   * Every approved consignment, keyed by job-work order.
+   *
+   * Declared before 'orders/:id/...' so Nest does not read the literal segment
+   * as an identifier.
+   */
+  @Get('eligible-receipts')
+  @SkipAudit('Read-only lookup for the production-order form.')
+  async eligibleReceiptsByOrder(): Promise<Record<string, JobWorkEligibleReceipt[]>> {
+    return this.production.eligibleReceiptsByOrder();
   }
 
   /** The approved consignments an order could be manufactured from. */

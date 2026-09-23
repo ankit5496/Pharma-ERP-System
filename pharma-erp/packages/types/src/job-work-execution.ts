@@ -618,7 +618,16 @@ export interface JobWorkProductionOrderView {
    * production order ask what material is behind it, and answering from a
    * second copy is how two records of one delivery come to disagree.
    */
-  materialReceipt: JobWorkMaterialReceiptView;
+  /**
+   * The consignment behind the order, under pure conversion.
+   *
+   * NULL UNDER OWN PROCUREMENT, where the material was bought through
+   * Procure-to-Pay and there is no consignment from the principal.
+   */
+  materialReceipt: JobWorkMaterialReceiptView | null;
+
+  /** Which pool this order's material is drawn from. Follows the model. */
+  materialSource: JobWorkMaterialSource;
 
   /**
    * The batch made against this order, once there is one.
@@ -646,7 +655,13 @@ export interface JobWorkProductionOrderView {
  * of what earlier issues took, so a drum half-consumed offers its remainder.
  */
 export interface JobWorkIssuableMaterial {
-  receiptLineId: string;
+  /**
+   * The inward line this drum arrived on, under pure conversion.
+   *
+   * NULL UNDER OWN PROCUREMENT, where the lot came from a purchase rather than
+   * from the principal and has a goods receipt behind it instead.
+   */
+  receiptLineId: string | null;
   lotId: string;
   lotNumber: string;
 
@@ -665,6 +680,116 @@ export interface JobWorkIssuableMaterial {
 
   /** QUARANTINE until Quality check clears it; only USABLE may be issued. */
   lotStatus: string;
+}
+
+/**
+ * A consignment as the production-order lookup needs it.
+ *
+ * THREE FIELDS, NOT THE WHOLE RECEIPT. The lookup shows a number and a count of
+ * each kind; sending every line with its item and its lot made that one call
+ * 443 KB and eight seconds, to render one dropdown. What a batch will actually
+ * consume is answered by the material check, which reads the lines server-side.
+ */
+export interface JobWorkEligibleReceipt {
+  id: string;
+  receiptNumber: string;
+  rawMaterialCount: number;
+  packingMaterialCount: number;
+  deliveryChallanNumbers: string[];
+}
+
+/**
+ * One material the formulation calls for, against what the principal sent.
+ *
+ * REQUIRED COMES FROM THE MASTERS — the active formulation for raw materials,
+ * the active pack specification for packing — scaled to the quantity the
+ * job-work order asked for. RECEIVED is the consignment's own lines. Neither is
+ * stored anywhere; a stored copy is a third figure that can disagree.
+ */
+export interface JobWorkMaterialSufficiencyLine {
+  item: ItemSummary;
+  kind: JobWorkMaterialKind;
+
+  /** The formulation or pack specification, scaled to the order's quantity. */
+  requiredQuantity: string;
+
+  /**
+   * What is on hand from whichever source this order draws on.
+   *
+   * ONE FIELD FOR BOTH MODELS, named for what it means rather than for where it
+   * came from: under pure conversion it is what the principal sent on the
+   * consignment, under own procurement it is usable company stock less what
+   * other open orders have already claimed. `materialSource` on the parent says
+   * which, and is what the screen heads the column with.
+   */
+  suppliedQuantity: string;
+
+  /** `required - supplied`, floored at zero. "0" when covered. */
+  shortQuantity: string;
+
+  sufficient: boolean;
+}
+
+/**
+ * Where a job-work batch's material comes from.
+ *
+ * Follows the billing model and nothing else: pure conversion consumes what the
+ * principal sent, own procurement consumes stock we bought ourselves through
+ * Procure-to-Pay. It decides which validation the production-order form runs
+ * and which steps of the workflow apply at all.
+ */
+export const JOB_WORK_MATERIAL_SOURCES = ['PRINCIPAL_CONSIGNMENT', 'OWN_INVENTORY'] as const;
+export type JobWorkMaterialSource = (typeof JOB_WORK_MATERIAL_SOURCES)[number];
+
+export const JOB_WORK_MATERIAL_SOURCE_LABELS: Record<JobWorkMaterialSource, string> = {
+  PRINCIPAL_CONSIGNMENT: 'Received from the principal',
+  OWN_INVENTORY: 'Our own inventory',
+};
+
+/**
+ * Whether the principal has sent enough to make the batch.
+ *
+ * THE GATE ON RAISING A PRODUCTION ORDER. Raw and packing are reported
+ * separately because they come from different masters and are chased from
+ * different people — a batch short of cartons is a different phone call from
+ * one short of API.
+ *
+ * ADVISORY ON THE SCREEN, ENFORCED IN THE SERVICE: the create endpoint
+ * re-computes all of this and refuses on its own account, so a request made by
+ * hand meets the same rule as the form.
+ */
+export interface JobWorkMaterialSufficiency {
+  jobWorkOrderId: string;
+  jobWorkOrderNumber: string;
+
+  /** The order's own model. Never chosen here — it comes off the agreement. */
+  billingModel: BillingModel;
+
+  /** Which pool `suppliedQuantity` was measured against. Follows the model. */
+  materialSource: JobWorkMaterialSource;
+
+  /** Null under own procurement: there is no consignment to point at. */
+  materialReceiptId: string | null;
+  receiptNumber: string | null;
+
+  product: ItemSummary;
+  /** What the job-work order asked for. The production order inherits it. */
+  plannedQuantity: string;
+
+  raw: JobWorkMaterialSufficiencyLine[];
+  packing: JobWorkMaterialSufficiencyLine[];
+
+  /** True only when every required material is covered. */
+  sufficient: boolean;
+
+  /**
+   * Why it cannot be judged at all — no active formulation, say. Null when the
+   * only thing wrong is a shortage, which the lines already explain.
+   */
+  blockedReason: string | null;
+
+  /** One sentence per short material, ready to show or to refuse with. */
+  shortages: string[];
 }
 
 /**
@@ -690,7 +815,8 @@ export interface JobWorkIssuePlanLine {
   allocations: {
     lotId: string;
     lotNumber: string;
-    receiptLineId: string;
+    /** Null under own procurement — the lot came from a purchase. */
+    receiptLineId: string | null;
 
     /** The principal's own marking on the drum, and the challan it came on. */
     batchNumber: string;

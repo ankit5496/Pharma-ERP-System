@@ -18,6 +18,17 @@
 
 generator client {
   provider = "prisma-client-js"
+
+  // OPT-IN ONLY. With this on, a query may ask for its relations as SQL joins
+  // instead of one round trip per relation — but the DEFAULT is unchanged, so
+  // no existing query generates differently. Only the call sites that pass
+  // `relationLoadStrategy: "join"` behave differently, and those are confined
+  // to the Job Work registers.
+  //
+  // Why it was needed: this database is on another continent. A findMany with
+  // six levels of include cost twenty round trips at ~280ms each, and the
+  // job-work screens were timing out at thirty seconds because of it.
+  previewFeatures = ["relationJoins"]
   // Default output (node_modules/.prisma/client, surfaced as '@prisma/client').
   // A custom output directory would force this package's compiled .d.ts to
   // reference a relative path that does not exist inside dist/, so consumers
@@ -1956,7 +1967,19 @@ model JobWorkProductionOrder {
 
   /// The approved consignment whose material this will consume. Carries the
   /// quality decision too: a receipt is APPROVED or the order cannot exist.
-  materialReceiptId String @map("material_receipt_id") @db.Uuid
+  ///
+  /// PURE CONVERSION ONLY, and therefore nullable. Under own procurement we
+  /// bought the material ourselves through Procure-to-Pay, so there is no
+  /// consignment from the principal and no incoming quality check to point at —
+  /// the batch draws on company-owned stock like any own-brand batch does.
+  ///
+  /// NOT A CHECK CONSTRAINT: the rule is "set if and only if the JOB-WORK
+  /// ORDER is pure conversion", and the billing model lives on that order
+  /// rather than on this row. Copying it here to make the constraint
+  /// expressible would put a third copy of a value the agreement already owns,
+  /// so the rule is enforced in JobWorkProductionService.create instead — which
+  /// is also where the receipt's APPROVED status is checked.
+  materialReceiptId String? @map("material_receipt_id") @db.Uuid
 
   status JobWorkProductionOrderStatus @default(DRAFT)
 
@@ -1975,7 +1998,7 @@ model JobWorkProductionOrder {
 
   tenant          Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   jobWorkOrder    JobWorkOrder           @relation(fields: [jobWorkOrderId], references: [id], onDelete: Restrict)
-  materialReceipt JobWorkMaterialReceipt @relation(fields: [materialReceiptId], references: [id], onDelete: Restrict)
+  materialReceipt JobWorkMaterialReceipt? @relation(fields: [materialReceiptId], references: [id], onDelete: Restrict)
 
   materialIssues JobWorkMaterialIssue[]
   batches        JobWorkBatch[]
@@ -2105,6 +2128,9 @@ model JobWorkBatch {
   tenant           Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   productionOrder  JobWorkProductionOrder @relation(fields: [jobWorkProductionOrderId], references: [id], onDelete: Restrict)
   recordedBy       User?                  @relation("JobWorkBatchRecordedBy", fields: [recordedById], references: [id], onDelete: Restrict)
+
+  /// What has been sent back to the principal out of this batch.
+  invoices JobWorkInvoice[]
   releaseDecidedBy User?                  @relation("JobWorkBatchReleaseDecidedBy", fields: [releaseDecidedById], references: [id], onDelete: Restrict)
 
   @@unique([tenantId, batchNumber])
@@ -2198,7 +2224,21 @@ model JobWorkInvoice {
   /// The finished batch being returned. RELEASED at the moment of dispatch —
   /// checked in the service and re-checked inside the transaction, because
   /// US-JW-04's "a batch cannot be dispatched unless Released" is control 6.
-  batchId String @map("batch_id") @db.Uuid
+  ///
+  /// EXACTLY ONE OF THE TWO IS SET, and the CHECK constraint
+  /// `job_work_invoices_has_one_batch` makes any other combination unstorable —
+  /// the same shape `stock_lots_has_one_source` already uses for a lot that can
+  /// come from either a purchase or a principal.
+  ///
+  /// A batch made under the internal Production & Quality Gate workflow is a
+  /// `Batch`; one made under Job Work's own Production to batch release is a
+  /// `JobWorkBatch`. Both are returned to a principal and both have to be
+  /// invoiceable — one column cannot point at two tables, and a second invoice
+  /// table would split the billing register in half.
+  batchId String? @map("batch_id") @db.Uuid
+
+  /// The job-work batch being returned. See `batchId`.
+  jobWorkBatchId String? @map("job_work_batch_id") @db.Uuid
 
   /// AUTO-DERIVED from the order's billing model (control 7). The DTO has no
   /// field for it; the `job_work_invoices_basis_matches_model` CHECK makes the
@@ -2232,12 +2272,14 @@ model JobWorkInvoice {
 
   tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   jobWorkOrder JobWorkOrder @relation(fields: [jobWorkOrderId], references: [id], onDelete: Restrict)
-  batch        Batch        @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  batch        Batch?        @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  jobWorkBatch JobWorkBatch? @relation(fields: [jobWorkBatchId], references: [id], onDelete: Restrict)
   createdBy    User?        @relation("JobWorkInvoiceCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
 
   @@unique([tenantId, invoiceNumber])
   @@index([tenantId, jobWorkOrderId, deletedAt])
   @@index([tenantId, batchId])
+  @@index([tenantId, jobWorkBatchId])
   @@map("job_work_invoices")
 }
 

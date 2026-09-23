@@ -1697,15 +1697,25 @@ export function JobWorkProductionOrderDialog({
             hint={`Sold as ${order.principalBrandName}`}
           />
 
-          <Derived label="Material receipt" value={order.materialReceipt.receiptNumber} />
+          {/* UNDER OWN PROCUREMENT there is neither: we bought the material
+              through Procure-to-Pay, where it passed incoming QC on its own
+              goods receipt. Showing an empty "Quality check" here would imply a
+              step was skipped rather than that it does not apply. */}
+          <Derived
+            label="Material source"
+            value={order.materialReceipt?.receiptNumber ?? 'Our own inventory'}
+            hint={order.materialReceipt ? undefined : 'Bought through Procure-to-Pay.'}
+          />
           <Derived
             label="Quality check"
             value={
-              order.materialReceipt.decidedAt
-                ? `Approved ${order.materialReceipt.decidedAt.slice(0, 10)}`
-                : 'Approved'
+              order.materialReceipt === null
+                ? 'On the purchase'
+                : order.materialReceipt.decidedAt
+                  ? `Approved ${order.materialReceipt.decidedAt.slice(0, 10)}`
+                  : 'Approved'
             }
-            hint={order.materialReceipt.decidedBy ?? undefined}
+            hint={order.materialReceipt?.decidedBy ?? undefined}
           />
           <Derived
             label="Raised"
@@ -1805,15 +1815,21 @@ export function JobWorkProductionOrderDialog({
             )}
           </div>
 
-          <div className="sm:col-span-2 lg:col-span-3">
-            <fieldset className="rounded-md border border-slate-200 p-4">
-              <legend className="px-1 text-sm font-medium text-slate-700">
-                Material on {order.materialReceipt.receiptNumber}
-              </legend>
+          {/* ONLY WHERE THERE IS A CONSIGNMENT. An own-procurement order's
+              material is company stock and is not listed here — the drums it
+              will actually draw on are chosen at Material issue, from the
+              shelf, and naming them before that would be a guess. */}
+          {order.materialReceipt && (
+            <div className="sm:col-span-2 lg:col-span-3">
+              <fieldset className="rounded-md border border-slate-200 p-4">
+                <legend className="px-1 text-sm font-medium text-slate-700">
+                  Material on {order.materialReceipt.receiptNumber}
+                </legend>
 
-              <ReceiptMaterialTables receipt={order.materialReceipt} />
-            </fieldset>
-          </div>
+                <ReceiptMaterialTables receipt={order.materialReceipt} />
+              </fieldset>
+            </div>
+          )}
 
           <FormFooter onCancel={close} className="sm:col-span-2 lg:col-span-3">
             {editing && <SubmitButton pendingLabel="Saving…">Save changes</SubmitButton>}

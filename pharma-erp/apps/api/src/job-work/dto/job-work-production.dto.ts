@@ -26,17 +26,22 @@ export class CreateJobWorkProductionOrderDto {
   /**
    * The approved consignment whose material this will consume.
    *
-   * Required, not inferred. An order may hold several approved receipts, and
-   * guessing which one a batch is being made from would put the wrong drums on
-   * the paperwork.
+   * REQUIRED UNDER PURE CONVERSION, and refused under own procurement — the
+   * service decides which, because the billing model lives on the job-work
+   * order rather than on this request. An order may hold several approved
+   * receipts, so it is named rather than inferred: guessing which one a batch
+   * is being made from would put the wrong drums on the paperwork.
+   *
+   * Optional here only because one of the two models has no consignment at all.
    */
-  @IsUUID()
-  materialReceiptId!: string;
-
-  /** Defaults to what the job-work order asked for when omitted. */
   @IsOptional()
-  @Matches(QUANTITY, { message: `plannedQuantity ${QUANTITY_MESSAGE}` })
-  plannedQuantity?: string;
+  @IsUUID()
+  materialReceiptId?: string;
+
+  // NO plannedQuantity. It is the job-work order's own quantity — the figure
+  // the principal agreed — and the service reads it from there. Accepting one
+  // here would be a way to commit to a different batch size from the order,
+  // and `forbidNonWhitelisted` turns an attempt to send one into a 400.
 
   @IsOptional()
   @Matches(CALENDAR_DAY, { message: `plannedStartOn ${CALENDAR_DAY_MESSAGE}` })
