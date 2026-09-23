@@ -180,7 +180,7 @@ export function BomMasterForm({
             // different formulation — and UpdateBomDto does not accept it.
             <TextField
               name="productDisplay"
-              label="Finished product"
+              label="Finished Product"
               readOnly
               defaultValue={`${bom.product.code} — ${bom.product.name}`}
               wide
@@ -190,7 +190,7 @@ export function BomMasterForm({
             <SelectField
               name="productId"
               error={errorFor('productId')}
-              label="Finished product"
+              label="Finished Product"
               required
               options={toOptions(products)}
               searchable
@@ -203,7 +203,7 @@ export function BomMasterForm({
           <TextField
             name="outputQuantity"
             error={errorFor('outputQuantity')}
-            label="Reference batch size"
+            label="Reference Batch Size"
             required
             type="number"
             min="0"
@@ -221,14 +221,14 @@ export function BomMasterForm({
             // the whole set of versions, not about the one being corrected.
             <CheckboxField
               name="activate"
-              label="Make this the active version"
+              label="Make This the Active Version"
               defaultChecked={state.values ? state.values.activate !== undefined : true}
               hint="A work order can only be raised against an active formulation, and a product has exactly one. Ticking this supersedes the previous version."
             />
           )}
           <TextAreaField
             name="instructions"
-            label="Manufacturing instructions"
+            label="Manufacturing Instructions"
             rows={4}
             wide
             defaultValue={typed('instructions')}
@@ -238,7 +238,7 @@ export function BomMasterForm({
       </FormSection>
 
       <FormSection
-        title="Raw materials"
+        title="Raw Materials"
         description="Actives and excipients consumed per reference batch."
       >
         <LineList>
@@ -281,7 +281,7 @@ export function BomMasterForm({
       </FormSection>
 
       <FormSection
-        title="Packing materials"
+        title="Packing Materials"
         description="Consumed per reference batch. What goes on the line at packing is held separately, in the Packaging Requirement master."
       >
         {packOptions.length === 0 ? (

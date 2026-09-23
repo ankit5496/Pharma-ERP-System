@@ -94,7 +94,7 @@ export async function ProductionOrdersPanel() {
 
   if (!ordersResult.ok) {
     return (
-      <Panel title="Production orders">
+      <Panel title="Production Orders">
         <LoadError error={ordersResult.error} />
       </Panel>
     );
@@ -132,7 +132,7 @@ export async function MaterialIssuePanel() {
 
   if (!issuesResult.ok) {
     return (
-      <Panel title="Material issue">
+      <Panel title="Material Issue">
         <LoadError error={issuesResult.error} />
       </Panel>
     );
@@ -169,7 +169,7 @@ export async function MaterialIssuePanel() {
       tabs={[
         {
           key: 'issues',
-          label: 'Material issue',
+          label: 'Material Issue',
           panel: (
             <ProductionRegister
               newLabel={awaiting.length > 0 ? 'Dispense material' : undefined}
@@ -193,7 +193,7 @@ export async function MaterialIssuePanel() {
         },
         {
           key: 'stock',
-          label: 'Stock on hand',
+          label: 'Stock on Hand',
           panel: <StockTable lots={lots} />,
         },
       ]}
@@ -214,7 +214,7 @@ export async function BatchRecordPanel() {
 
   if (!batchesResult.ok) {
     return (
-      <Panel title="Batch record">
+      <Panel title="Batch Record">
         <LoadError error={batchesResult.error} />
       </Panel>
     );
@@ -294,6 +294,7 @@ export async function BatchRecordPanel() {
         packedQuantity={batch.packedQuantity}
         rejectedQuantity={batch.rejectedQuantity}
         packVariant={batch.packVariant}
+        packagingConsumed={batch.packagingConsumed}
       />
     );
   }
@@ -343,7 +344,7 @@ export async function BatchReleasePanel() {
 
   if (!batchesResult.ok) {
     return (
-      <Panel title="Batch release">
+      <Panel title="Batch Release">
         <LoadError error={batchesResult.error} />
       </Panel>
     );
@@ -420,23 +421,23 @@ export async function BatchReleasePanel() {
         tabs={[
           {
             key: 'gate',
-            label: 'Batch release',
+            label: 'Batch Release',
             panel: <PendingReleaseList batches={pending} formFor={releaseForms} />,
           },
           {
             key: 'stock',
-            label: 'Sellable stock',
+            label: 'Sellable Stock',
             panel: stockResult.ok ? (
               <SellableStockTable lots={stockResult.data} />
             ) : (
-              <Panel title="Sellable stock">
+              <Panel title="Sellable Stock">
                 <LoadError error={stockResult.error} />
               </Panel>
             ),
           },
           {
             key: 'decided',
-            label: 'Decided',
+            label: 'Released',
             panel: <DecidedTable batches={decided} />,
           },
         ]}

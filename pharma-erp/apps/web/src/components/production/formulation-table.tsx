@@ -87,11 +87,11 @@ export function FormulationTable({ boms }: { boms: BomView[] }) {
         <div className="table-scroll overflow-x-auto">
           <table className="w-full min-w-[56rem] text-left text-sm">
             <thead>
-              <tr className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
+              <tr className="bg-slate-50 text-[11px] tracking-wide text-slate-500">
                 <Th className="w-8" />
                 <Th>Formulation</Th>
                 <Th align="right">Version</Th>
-                <Th align="right">Batch size</Th>
+                <Th align="right">Batch Size</Th>
                 <Th align="right">Materials</Th>
                 <Th>Status</Th>
                 <Th align="right">Action</Th>
@@ -293,7 +293,7 @@ function MaterialTable({ bom }: { bom: BomView }) {
     <div className="ml-6 overflow-hidden rounded-md border border-slate-200 bg-white">
       <table className="w-full text-left text-xs">
         <thead>
-          <tr className="border-b border-slate-200 bg-white text-[10px] uppercase tracking-wide text-slate-500">
+          <tr className="border-b border-slate-200 bg-white text-[10px] tracking-wide text-slate-500">
             <th scope="col" className="px-4 py-2 font-medium">
               Material
             </th>
@@ -332,8 +332,8 @@ function MaterialTable({ bom }: { bom: BomView }) {
 
       {bom.instructions && (
         <div className="border-t border-slate-200 px-4 py-3">
-          <h5 className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
-            Manufacturing instructions
+          <h5 className="text-[10px] font-medium tracking-wide text-slate-500">
+            Manufacturing Instructions
           </h5>
           <pre className="mt-1.5 whitespace-pre-wrap font-sans text-xs text-slate-700">
             {bom.instructions}

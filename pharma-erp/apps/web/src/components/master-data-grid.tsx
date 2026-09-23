@@ -164,9 +164,18 @@ function Toolbar({
  * genuinely good for: saying what the register holds. It also made the live
  * registers look broken next to the planned ones, which show their columns.
  */
-/** "items" -> "Items", for the heading when a register names no title of its own. */
+/**
+ * "items" -> "Items", for the heading when a register names no title of its own.
+ *
+ * EVERY word, not just the first: this produces a heading, and it sits beside
+ * column names that are title-cased. "Packaging requirements" under "Pack
+ * Variant" and "Units / Pack" was the odd one out.
+ */
 function capitalise(text: string): string {
-  return text.charAt(0).toUpperCase() + text.slice(1);
+  return text
+    .split(' ')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
 }
 
 function HeadRow({ labels }: { labels: readonly string[] }) {
@@ -177,7 +186,7 @@ function HeadRow({ labels }: { labels: readonly string[] }) {
           <th
             key={label}
             scope="col"
-            className="whitespace-nowrap border-b border-slate-200 px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500"
+            className="whitespace-nowrap border-b border-slate-200 px-4 py-2.5 text-xs font-semibold tracking-wide text-slate-500"
           >
             {label}
           </th>
@@ -425,7 +434,7 @@ export function Grid<Row>({
                   // A pinned header cell sits at the crossing of two sticky
                   // axes, so it needs to outrank both the row it is in and
                   // the pinned body cells scrolling beneath it.
-                  className={`whitespace-nowrap px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-slate-500 ${
+                  className={`whitespace-nowrap px-4 py-2.5 text-xs font-semibold tracking-wide text-slate-500 ${
                     column.align === 'right' ? 'text-right' : ''
                   } ${column.pinned ? 'sticky right-0 z-20 bg-white' : ''}`}
                 >
@@ -633,7 +642,7 @@ const ITEM_COLUMNS: readonly GridColumn<ItemSummary>[] = [
   },
   {
     key: 'generic',
-    label: 'Generic / composition',
+    label: 'Generic / Composition',
     render: (item) => (item.genericName ? <Truncated text={item.genericName} /> : <Blank />),
   },
   {
@@ -719,7 +728,7 @@ const ITEM_COLUMNS: readonly GridColumn<ItemSummary>[] = [
   },
   {
     key: 'reorderQuantity',
-    label: 'Reorder qty',
+    label: 'Reorder Qty',
     align: 'right',
     render: (item) =>
       item.reorderQuantity === null ? (
@@ -958,7 +967,7 @@ function RowActions({
  */
 const CREATED_FILTER: FilterField = {
   name: 'created',
-  label: 'Created date',
+  label: 'Created Date',
   kind: 'dateRange',
 };
 
@@ -1121,7 +1130,7 @@ const BOM_COLUMNS: readonly GridColumn<BomView>[] = [
   { key: 'version', label: 'Version', render: (bom) => `v${bom.version}` },
   {
     key: 'output',
-    label: 'Batch size',
+    label: 'Batch Size',
     align: 'right',
     render: (bom) => (
       <>
@@ -1284,13 +1293,13 @@ const PARTY_COLUMNS: readonly GridColumn<PartySummary>[] = [
   },
   {
     key: 'licence',
-    label: 'Drug licence',
+    label: 'Drug Licence',
     render: (party) =>
       party.drugLicenceNumber ? <Code>{party.drugLicenceNumber}</Code> : <Blank />,
   },
   {
     key: 'licenceValidTo',
-    label: 'Valid until',
+    label: 'Valid Until',
     align: 'right',
     // An expired licence is the one thing on this row that stops a dispatch,
     // so it is the one thing that gets colour.
@@ -1307,13 +1316,13 @@ const PARTY_COLUMNS: readonly GridColumn<PartySummary>[] = [
   },
   {
     key: 'creditLimit',
-    label: 'Credit limit',
+    label: 'Credit Limit',
     align: 'right',
     render: (party) => party.creditLimit ?? <Blank />,
   },
   {
     key: 'creditPeriod',
-    label: 'Credit period',
+    label: 'Credit Period',
     align: 'right',
     render: (party) =>
       party.creditPeriodDays === null ? (
@@ -1327,7 +1336,7 @@ const PARTY_COLUMNS: readonly GridColumn<PartySummary>[] = [
   },
   {
     key: 'paymentTerms',
-    label: 'Payment terms',
+    label: 'Payment Terms',
     align: 'right',
     render: (party) => (
       <>
@@ -1585,7 +1594,7 @@ const LICENCE_COLUMNS: readonly GridColumn<LicenceSummary>[] = [
   { key: 'number', label: 'Number', render: (licence) => <Code>{licence.licenceNumber}</Code> },
   {
     key: 'authority',
-    label: 'Issuing authority',
+    label: 'Issuing Authority',
     render: (licence) => <Truncated text={licence.issuingAuthority} />,
   },
   {
@@ -1606,7 +1615,7 @@ const LICENCE_COLUMNS: readonly GridColumn<LicenceSummary>[] = [
   },
   {
     key: 'daysLeft',
-    label: 'Days left',
+    label: 'Days Left',
     align: 'right',
     // The only column that changes meaning by sign, so it is the only one that
     // gets emphasis rather than colour on every row.
@@ -1702,7 +1711,7 @@ function AlertLeadDays({
           }
           if (event.key === 'Escape') setDays(String(value));
         }}
-        aria-label="Days before expiry to warn"
+        aria-label="Days Before Expiry to Warn"
         className="w-16 rounded-md border border-slate-300 px-2 py-1 text-right text-xs tabular-nums text-slate-900 disabled:bg-slate-100"
       />
       days before expiry
@@ -1714,7 +1723,7 @@ function AlertLeadDays({
 const LICENCE_FILTERS: readonly FilterField[] = [
   {
     name: 'licenceType',
-    label: 'Licence type',
+    label: 'Licence Type',
     options: optionsFrom(LICENCE_TYPE_LABELS),
     allLabel: 'Any type',
   },
@@ -1886,7 +1895,7 @@ const AGREEMENT_COLUMNS: readonly GridColumn<JobWorkAgreementSummary>[] = [
   },
   {
     key: 'billingModel',
-    label: 'Billing model',
+    label: 'Billing Model',
     // The mandatory field of US-MD-05, and the one that decides what gets
     // invoiced — so it reads as a state, not as text in a row of text.
     render: (agreement) => (
@@ -1897,7 +1906,7 @@ const AGREEMENT_COLUMNS: readonly GridColumn<JobWorkAgreementSummary>[] = [
   },
   {
     key: 'rate',
-    label: 'Conversion charge',
+    label: 'Conversion Charge',
     align: 'right',
     render: (agreement) =>
       agreement.conversionChargeRate === null ? (
@@ -1915,7 +1924,7 @@ const AGREEMENT_COLUMNS: readonly GridColumn<JobWorkAgreementSummary>[] = [
   },
   {
     key: 'products',
-    label: 'Products — our formulation → their brand',
+    label: 'Products — Our Formulation → Their Brand',
     render: (agreement) => <MappingCell mappings={agreement.mappings} />,
   },
   {
@@ -1953,7 +1962,7 @@ const AGREEMENT_COLUMNS: readonly GridColumn<JobWorkAgreementSummary>[] = [
 const AGREEMENT_FILTERS: readonly FilterField[] = [
   {
     name: 'billingModel',
-    label: 'Billing model',
+    label: 'Billing Model',
     options: optionsFrom(BILLING_MODEL_LABELS),
     allLabel: 'Any model',
   },
@@ -2116,12 +2125,12 @@ const PACKAGING_COLUMNS: readonly GridColumn<PackagingRequirementView>[] = [
   },
   {
     key: 'variant',
-    label: 'Pack variant',
+    label: 'Pack Variant',
     render: (row) => <span className="font-medium text-slate-900">{row.packVariant}</span>,
   },
   {
     key: 'unitsPerPack',
-    label: 'Units / pack',
+    label: 'Units / Pack',
     align: 'right',
     // The number that makes every per-pack quantity scalable, so it earns a
     // column rather than hiding in the drawer.

@@ -231,7 +231,7 @@ export function PrincipalAgreementMasterForm({
               and copyable. The server ignores what is sent regardless. */}
           <TextField
             name="agreementReference"
-            label="Agreement reference"
+            label="Agreement Reference"
             readOnly
             defaultValue={agreement?.agreementReference ?? nextReference ?? ''}
             placeholder={agreement ? undefined : 'Assigned on save'}
@@ -244,7 +244,7 @@ export function PrincipalAgreementMasterForm({
           <SelectField
             name="billingModel"
             error={errorFor('billingModel')}
-            label="Billing model"
+            label="Billing Model"
             required
             options={BILLING_MODEL_OPTIONS}
             value={billingModel}
@@ -255,7 +255,7 @@ export function PrincipalAgreementMasterForm({
           <TextField
             name="conversionChargeRate"
             error={errorFor('conversionChargeRate')}
-            label="Conversion charge rate (₹)"
+            label="Conversion Charge Rate (₹)"
             type="number"
             min="0"
             step="0.01"
@@ -265,7 +265,7 @@ export function PrincipalAgreementMasterForm({
           <SelectField
             name="conversionRateBasis"
             error={errorFor('conversionRateBasis')}
-            label="Rate charged"
+            label="Rate Charged"
             options={RATE_BASIS_OPTIONS}
             value={rateBasis}
             onChange={setRateBasis}
@@ -274,14 +274,14 @@ export function PrincipalAgreementMasterForm({
           <TextField
             name="validFrom"
             error={errorFor('validFrom')}
-            label="Valid from"
+            label="Valid From"
             type="date"
             defaultValue={typed('validFrom', agreement?.validFrom)}
           />
           <TextField
             name="validTo"
             error={errorFor('validTo')}
-            label="Valid until"
+            label="Valid Until"
             type="date"
             defaultValue={typed('validTo', agreement?.validTo)}
             hint="Leave blank for an open-ended arrangement."
@@ -290,7 +290,7 @@ export function PrincipalAgreementMasterForm({
       </FormSection>
 
       <FormSection
-        title="Product-to-brand mapping"
+        title="Product-to-Brand Mapping"
         description="Links one of our formulations to the principal's brand name and pack design. At least one line is required — that is what the agreement is about."
       >
         <LineList>
@@ -306,7 +306,7 @@ export function PrincipalAgreementMasterForm({
               >
                 <SelectField
                   name={`mapping.${id}.bomId`}
-                  label="Our formulation"
+                  label="Our Formulation"
                   compact
                   required
                   options={bomOptions}
@@ -316,7 +316,7 @@ export function PrincipalAgreementMasterForm({
                 />
                 <TextField
                   name={`mapping.${id}.principalBrandName`}
-                  label="Principal's brand name"
+                  label="Principal's Brand Name"
                   compact
                   required
                   maxLength={255}
@@ -328,7 +328,7 @@ export function PrincipalAgreementMasterForm({
                 />
                 <TextField
                   name={`mapping.${id}.packDesignRef`}
-                  label="Pack design reference"
+                  label="Pack Design Reference"
                   compact
                   maxLength={64}
                   placeholder="ART-DOLO-500-10x10"

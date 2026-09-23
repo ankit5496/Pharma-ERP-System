@@ -54,7 +54,7 @@ export function IssueTable({ issues }: { issues: MaterialIssueView[] }) {
   return (
     <>
       <RegisterToolbar
-        title="Material issue"
+        title="Material Issue"
         query={view.query}
         onQuery={view.setQuery}
         placeholder="Search issue, order, material or lot…"
@@ -77,7 +77,7 @@ export function IssueTable({ issues }: { issues: MaterialIssueView[] }) {
         <div className="table-scroll overflow-x-auto">
           <table className="w-full min-w-[52rem] text-left text-sm">
             <thead>
-              <tr className="text-xs uppercase tracking-wide text-slate-500">
+              <tr className="text-xs tracking-wide text-slate-500">
                 <Th>Issue</Th>
                 <Th>Order</Th>
                 <Th>Dispensed</Th>
@@ -176,7 +176,7 @@ export function StockTable({ lots }: { lots: ProductionStockLot[] }) {
           here meant "Stock on hand" printed above "Lots" — the same table named
           twice, in two different words. */}
       <RegisterToolbar
-        title="Stock on hand"
+        title="Stock on Hand"
         query={view.query}
         onQuery={view.setQuery}
         placeholder="Search material or lot…"
@@ -201,7 +201,7 @@ export function StockTable({ lots }: { lots: ProductionStockLot[] }) {
         <div className="table-scroll overflow-x-auto">
           <table className="w-full min-w-[44rem] text-left text-sm">
             <thead>
-              <tr className="text-xs uppercase tracking-wide text-slate-500">
+              <tr className="text-xs tracking-wide text-slate-500">
                 <Th>Material</Th>
                 <Th>Lot</Th>
                 <Th>Owner</Th>

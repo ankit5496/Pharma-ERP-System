@@ -215,9 +215,7 @@ export function TableFrame({
     <div className="overflow-x-auto">
       <table className="w-full text-left text-sm" style={{ minWidth }}>
         <thead>
-          <tr className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
-            {head}
-          </tr>
+          <tr className="border-b border-slate-200 text-xs tracking-wide text-slate-500">{head}</tr>
         </thead>
         <tbody className="divide-y divide-slate-100">{children}</tbody>
       </table>

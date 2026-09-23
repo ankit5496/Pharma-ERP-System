@@ -196,7 +196,7 @@ export function PackagingRequirementMasterForm({
           {requirement ? (
             <TextField
               name="productLabel"
-              label="Finished product"
+              label="Finished Product"
               readOnly
               defaultValue={`${requirement.product.code} — ${requirement.product.name}`}
               hint="Fixed once created. Retire this specification and write one for the other product."
@@ -205,7 +205,7 @@ export function PackagingRequirementMasterForm({
             <SelectField
               name="productId"
               error={errorFor('productId')}
-              label="Finished product"
+              label="Finished Product"
               required
               options={productOptions}
               searchable
@@ -217,7 +217,7 @@ export function PackagingRequirementMasterForm({
           <TextField
             name="packVariant"
             error={errorFor('packVariant')}
-            label="Pack variant"
+            label="Pack Variant"
             required
             maxLength={128}
             placeholder="10 x 10 blister carton"
@@ -227,7 +227,7 @@ export function PackagingRequirementMasterForm({
           <TextField
             name="unitsPerPack"
             error={errorFor('unitsPerPack')}
-            label="Units per pack"
+            label="Units Per Pack"
             required
             type="number"
             min="0.001"
@@ -245,7 +245,7 @@ export function PackagingRequirementMasterForm({
       </FormSection>
 
       <FormSection
-        title="Packaging components"
+        title="Packaging Components"
         description="Caps, labels, cartons, inserts, shippers — everything the pack consumes, and whether the line may run without it."
       >
         <LineList>
@@ -317,7 +317,7 @@ export function PackagingRequirementMasterForm({
                 />
                 <SelectField
                   name={`component.${id}.requirement`}
-                  label="If short at packing"
+                  label="If Short at Packing"
                   compact
                   required
                   options={REQUIREMENT_OPTIONS}

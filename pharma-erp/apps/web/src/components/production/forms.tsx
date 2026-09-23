@@ -6,9 +6,10 @@ import type {
   MaterialIssuePlan,
   ProductionOrderSummary,
   ProductionStockLot,
+  StockOwnership,
   WorkOrderFeasibility,
 } from '@pharma-erp/types';
-import { formatDateDMY, parseDateDMY } from '@pharma-erp/types';
+import { formatDateDMY } from '@pharma-erp/types';
 
 import { useActionToast } from '@/components/toast';
 import { SearchableSelect } from '@/components/searchable-select';
@@ -93,11 +94,27 @@ function Result({ state, pending }: { state: ActionResult; pending: boolean }) {
   const [saved, setSaved] = useState<string | null>(null);
   const message = state.ok ? state.message : undefined;
 
+  /**
+   * Each result is announced ONCE.
+   *
+   * `useActionState` keeps the last result for as long as its form lives, so
+   * `message` does not go back to undefined after a save — it sits there
+   * holding "Packing recorded for B-2609-018." indefinitely. Without this, any
+   * remount of this component re-runs the effect and raises the dialog for a
+   * save that happened minutes ago.
+   *
+   * Compared by IDENTITY, not by text: two saves in a row produce the same
+   * sentence, and comparing the strings would swallow the second confirmation.
+   */
+  const announced = useRef<ActionResult | null>(null);
+
   useEffect(() => {
     if (confirmedByRegister || !message) return;
+    if (announced.current === state) return;
 
+    announced.current = state;
     setSaved(message);
-  }, [confirmedByRegister, message]);
+  }, [confirmedByRegister, message, state]);
 
   if (!saved) return null;
 
@@ -107,7 +124,7 @@ function Result({ state, pending }: { state: ActionResult; pending: boolean }) {
 const FIELD =
   'mt-1.5 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900';
 
-const LABEL = 'block text-xs font-medium uppercase tracking-wide text-slate-600';
+const LABEL = 'block text-xs font-medium tracking-wide text-slate-600';
 
 /**
  * An asterisk carries the meaning; the text makes it audible.
@@ -239,8 +256,8 @@ function FeasibilityGrid({
       }`}
     >
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-inherit px-4 py-2.5">
-        <span className="text-xs font-semibold uppercase tracking-wide text-slate-600">
-          Material required · formulation v{data.bomVersion}
+        <span className="text-xs font-semibold tracking-wide text-slate-600">
+          Material Required · Formulation v{data.bomVersion}
         </span>
         <span
           className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide ring-1 ring-inset ${
@@ -256,7 +273,7 @@ function FeasibilityGrid({
       <div className="overflow-x-auto">
         <table className="w-full text-left text-sm">
           <thead>
-            <tr className="text-[11px] uppercase tracking-wide text-slate-500">
+            <tr className="text-[11px] tracking-wide text-slate-500">
               <th scope="col" className="px-4 py-2 font-medium">
                 Material
               </th>
@@ -408,7 +425,7 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
           the number and the date identify the order, then what it is for, then
           the formulation the requirement below is computed against. */}
       <div className="grid items-end gap-4 sm:grid-cols-2">
-        <ReadOnlyField label="Work order no." value={orderNumber ?? undefined} placeholder="…" />
+        <ReadOnlyField label="Work Order No." value={orderNumber ?? undefined} placeholder="…" />
 
         <div>
           <label htmlFor="plannedStartOn" className={LABEL}>
@@ -437,6 +454,9 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
             emptyLabel="--None--"
             value={productId}
             onChange={setProductId}
+            // Matches the Quantity input beside it; see the note on the work
+            // order field in RecordBatchForm.
+            className={FIELD}
           />
           <input type="hidden" name="productId" value={productId} />
         </div>
@@ -464,7 +484,7 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
       </div>
 
       <ReadOnlyField
-        label="BOM reference"
+        label="BOM Reference"
         value={
           feasibility.data
             ? `${feasibility.data.productCode} · formulation v${feasibility.data.bomVersion}`
@@ -742,15 +762,55 @@ export function IssueMaterialForm({
 
   const overriding = Object.keys(rows).length > 0;
 
-  // Why Number() on a decimal string, when this file otherwise never does
-  // arithmetic on one: it decides whether to OFFER a lot, and no value derived
-  // from it is sent anywhere. The quantity dispensed is the string the operator
-  // types, untouched.
-  const usableLotsFor = (itemId: string) =>
-    lots.filter(
+  /**
+   * The ownership bucket this order may draw from.
+   *
+   * MIRRORS `stockBucketFor` ON THE API: a plain work order consumes company
+   * stock, and a job-work order consumes whichever bucket its billing model
+   * pins — PURE_CONVERSION the principal's own material, OWN_PROCUREMENT ours.
+   *
+   * Without it the panel listed every USABLE lot of the material, including
+   * ones the order cannot touch. Picking one put it into the plan table above
+   * as though FEFO had allocated it, and the save was then refused with "Lot …
+   * is principal-owned stock" — a lot this screen had offered and displayed.
+   */
+  const bucket: StockOwnership =
+    order?.jobWork?.billingModel === 'PURE_CONVERSION' ? 'PRINCIPAL_OWNED' : 'COMPANY_OWNED';
+
+  /**
+   * The lots this order could actually be dispensed from.
+   *
+   * Why Number() on a decimal string, when this file otherwise never does
+   * arithmetic on one: it decides whether to OFFER a lot, and no value derived
+   * from it is sent anywhere. The quantity dispensed is the string the operator
+   * types, untouched.
+   *
+   * The ownership test is a CLIENT-SIDE MIRROR, not the enforcement. The API
+   * narrows principal-owned stock further, to receipts against this specific
+   * job-work order, which the lot view does not carry — so this can still
+   * offer a lot the server refuses, with a message that says why. What it no
+   * longer does is offer one that is refused for the ownership reason alone.
+   */
+  const usableLotsFor = (itemId: string, allocated: readonly string[] = []) => {
+    const offered = lots.filter(
       (lot) =>
-        lot.item.id === itemId && lot.status === 'USABLE' && Number(lot.quantityAvailable) > 0,
+        lot.item.id === itemId &&
+        lot.status === 'USABLE' &&
+        lot.ownership === bucket &&
+        Number(lot.quantityAvailable) > 0,
     );
+
+    // ANYTHING THE PLAN ALREADY CHOSE IS OFFERED, whatever the filter makes of
+    // it. The server decided that lot was dispensable, and a dropdown that
+    // cannot show the row's own selected value falls back to `--None--` —
+    // losing the suggestion and inventing a deviation nobody made. The filter
+    // narrows what can be ADDED; it must never drop what is already proposed.
+    const missing = allocated.filter((lotId) => !offered.some((lot) => lot.id === lotId));
+
+    if (missing.length === 0) return offered;
+
+    return [...offered, ...lots.filter((lot) => missing.includes(lot.id))];
+  };
 
   return (
     <form action={action} className="space-y-4 border-t border-slate-200 px-6 py-5">
@@ -763,14 +823,14 @@ export function IssueMaterialForm({
           one order and no way to reach the others. */}
       <div className="grid items-end gap-4 sm:grid-cols-2">
         <ReadOnlyField
-          label="Issue no."
+          label="Issue No."
           value={issueNumber ? <span className="font-mono">{issueNumber}</span> : undefined}
           placeholder="…"
         />
 
         <div>
           <label htmlFor="issue-order" className={LABEL}>
-            Work order
+            Work Order
           </label>
           {/* Already newest-first: the orders endpoint returns them that way,
               which is also the order somebody dispenses against. No sort here
@@ -820,8 +880,14 @@ export function IssueMaterialForm({
       {/* What FEFO proposed, so the action can tell a departure from a
           confirmation without refetching the plan. Read-only information the
           server re-derives and re-checks for itself; this only decides which
-          message the operator sees before the request is made. */}
-      {plan?.lines.map((line) => (
+          message the operator sees before the request is made.
+
+          FROM `serverPlan`, NOT `plan`. `plan` is the overlay that follows what
+          is chosen below, so reading it here posted the operator's own picks as
+          though FEFO had proposed them — every choice then looked like a
+          confirmation, and the reason a departure requires was never asked for
+          on either side. */}
+      {serverPlan?.lines.map((line) => (
         <input
           key={line.item.id}
           type="hidden"
@@ -844,8 +910,27 @@ export function IssueMaterialForm({
             </p>
 
             {plan.lines.map((line) => {
-              const candidates = usableLotsFor(line.item.id);
-              const suggested = new Set(line.allocations.map((allocation) => allocation.lotId));
+              /**
+               * WHAT FEFO PROPOSED, from the server's plan rather than from
+               * `line`.
+               *
+               * `line` belongs to the overlay, which is rebuilt from whatever
+               * is chosen in this panel — so reading its allocations here meant
+               * the suggestion became "whatever you just picked". Every lot
+               * showed `· suggested` the moment it was selected, and
+               * `deviates` below could never be true, so the reason field a
+               * departure requires never appeared.
+               */
+              const proposed =
+                serverPlan?.lines.find((entry) => entry.item.id === line.item.id)?.allocations ??
+                [];
+              const suggested = new Set(proposed.map((allocation) => allocation.lotId));
+
+              const candidates = usableLotsFor(
+                line.item.id,
+                proposed.map((allocation) => allocation.lotId),
+              );
+
               const openRows = rows[line.item.id] ?? [];
 
               // Whether any open row names a lot FEFO did not propose. This is
@@ -859,9 +944,7 @@ export function IssueMaterialForm({
               const deviates = openRows
                 .map((rowId, row) => {
                   const chosen =
-                    picked[`override.${line.item.id}.${rowId}.lotId`] ??
-                    line.allocations[row]?.lotId ??
-                    '';
+                    picked[`override.${line.item.id}.${rowId}.lotId`] ?? proposed[row]?.lotId ?? '';
 
                   return chosen !== '' && !suggested.has(chosen);
                 })
@@ -918,7 +1001,7 @@ export function IssueMaterialForm({
                         // to the suggestion". It used to start blank, so opening
                         // the panel discarded the suggestion and made every issue
                         // a from-scratch decision.
-                        const fallback = line.allocations[row]?.lotId ?? '';
+                        const fallback = proposed[row]?.lotId ?? '';
                         const current = picked[field] ?? fallback;
 
                         // The quantity FEFO proposed FOR THE LOT NOW SHOWING,
@@ -928,8 +1011,8 @@ export function IssueMaterialForm({
                         // than by row, so changing the dropdown to another
                         // proposed lot brings that lot's figure with it.
                         const suggestedQuantity =
-                          line.allocations.find((allocation) => allocation.lotId === current)
-                            ?.quantity ?? '';
+                          proposed.find((allocation) => allocation.lotId === current)?.quantity ??
+                          '';
 
                         return (
                           <div key={rowId} className="flex flex-wrap items-end gap-2">
@@ -946,7 +1029,12 @@ export function IssueMaterialForm({
                                 }
                                 className="block w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
                               >
-                                <option value="">Select a lot…</option>
+                                {/* `--None--`, the same word every other
+                                    unchosen dropdown in the application uses.
+                                    "Select a lot…" was an instruction where the
+                                    rest of the forms state a value, so the one
+                                    empty state looked different here. */}
+                                <option value="">--None--</option>
                                 {candidates.map((lot) => (
                                   <option key={lot.id} value={lot.id}>
                                     {lot.lotNumber} · {lot.quantityAvailable} {line.item.uom} ·{' '}
@@ -1124,7 +1212,7 @@ function IssuePlanTable({ plan }: { plan: MaterialIssuePlan }) {
     <div className="overflow-x-auto rounded-md border border-slate-200">
       <table className="w-full min-w-[48rem] text-left text-sm">
         <thead>
-          <tr className="border-b border-slate-200 bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500">
+          <tr className="border-b border-slate-200 bg-slate-50 text-[11px] tracking-wide text-slate-500">
             <th scope="col" className="px-4 py-2.5 font-medium">
               Material
             </th>
@@ -1278,28 +1366,17 @@ export function RecordBatchForm({ orders }: { orders: ProductionOrderSummary[] }
 
   const [orderId, setOrderId] = useState(orders[0]?.id ?? '');
 
-  /**
-   * The manufacturing date AS TYPED, in DD-MM-YYYY.
-   *
-   * Held as text rather than as an ISO value because this is a plain text box:
-   * a native `<input type="date">` draws its placeholder and its picker in the
-   * BROWSER's locale, which showed "mm/dd/yyyy" here and cannot be changed from
-   * markup or CSS. The date on a batch record is read in the same format it is
-   * printed in, so the control now shows exactly that.
-   *
-   * What the SERVER gets is still ISO, from the hidden input below. Empty means
-   * "today" — the API's own default when the field is not sent — and a
-   * half-typed or impossible date parses to empty, so it means the same thing
-   * rather than something wrong.
-   */
-  const [manufacturedOnText, setManufacturedOnText] = useState('');
-
-  const manufacturedOn = parseDateDMY(manufacturedOnText);
-
-  // Typed something that is not a date yet. Distinct from empty, which
-  // legitimately means "today": this is why the expiry preview has stopped
-  // moving, and saying so beats leaving it to be noticed.
-  const dateIncomplete = manufacturedOnText.trim() !== '' && manufacturedOn === '';
+  // Empty means "today", which is what the server uses when the field is not
+  // sent — so the expiry preview below has to assume the same thing.
+  //
+  // A NATIVE date input, which draws its placeholder and its picker in the
+  // BROWSER's locale: on a machine set to US English it reads "mm/dd/yyyy",
+  // and no attribute or stylesheet changes that. A typed DD-MM-YYYY box was
+  // tried instead and reverted — it cost the calendar, the phone date wheel
+  // and the browser's own validation to fix the label alone. Setting the
+  // browser's language to English (India) fixes the display here and on the
+  // twenty-odd other date fields at once.
+  const [manufacturedOn, setManufacturedOn] = useState('');
 
   const order = orders.find((candidate) => candidate.id === orderId) ?? orders[0];
   const effectiveDate = manufacturedOn || new Date().toISOString().slice(0, 10);
@@ -1331,8 +1408,13 @@ export function RecordBatchForm({ orders }: { orders: ProductionOrderSummary[] }
       <div className="grid items-end gap-4 sm:grid-cols-3">
         <div>
           <label htmlFor="productionOrderId" className={LABEL}>
-            Work order
+            Work Order
           </label>
+          {/* `FIELD`, the same class the two inputs beside it use. Left to its
+              own default this control is `field-sm` and carries no top margin,
+              so it sat shorter than its neighbours and hard against its label
+              while theirs had a gap — three boxes of two heights across one
+              row. */}
           <SearchableSelect
             id="productionOrderId"
             options={orders.map((candidate) => ({
@@ -1342,13 +1424,14 @@ export function RecordBatchForm({ orders }: { orders: ProductionOrderSummary[] }
             required
             value={orderId}
             onChange={setOrderId}
+            className={FIELD}
           />
           <input type="hidden" name="productionOrderId" value={orderId} />
         </div>
 
         <div>
           <label htmlFor="actualQuantity" className={LABEL}>
-            Actual quantity manufactured
+            Actual Quantity Manufactured
             <RequiredMark />
           </label>
           <input
@@ -1364,43 +1447,17 @@ export function RecordBatchForm({ orders }: { orders: ProductionOrderSummary[] }
 
         <div>
           <label htmlFor="manufacturedOn" className={LABEL}>
-            Manufacturing date
+            Manufacturing Date{' '}
+            <span className="font-normal normal-case text-slate-400">(defaults to today)</span>
           </label>
-          {/* A TEXT BOX, not `type="date"`. The native control renders its
-              placeholder and its picker in the browser's own locale — US
-              English showed "mm/dd/yyyy" — and no attribute or stylesheet can
-              change that. A batch record's dates are read as DD-MM-YYYY, so the
-              field shows and accepts exactly that.
-
-              `inputMode="numeric"` brings up the digit keypad on a phone, which
-              is most of what the date picker was giving back. */}
           <input
             id="manufacturedOn"
-            type="text"
-            inputMode="numeric"
-            placeholder="DD-MM-YYYY"
-            maxLength={10}
-            value={manufacturedOnText}
-            onChange={(event) => setManufacturedOnText(event.target.value)}
-            aria-invalid={dateIncomplete ? true : undefined}
-            aria-describedby="manufacturedOn-hint"
+            name="manufacturedOn"
+            type="date"
+            value={manufacturedOn}
+            onChange={(event) => setManufacturedOn(event.target.value)}
             className={FIELD}
           />
-
-          {/* WHAT THE SERVER GETS: the ISO date the API expects, so nothing
-              downstream has to know this field is typed. Empty when the box is
-              empty or holds something that is not a date yet — both of which
-              the API reads as "not sent", and its default is today. */}
-          <input type="hidden" name="manufacturedOn" value={manufacturedOn} />
-
-          <p
-            id="manufacturedOn-hint"
-            className={`mt-1 text-xs ${dateIncomplete ? 'text-amber-700' : 'text-slate-500'}`}
-          >
-            {dateIncomplete
-              ? 'Not a date yet — today’s date will be used until this reads DD-MM-YYYY.'
-              : 'DD-MM-YYYY.'}
-          </p>
         </div>
       </div>
 
@@ -1409,10 +1466,10 @@ export function RecordBatchForm({ orders }: { orders: ProductionOrderSummary[] }
           underneath: the expiry is about to be printed on a carton, and the
           moment to check it is before the record is opened, not after. */}
       <div className="grid gap-4 sm:grid-cols-3">
-        <ReadOnlyField label="Batch no." hint="Per the company numbering convention." />
+        <ReadOnlyField label="Batch No." hint="Per the company numbering convention." />
 
         <ReadOnlyField
-          label="Planned material use"
+          label="Planned Material Use"
           value={
             order ? (
               <>
@@ -1425,7 +1482,7 @@ export function RecordBatchForm({ orders }: { orders: ProductionOrderSummary[] }
         />
 
         <ReadOnlyField
-          label="Expiry date"
+          label="Expiry Date"
           value={expiry ? formatDateDMY(expiry) : undefined}
           hint={
             order && order.product.shelfLifeMonths !== null
@@ -1486,6 +1543,7 @@ export function RecordPackingForm({
   packedQuantity = null,
   rejectedQuantity = null,
   packVariant = null,
+  packagingConsumed = [],
 }: {
   batchId: string;
   batchNumber: string;
@@ -1504,6 +1562,14 @@ export function RecordPackingForm({
   packedQuantity?: string | null;
   rejectedQuantity?: string | null;
   packVariant?: string | null;
+  /**
+   * What was counted per component last time, keyed by item id.
+   *
+   * Without this an amendment reopened with every component box EMPTY, and
+   * saving from there wiped the figures — the API replaces the consumption
+   * rows wholesale, so a blank box is not "unchanged", it is "none used".
+   */
+  packagingConsumed?: { itemId: string; quantityConsumed: string }[];
 }) {
   const [state, action, pending] = useActionState(recordPackingAction, IDLE);
 
@@ -1520,6 +1586,17 @@ export function RecordPackingForm({
   const [variant, setVariant] = useState(packVariant ?? '');
 
   const specification = packSpecifications.find((entry) => entry.packVariant === variant);
+
+  /**
+   * What was counted for one component last time, or '' if nothing was.
+   *
+   * BY ITEM ID rather than by row position: the rows are drawn from the pack
+   * specification and the stored figures are keyed by item, so matching on
+   * order would put a carton count in the leaflet box the moment a
+   * specification changed.
+   */
+  const consumedFor = (itemId: string) =>
+    packagingConsumed.find((entry) => entry.itemId === itemId)?.quantityConsumed ?? '';
 
   /**
    * Whether packing has been recorded for this batch.
@@ -1555,196 +1632,246 @@ export function RecordPackingForm({
 
   if (recorded && !editing) {
     return (
-      <PackingRecordSummary
-        packedQuantity={packedQuantity}
-        rejectedQuantity={rejectedQuantity}
-        packVariant={packVariant}
-        onEdit={() => setEditing(true)}
-      />
+      <>
+        {/* ONE Result, in the SAME POSITION in both branches, so React keeps
+            the one instance across the switch between record and form rather
+            than unmounting and remounting it.
+
+            Both halves of that matter. It must survive the save that flips
+            `recorded`, or the dialog is taken away before it can appear. And it
+            must not remount on Edit/Cancel, or it re-announces the last save —
+            `useActionState` holds that result for the life of the form, so a
+            fresh instance reads a stale message as news. */}
+        <Result state={state} pending={pending} />
+
+        <PackingRecordSummary
+          packedQuantity={packedQuantity}
+          rejectedQuantity={rejectedQuantity}
+          packVariant={packVariant}
+          consumed={packagingConsumed.map((entry) => {
+            const component = specification?.components.find((item) => item.id === entry.itemId);
+
+            return {
+              // The item id is a UUID and means nothing on screen, so it is the
+              // fallback only — reached when the specification has changed
+              // since the record was entered and no longer names this
+              // component.
+              label: component ? `${component.code} ${component.name}` : entry.itemId,
+              quantity: component
+                ? `${entry.quantityConsumed} ${component.uom}`
+                : entry.quantityConsumed,
+            };
+          })}
+          onEdit={() => setEditing(true)}
+        />
+      </>
     );
   }
 
   return (
-    <form action={action} className="space-y-3 rounded-md bg-slate-50 p-4">
-      <input type="hidden" name="batchId" value={batchId} />
-
+    <>
+      {/* FIRST CHILD OF A FRAGMENT, exactly as in the branch above: React
+          matches children by position, so keeping this one in slot 0 of both
+          returns is what makes it the SAME instance either side of the switch
+          rather than a new one. See the note there. */}
       <Result state={state} pending={pending} />
 
-      {/* Linked BMR, quantity and variant on one row — US-PROD-04 lists them
+      <form action={action} className="space-y-3 rounded-md bg-slate-50 p-4">
+        <input type="hidden" name="batchId" value={batchId} />
+
+        {/* Linked BMR, quantity and variant on one row — US-PROD-04 lists them
           together and they are read together: what this packing is against,
           how much came off the line, and which presentation was run. The BMR
           link is structural (this form only exists inside a batch that has
           one), but the story names it as a field and a packing record that
           does not say which batch it belongs to is one nobody can check. */}
-      <div className="grid items-end gap-3 sm:grid-cols-3">
-        <ReadOnlyField
-          label="Linked BMR"
-          value={<span className="font-mono">{batchNumber}</span>}
-        />
-
-        <div>
-          <label htmlFor={`packed-${batchId}`} className={LABEL}>
-            Finished pack quantity
-            <RequiredMark />
-          </label>
-          <input
-            // KEYED ON THE SAVED VALUE, so the control is remounted when it
-            // changes. React 19 resets the form once the action resolves and an
-            // input re-reads `defaultValue` only at mount — without the key the
-            // box would come back empty holding the previous render's default.
-            key={`packed-${packedQuantity ?? ''}`}
-            id={`packed-${batchId}`}
-            name="packedQuantity"
-            defaultValue={packedQuantity ?? ''}
-            required
-            inputMode="decimal"
-            pattern="\d{1,11}(\.\d{1,3})?"
-            title="A positive number, up to 3 decimal places"
-            className={FIELD}
+        <div className="grid items-end gap-3 sm:grid-cols-3">
+          <ReadOnlyField
+            label="Linked BMR"
+            value={<span className="font-mono">{batchNumber}</span>}
           />
-        </div>
 
-        <div>
-          <label htmlFor={`variant-${batchId}`} className={LABEL}>
-            Pack variant{' '}
-            {packSpecifications.length === 0 && (
-              <span className="font-normal normal-case text-slate-400">(optional)</span>
-            )}
-          </label>
-
-          {packSpecifications.length === 0 ? (
-            // No specification on file, so there is nothing to choose from and
-            // the run still has to be recorded. Free text, and no component
-            // rows — the form cannot invent which components a pack uses.
+          <div>
+            <label htmlFor={`packed-${batchId}`} className={LABEL}>
+              Finished Pack Quantity
+              <RequiredMark />
+            </label>
             <input
-              key={`variant-${packVariant ?? ''}`}
-              id={`variant-${batchId}`}
-              name="packVariant"
-              defaultValue={packVariant ?? ''}
-              placeholder="10 x 10 blister carton"
+              // KEYED ON THE SAVED VALUE, so the control is remounted when it
+              // changes. React 19 resets the form once the action resolves and an
+              // input re-reads `defaultValue` only at mount — without the key the
+              // box would come back empty holding the previous render's default.
+              key={`packed-${packedQuantity ?? ''}`}
+              id={`packed-${batchId}`}
+              name="packedQuantity"
+              defaultValue={packedQuantity ?? ''}
+              required
+              inputMode="decimal"
+              pattern="\d{1,11}(\.\d{1,3})?"
+              title="A positive number, up to 3 decimal places"
               className={FIELD}
             />
-          ) : (
-            <select
-              id={`variant-${batchId}`}
-              name="packVariant"
-              value={variant}
-              onChange={(event) => setVariant(event.target.value)}
-              className={FIELD}
-            >
-              {/* A real, selectable row rather than a `disabled` one. A select
+          </div>
+
+          <div>
+            {/* REQUIRED when there are specifications to choose from, optional
+              when there are none. The variant decides which components the
+              "Packaging consumed" rows below offer, so saving without one
+              stores a record whose consumption cannot be reconstructed — and
+              the rows somebody had just filled in are dropped on the way. With
+              no specification on file there is nothing to pick and the run
+              still has to be recorded, so there it is free text. */}
+            <label htmlFor={`variant-${batchId}`} className={LABEL}>
+              Pack Variant
+              {packSpecifications.length === 0 ? (
+                <span className="font-normal normal-case text-slate-400"> (optional)</span>
+              ) : (
+                <RequiredMark />
+              )}
+            </label>
+
+            {packSpecifications.length === 0 ? (
+              // No specification on file, so there is nothing to choose from and
+              // the run still has to be recorded. Free text, and no component
+              // rows — the form cannot invent which components a pack uses.
+              <input
+                key={`variant-${packVariant ?? ''}`}
+                id={`variant-${batchId}`}
+                name="packVariant"
+                defaultValue={packVariant ?? ''}
+                placeholder="10 x 10 blister carton"
+                className={FIELD}
+              />
+            ) : (
+              <select
+                id={`variant-${batchId}`}
+                name="packVariant"
+                required
+                value={variant}
+                onChange={(event) => setVariant(event.target.value)}
+                className={FIELD}
+              >
+                {/* A real, selectable row rather than a `disabled` one. A select
                   whose value is '' with no empty option to hold it displays the
                   first entry instead, so the control would read as a variant
                   chosen while nothing had been. */}
-              <option value="">--None--</option>
-              {packSpecifications.map((entry) => (
-                <option key={entry.id} value={entry.packVariant}>
-                  {entry.packVariant} — {entry.unitsPerPack} per pack
-                </option>
+                <option value="">--None--</option>
+                {packSpecifications.map((entry) => (
+                  <option key={entry.id} value={entry.packVariant}>
+                    {entry.packVariant} — {entry.unitsPerPack} per pack
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-3">
+          <div>
+            <label htmlFor={`rejected-${batchId}`} className={LABEL}>
+              Rejects <span className="font-normal normal-case text-slate-400">(optional)</span>
+            </label>
+            <input
+              key={`rejected-${rejectedQuantity ?? ''}`}
+              id={`rejected-${batchId}`}
+              name="rejectedQuantity"
+              defaultValue={rejectedQuantity ?? ''}
+              inputMode="decimal"
+              placeholder="0"
+              pattern="\d{1,11}(\.\d{1,3})?"
+              title="A number, up to 3 decimal places"
+              className={FIELD}
+            />
+          </div>
+        </div>
+
+        {specification && specification.components.length > 0 && (
+          <fieldset className="rounded-md border border-slate-200 bg-white p-3">
+            <legend className="px-1 text-xs font-medium tracking-wide text-slate-600">
+              Packaging Consumed
+            </legend>
+
+            <div className="space-y-2">
+              {specification.components.map((component, index) => (
+                // Keyed by specification as well as component, so switching
+                // variant clears quantities counted against the old one rather
+                // than carrying them over on a shared component.
+                <div
+                  key={`${specification.id}-${component.id}`}
+                  className="flex flex-wrap items-end gap-3"
+                >
+                  <input type="hidden" name={`component.${index}.itemId`} value={component.id} />
+
+                  <div className="min-w-0 flex-1">
+                    <span className="font-mono text-xs text-slate-700">{component.code}</span>{' '}
+                    <span className="text-sm text-slate-600">{component.name}</span>
+                  </div>
+
+                  <div className="w-40">
+                    <label htmlFor={`consumed-${batchId}-${index}`} className="sr-only">
+                      {component.code} consumed
+                    </label>
+                    <input
+                      // KEYED ON THE STORED FIGURE, so the control is remounted
+                      // when it changes: React 19 resets the form once the action
+                      // resolves and an input re-reads `defaultValue` only at
+                      // mount, so without this an amendment would show the value
+                      // from the previous render.
+                      key={`consumed-${consumedFor(component.id)}`}
+                      id={`consumed-${batchId}-${index}`}
+                      name={`component.${index}.quantityConsumed`}
+                      defaultValue={consumedFor(component.id)}
+                      inputMode="decimal"
+                      placeholder={`0 ${component.uom}`}
+                      pattern="\d{1,11}(\.\d{1,3})?"
+                      title="A positive number, up to 3 decimal places"
+                      className="block w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+                    />
+                  </div>
+                </div>
               ))}
-            </select>
+            </div>
+
+            <p className="mt-2 text-xs text-slate-500">
+              What was actually used, counted — not what the specification expects. The difference
+              between the two is the packing wastage, and each line here is the recall trail from a
+              carton lot to this batch.
+            </p>
+          </fieldset>
+        )}
+
+        <div>
+          <label htmlFor={`notes-${batchId}`} className={LABEL}>
+            Notes <span className="font-normal normal-case text-slate-400">(optional)</span>
+          </label>
+          <input id={`notes-${batchId}`} name="notes" className={FIELD} />
+        </div>
+
+        <p className="text-xs text-slate-500">
+          The packed quantity — not the manufactured yield — is what becomes sellable stock if{' '}
+          {batchNumber} is released. Packed plus rejects cannot exceed what the batch made.
+        </p>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button type="submit" disabled={pending} className={BUTTON}>
+            {pending ? 'Saving…' : 'Save'}
+          </button>
+
+          {/* Only when AMENDING. A first entry has nothing to go back to, so a
+            Cancel there would be a button that does nothing visible. */}
+          {recorded && (
+            <button
+              type="button"
+              onClick={() => setEditing(false)}
+              disabled={pending}
+              className="rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Cancel
+            </button>
           )}
         </div>
-      </div>
-
-      <div className="grid gap-3 sm:grid-cols-3">
-        <div>
-          <label htmlFor={`rejected-${batchId}`} className={LABEL}>
-            Rejects <span className="font-normal normal-case text-slate-400">(optional)</span>
-          </label>
-          <input
-            key={`rejected-${rejectedQuantity ?? ''}`}
-            id={`rejected-${batchId}`}
-            name="rejectedQuantity"
-            defaultValue={rejectedQuantity ?? ''}
-            inputMode="decimal"
-            placeholder="0"
-            pattern="\d{1,11}(\.\d{1,3})?"
-            title="A number, up to 3 decimal places"
-            className={FIELD}
-          />
-        </div>
-      </div>
-
-      {specification && specification.components.length > 0 && (
-        <fieldset className="rounded-md border border-slate-200 bg-white p-3">
-          <legend className="px-1 text-xs font-medium uppercase tracking-wide text-slate-600">
-            Packaging consumed
-          </legend>
-
-          <div className="space-y-2">
-            {specification.components.map((component, index) => (
-              // Keyed by specification as well as component, so switching
-              // variant clears quantities counted against the old one rather
-              // than carrying them over on a shared component.
-              <div
-                key={`${specification.id}-${component.id}`}
-                className="flex flex-wrap items-end gap-3"
-              >
-                <input type="hidden" name={`component.${index}.itemId`} value={component.id} />
-
-                <div className="min-w-0 flex-1">
-                  <span className="font-mono text-xs text-slate-700">{component.code}</span>{' '}
-                  <span className="text-sm text-slate-600">{component.name}</span>
-                </div>
-
-                <div className="w-40">
-                  <label htmlFor={`consumed-${batchId}-${index}`} className="sr-only">
-                    {component.code} consumed
-                  </label>
-                  <input
-                    id={`consumed-${batchId}-${index}`}
-                    name={`component.${index}.quantityConsumed`}
-                    inputMode="decimal"
-                    placeholder={`0 ${component.uom}`}
-                    pattern="\d{1,11}(\.\d{1,3})?"
-                    title="A positive number, up to 3 decimal places"
-                    className="block w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
-                  />
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <p className="mt-2 text-xs text-slate-500">
-            What was actually used, counted — not what the specification expects. The difference
-            between the two is the packing wastage, and each line here is the recall trail from a
-            carton lot to this batch.
-          </p>
-        </fieldset>
-      )}
-
-      <div>
-        <label htmlFor={`notes-${batchId}`} className={LABEL}>
-          Notes <span className="font-normal normal-case text-slate-400">(optional)</span>
-        </label>
-        <input id={`notes-${batchId}`} name="notes" className={FIELD} />
-      </div>
-
-      <p className="text-xs text-slate-500">
-        The packed quantity — not the manufactured yield — is what becomes sellable stock if{' '}
-        {batchNumber} is released. Packed plus rejects cannot exceed what the batch made.
-      </p>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <button type="submit" disabled={pending} className={BUTTON}>
-          {pending ? 'Saving…' : 'Save'}
-        </button>
-
-        {/* Only when AMENDING. A first entry has nothing to go back to, so a
-            Cancel there would be a button that does nothing visible. */}
-        {recorded && (
-          <button
-            type="button"
-            onClick={() => setEditing(false)}
-            disabled={pending}
-            className="rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Cancel
-          </button>
-        )}
-      </div>
-    </form>
+      </form>
+    </>
   );
 }
 
@@ -1763,11 +1890,18 @@ export function PackingRecordSummary({
   packedQuantity,
   rejectedQuantity,
   packVariant,
+  consumed = [],
   onEdit,
 }: {
   packedQuantity: string;
   rejectedQuantity: string | null;
   packVariant: string | null;
+  /**
+   * What the pack consumed, ready to display. Empty when nothing was counted,
+   * and the section is then left out rather than shown with no rows — a run
+   * whose components were never counted has nothing to report here.
+   */
+  consumed?: { label: string; quantity: string }[];
   /**
    * Omitted once the batch has been through the quality gate: the API refuses
    * an amendment then, so the button would be a control that cannot work. The
@@ -1827,6 +1961,24 @@ export function PackingRecordSummary({
         )}
       </div>
 
+      {/* THE RECALL TRAIL, which the figures above do not carry: what went into
+          this batch, from which component. Shown on the record rather than
+          only inside the form, so reading a finished batch does not mean
+          opening it for editing to see what it consumed. */}
+      {consumed.length > 0 && (
+        <div className="border-t border-slate-200 pt-3">
+          <h5 className={LABEL}>Packaging consumed</h5>
+          <ul className="mt-2 space-y-1">
+            {consumed.map((entry) => (
+              <li key={entry.label} className="flex justify-between gap-4 text-sm">
+                <span className="text-slate-600">{entry.label}</span>
+                <span className="tabular-nums text-slate-900">{entry.quantity}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {/* Kept for a DECIDED batch, where there is no Edit button to imply it.
           Without this the record would simply end, with nothing saying why it
           cannot be changed. */}
@@ -1882,7 +2034,7 @@ export function ReleaseDecisionForm({
 
       <div>
         <label htmlFor={`release-notes-${batchId}`} className={LABEL}>
-          Reason / test reference{' '}
+          Reason / Test Reference{' '}
           <span className="font-normal normal-case text-slate-400">(required to block)</span>
         </label>
         <textarea

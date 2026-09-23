@@ -223,34 +223,3 @@ export function formatDateDMY(value: string | null | undefined): string {
 
   return `${day}-${month}-${year}`;
 }
-
-/**
- * DD-MM-YYYY back to the ISO date the API stores, or '' if it is not one yet.
- *
- * The counterpart to `formatDateDMY`, for a field somebody TYPES rather than
- * picks. It is deliberately strict: the day and month must be two digits and
- * the result has to survive a round trip, so "31-02-2026" is rejected rather
- * than silently becoming 3 March. A manufacturing date decides the expiry
- * printed on a carton, and a date that quietly moved is worse than one refused.
- *
- * Returns '' — not null — because the caller feeds it straight to a hidden
- * input, and an empty value is what the API reads as "not sent, use today".
- */
-export function parseDateDMY(value: string): string {
-  const match = /^(\d{2})-(\d{2})-(\d{4})$/.exec(value.trim());
-
-  if (!match) return '';
-
-  const [, day, month, year] = match as unknown as [string, string, string, string];
-  const iso = `${year}-${month}-${day}`;
-
-  // Rejects a day the month does not have. `Date.UTC` rolls 31 February over
-  // into March rather than failing, so the check is that formatting the result
-  // gives back exactly what went in.
-  const parsed = new Date(`${iso}T00:00:00.000Z`);
-
-  if (Number.isNaN(parsed.getTime())) return '';
-  if (parsed.toISOString().slice(0, 10) !== iso) return '';
-
-  return iso;
-}

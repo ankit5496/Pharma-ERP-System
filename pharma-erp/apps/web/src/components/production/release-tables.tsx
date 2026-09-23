@@ -68,7 +68,7 @@ export function PendingReleaseList({
           above it named the same table twice. Rendered even when empty, so the
           panel always says what it is rather than opening on a bare sentence. */}
       <RegisterToolbar
-        title="Awaiting a decision"
+        title="Awaiting a Decision"
         query={view.query}
         onQuery={view.setQuery}
         placeholder="Search batch, order or product…"
@@ -87,10 +87,10 @@ export function PendingReleaseList({
         <div className="table-scroll overflow-x-auto">
           <table className="w-full min-w-[52rem] text-left text-sm">
             <thead>
-              <tr className="text-xs uppercase tracking-wide text-slate-500">
+              <tr className="text-xs tracking-wide text-slate-500">
                 <Th>Batch</Th>
                 <Th>Product</Th>
-                <Th>Work order</Th>
+                <Th>Work Order</Th>
                 <Th>Manufactured</Th>
                 <Th>Expiry</Th>
                 <Th align="right">Packed</Th>
@@ -238,7 +238,7 @@ export function PendingReleaseList({
 function Figure({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div>
-      <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</dt>
+      <dt className="text-xs font-medium tracking-wide text-slate-500">{label}</dt>
       <dd className="mt-0.5 text-sm text-slate-900">{children}</dd>
     </div>
   );
@@ -256,7 +256,7 @@ export function SellableStockTable({ lots }: { lots: FinishedGoodsLotView[] }) {
   return (
     <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
       <RegisterToolbar
-        title="Sellable stock"
+        title="Sellable Stock"
         query={view.query}
         onQuery={view.setQuery}
         placeholder="Search product or batch…"
@@ -273,7 +273,7 @@ export function SellableStockTable({ lots }: { lots: FinishedGoodsLotView[] }) {
         <div className="table-scroll overflow-x-auto">
           <table className="w-full min-w-[40rem] text-left text-sm">
             <thead>
-              <tr className="text-xs uppercase tracking-wide text-slate-500">
+              <tr className="text-xs tracking-wide text-slate-500">
                 <Th>Product</Th>
                 <Th>Batch</Th>
                 <Th>Expiry</Th>
@@ -343,7 +343,7 @@ export function DecidedTable({ batches }: { batches: BatchView[] }) {
   return (
     <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
       <RegisterToolbar
-        title="Decided"
+        title="Released"
         query={view.query}
         onQuery={view.setQuery}
         placeholder="Search batch, decider or reason…"
@@ -371,7 +371,7 @@ export function DecidedTable({ batches }: { batches: BatchView[] }) {
         <div className="table-scroll overflow-x-auto">
           <table className="w-full min-w-[46rem] text-left text-sm">
             <thead>
-              <tr className="text-xs uppercase tracking-wide text-slate-500">
+              <tr className="text-xs tracking-wide text-slate-500">
                 <Th>Batch</Th>
                 <Th>Decision</Th>
                 <Th>By</Th>
