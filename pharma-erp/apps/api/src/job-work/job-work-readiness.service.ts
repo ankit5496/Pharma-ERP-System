@@ -351,7 +351,7 @@ export class JobWorkReadinessService {
    * and is already off `quantityAvailable`, so counting it again here would
    * deduct it twice.
    */
-  private async committedToOpenOrders(
+  async committedToOpenOrders(
     itemIds: string[],
   ): Promise<{ itemId: string; quantity: Prisma.Decimal }[]> {
     const open = await this.prisma.scoped.productionOrder.findMany({

@@ -105,10 +105,19 @@ function PrincipalTag({ order }: { order: JobWorkProductionOrderView }) {
 export function JobWorkOrderTable({
   orders,
   actionFor,
+  toolbarAction,
 }: {
   orders: JobWorkProductionOrderView[];
   /** View/Edit for one order, built by the server component above. */
   actionFor?: Record<string, ReactNode>;
+  /**
+   * The New button, beside the search and filter controls.
+   *
+   * Passed in rather than taken from ProductionRegister's context because the
+   * form it opens carries its own modal — the requisition form's — so the
+   * button that opens it belongs to the form, not to the register.
+   */
+  toolbarAction?: ReactNode;
 }) {
   const searchText = useCallback(
     (order: JobWorkProductionOrderView) =>
@@ -119,7 +128,7 @@ export function JobWorkOrderTable({
         order.product.name,
         order.principalName,
         order.principalBrandName,
-        order.materialReceipt.receiptNumber,
+        order.materialReceipt?.receiptNumber,
         order.batchNumber,
         order.createdBy,
       ]
@@ -152,7 +161,9 @@ export function JobWorkOrderTable({
         }))}
         shown={view.filtered.length}
         total={view.total}
-      />
+      >
+        {toolbarAction}
+      </RegisterToolbar>
 
       {view.filtered.length === 0 ? (
         <p className="px-6 py-8 text-sm text-slate-600">
@@ -206,16 +217,25 @@ export function JobWorkOrderTable({
                     )}
                   </td>
 
-                  {/* The consignment behind it, with what it carried — the
-                      figure a production officer checks before dispensing. */}
+                  {/* WHERE THE MATERIAL CAME FROM. Under pure conversion that
+                      is the principal's consignment and what it carried — the
+                      figure a production officer checks before dispensing.
+                      Under own procurement we bought it, so there is no
+                      consignment to name and the column says so. */}
                   <td className="px-6 py-3">
-                    <span className="font-mono text-xs text-slate-700">
-                      {order.materialReceipt.receiptNumber}
-                    </span>
-                    <div className="text-[11px] text-slate-500">
-                      {order.materialReceipt.rawMaterialCount} raw ·{' '}
-                      {order.materialReceipt.packingMaterialCount} packing
-                    </div>
+                    {order.materialReceipt ? (
+                      <>
+                        <span className="font-mono text-xs text-slate-700">
+                          {order.materialReceipt.receiptNumber}
+                        </span>
+                        <div className="text-[11px] text-slate-500">
+                          {order.materialReceipt.rawMaterialCount} raw ·{' '}
+                          {order.materialReceipt.packingMaterialCount} packing
+                        </div>
+                      </>
+                    ) : (
+                      <span className="text-[11px] text-slate-500">Our own inventory</span>
+                    )}
                   </td>
 
                   <td className="px-6 py-3">
@@ -267,7 +287,14 @@ export function JobWorkOrderTable({
 // ---------------------------------------------------------------------------
 
 /** Dispensing records, searchable by issue number, order, material or lot. */
-export function JobWorkIssueTable({ issues }: { issues: JobWorkMaterialIssueView[] }) {
+export function JobWorkIssueTable({
+  issues,
+  toolbarAction,
+}: {
+  issues: JobWorkMaterialIssueView[];
+  /** The Dispense button — see JobWorkOrderTable for why it arrives this way. */
+  toolbarAction?: ReactNode;
+}) {
   const searchText = useCallback(
     (issue: JobWorkMaterialIssueView) =>
       [
@@ -300,7 +327,9 @@ export function JobWorkIssueTable({ issues }: { issues: JobWorkMaterialIssueView
         noun="dispensing records"
         shown={view.filtered.length}
         total={view.total}
-      />
+      >
+        {toolbarAction}
+      </RegisterToolbar>
 
       {view.filtered.length === 0 ? (
         <p className="px-6 py-8 text-sm text-slate-600">
@@ -565,10 +594,13 @@ export function JobWorkReceivedMaterialTable({
 export function JobWorkBatchRecords({
   batches,
   packingFormFor,
+  toolbarAction,
 }: {
   batches: JobWorkBatchView[];
   /** The packing form for a batch, or absent once it has been decided. */
   packingFormFor: Record<string, ReactNode>;
+  /** The New batch button — see JobWorkOrderTable for why it arrives this way. */
+  toolbarAction?: ReactNode;
 }) {
   const [openId, setOpenId] = useState<string | null>(batches[0]?.id ?? null);
 
@@ -614,7 +646,9 @@ export function JobWorkBatchRecords({
           }))}
           shown={view.filtered.length}
           total={view.total}
-        />
+        >
+          {toolbarAction}
+        </RegisterToolbar>
       </div>
 
       {view.visible.length === 0 ? (
@@ -637,7 +671,7 @@ export function JobWorkBatchRecords({
                     aria-current={isOpen ? 'true' : undefined}
                     className={`w-full rounded-lg border px-3 py-2.5 text-left transition ${
                       isOpen
-                        ? 'border-slate-900 bg-white shadow-sm ring-1 ring-slate-900'
+                        ? 'border-slate-300 bg-slate-50 shadow-sm'
                         : 'border-slate-200 bg-white hover:border-slate-300 hover:shadow-sm'
                     }`}
                   >
