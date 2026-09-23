@@ -43,13 +43,7 @@ export function FormulationTable({ boms }: { boms: BomView[] }) {
     [],
   );
 
-  const matchesFilter = useCallback(
-    (product: ProductGroup, value: string) =>
-      value === 'ACTIVE' ? product.current !== null : product.current === null,
-    [],
-  );
-
-  const view = useRegisterView({ rows: products, searchText, matchesFilter });
+  const view = useRegisterView({ rows: products, searchText });
 
   // Product ids whose history is open. A set rather than a single id: comparing
   // two products' histories side by side is a normal thing to want, and closing
@@ -76,17 +70,15 @@ export function FormulationTable({ boms }: { boms: BomView[] }) {
 
   return (
     <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
+      {/* NO FILTER. It offered "has an active version" against "no active
+          version", which the Status column already states on every row — and
+          the register is short enough that the search box reaches anything the
+          filter could. Removed at the product owner's request. */}
       <RegisterToolbar
         query={view.query}
         onQuery={view.setQuery}
         placeholder="Search product or material…"
         noun="formulations"
-        filter={view.filter}
-        onFilter={view.setFilter}
-        filterOptions={[
-          { value: 'ACTIVE', label: 'Has an active version' },
-          { value: 'INACTIVE', label: 'No active version' },
-        ]}
         shown={view.filtered.length}
         total={view.total}
       />
