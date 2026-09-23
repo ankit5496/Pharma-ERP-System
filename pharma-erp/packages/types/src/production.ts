@@ -145,7 +145,9 @@ export interface UpdateItemRequest {
 }
 
 export interface CreateItemRequest {
-  code: string;
+  // NO `code`. The server allocates it as RM-00001 from a per-category
+  // counter — see ITEM_CODE_PREFIXES — so a caller sending one would be
+  // choosing a number out of the series.
   name: string;
   type: ItemType;
   uom: string;
@@ -221,6 +223,10 @@ export interface BomLineView {
 
 export interface BomView {
   id: string;
+  /** When the record was created — the register sorts on it and filters by it. */
+  createdAt: string;
+  /** Who entered it, by name. Null for a record created before this was kept. */
+  createdBy: string | null;
   version: number;
   isActive: boolean;
   outputQuantity: string;

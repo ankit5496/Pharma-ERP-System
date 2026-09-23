@@ -19,6 +19,7 @@ import type {
 } from '@pharma-erp/types';
 
 import { fieldConflict } from '../common/field-error';
+import { withCreatedBy } from '../common/created-by';
 import { PrismaService } from '../prisma/prisma.service';
 import { ITEM_SELECT, toItemSummary } from '../procurement/mappers';
 import { StockService } from '../procurement/stock.service';
@@ -71,10 +72,10 @@ export class PackagingService {
     const rows = await this.prisma.scoped.packagingRequirement.findMany({
       where: { deletedAt: null },
       include: REQUIREMENT_INCLUDE,
-      orderBy: [{ packVariant: 'asc' }],
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     });
 
-    return rows.map(toRequirementView);
+    return withCreatedBy(this.prisma, rows, rows.map(toRequirementView));
   }
 
   /**
@@ -252,6 +253,7 @@ export class PackagingService {
         const requirement = await tx.packagingRequirement.create({
           data: {
             tenantId,
+            createdById: this.tenantContext.getUserId(),
             productId: dto.productId,
             packVariant: dto.packVariant.trim(),
             unitsPerPack: dto.unitsPerPack,
@@ -551,7 +553,10 @@ type RequirementWithRelations = Prisma.PackagingRequirementGetPayload<{
 
 function toRequirementView(requirement: RequirementWithRelations): PackagingRequirementView {
   return {
+    // Filled in by the register that lists these; see PeopleService.
+    createdBy: null,
     id: requirement.id,
+    createdAt: requirement.createdAt.toISOString(),
     product: toItemSummary(requirement.product),
     packVariant: requirement.packVariant,
     unitsPerPack: requirement.unitsPerPack.toString(),

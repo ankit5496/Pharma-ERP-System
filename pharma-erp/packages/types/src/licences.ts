@@ -98,6 +98,28 @@ export const LICENCE_NUMBER_RULES: Record<LicenceType, LicenceNumberRule> = {
 };
 
 /**
+ * What the number field is called before a licence type has been chosen.
+ *
+ * NOT one of the real rules. The form used to fall back to MANUFACTURING's,
+ * which put "Licence number" on a field that might turn out to be a GST
+ * number — naming one of the three answers before the question was asked.
+ * "Number" commits to nothing and is replaced the moment a type is picked.
+ *
+ * The pattern is the permissive one shared by the licence-shaped types, so a
+ * value typed before choosing is not rejected by a rule that may not apply.
+ * The API judges the saved value against the REAL rule for the chosen type,
+ * which is what actually decides whether it is accepted.
+ */
+export const UNTYPED_LICENCE_NUMBER_RULE: LicenceNumberRule = {
+  label: 'Number',
+  hint: 'Choose a licence type first — the number is checked against that type.',
+  placeholder: '',
+  pattern: '^[0-9A-Za-z/-]{1,64}$',
+  message: 'A number may contain only letters, numbers, hyphens and forward slashes.',
+  maxLength: 64,
+};
+
+/**
  * The roles allowed to see licence records (US-MD-04).
  *
  * Exported so the API guard and the web app's register list read the same
@@ -133,6 +155,10 @@ export const MAX_LICENCE_ALERT_LEAD_DAYS = 365;
  */
 export interface LicenceSummary {
   id: string;
+  /** When the record was created — the register sorts on it and filters by it. */
+  createdAt: string;
+  /** Who entered it, by name. Null for a record created before this was kept. */
+  createdBy: string | null;
   licenceType: LicenceType;
   licenceNumber: string;
   issuingAuthority: string;

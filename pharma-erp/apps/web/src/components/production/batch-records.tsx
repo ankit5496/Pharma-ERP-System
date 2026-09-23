@@ -1,11 +1,17 @@
 'use client';
 
-import { useCallback, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { BatchView } from '@pharma-erp/types';
 import { BATCH_RELEASE_STATUSES, BATCH_RELEASE_STATUS_LABELS } from '@pharma-erp/types';
 
 import { Quantity, ReleaseBadge } from './shared';
-import { RegisterPager, RegisterToolbar, useRegisterView } from './register-toolbar';
+import {
+  createdFilters,
+  matchesCreated,
+  RegisterPager,
+  RegisterToolbar,
+  useRegisterView,
+} from './register-toolbar';
 
 /**
  * The batch register: a toolbar, a list, and one batch open at a time.
@@ -46,7 +52,60 @@ export function BatchRecords({
     [],
   );
 
-  const view = useRegisterView({ rows: batches, searchText, matchesFilter });
+  // MANUFACTURED ON, not a creation timestamp. A batch carries no createdBy —
+  // nothing records who opened it — and the date a batch is looked up by is
+  // the day it was made, which is what goes on the carton. Filtering by the
+  // row's insert time would be a different question nobody asks.
+  const matchesField = useCallback(
+    (batch: BatchView, name: string, value: string) =>
+      matchesCreated(batch.manufacturedOn, null, name, value),
+    [],
+  );
+
+  const view = useRegisterView({ rows: batches, searchText, matchesFilter, matchesField });
+
+  /**
+   * Opens a batch that was not in the register a moment ago.
+   *
+   * Recording one and being left looking at the batch that was already open is
+   * the thing this fixes: the list refreshes, the new batch appears at the top
+   * — the endpoint returns newest first — and the pane beside it carried on
+   * showing the previous selection, so the record just saved was the one thing
+   * not on screen.
+   *
+   * KEYED ON ARRIVAL, not on the list simply changing. `seen` remembers the ids
+   * already rendered, so a refresh that only reorders or updates rows moves
+   * nothing; solely an id never shown before takes the pane. That matters
+   * because this list re-renders whenever a batch is packed or released too,
+   * and neither of those should pull the reader somewhere else.
+   *
+   * IT ALSO CLEARS THE SEARCH AND FILTERS. A new batch is PENDING and lands
+   * first, so a register left showing "released" — or on page 3 — would not
+   * have it among the visible rows at all, and `open` below would quietly fall
+   * back to the top of the current page. Clearing puts the register where the
+   * new batch actually is rather than reporting it opened something it did not.
+   */
+  const seen = useRef<Set<string> | null>(null);
+  const reveal = useRef(view.reset);
+  reveal.current = view.reset;
+
+  useEffect(() => {
+    // First render: everything present counts as already seen, so an existing
+    // register does not open its newest row as though it had just been made.
+    if (seen.current === null) {
+      seen.current = new Set(batches.map((batch) => batch.id));
+      return;
+    }
+
+    const arrived = batches.find((batch) => !seen.current?.has(batch.id));
+
+    seen.current = new Set(batches.map((batch) => batch.id));
+
+    if (!arrived) return;
+
+    setOpenId(arrived.id);
+    reveal.current();
+  }, [batches]);
 
   // Derived rather than stored: filtering or paging can hide whatever was open,
   // and a detail pane showing a batch that is not in the list beside it reads as
@@ -67,6 +126,10 @@ export function BatchRecords({
             value: status,
             label: BATCH_RELEASE_STATUS_LABELS[status],
           }))}
+          fields={createdFilters([], 'Manufactured')}
+          fieldValues={view.fieldValues}
+          onField={view.setField}
+          onClearFields={view.clearFields}
           shown={view.filtered.length}
           total={view.total}
         />

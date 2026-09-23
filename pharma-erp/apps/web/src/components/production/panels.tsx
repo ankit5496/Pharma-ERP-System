@@ -144,9 +144,13 @@ export async function MaterialIssuePanel() {
   // ONE plan computed here, for the order the form opens on. The rest are
   // fetched by the form when the officer picks them: a plan costs an allocation
   // query per material, so computing all of them on every page load would pay
-  // for orders nobody opens. Oldest first, because that is the one most likely
-  // to be dispensed next.
-  const first = awaiting.at(-1);
+  // for orders nobody opens.
+  //
+  // THE NEWEST, which the orders endpoint returns first — somebody raises a
+  // work order and goes straight to dispensing against it. This has to match
+  // IssueMaterialForm's own default, or the form opens on one order showing a
+  // plan for another.
+  const first = awaiting[0];
   const planResult = first
     ? await get<MaterialIssuePlan>(`/api/v1/production/orders/${first.id}/issue-plan`)
     : null;
@@ -165,7 +169,6 @@ export async function MaterialIssuePanel() {
         {
           key: 'issues',
           label: 'Material issue',
-          badge: String(issues.length),
           panel: (
             <ProductionRegister
               newLabel={awaiting.length > 0 ? 'Dispense material' : undefined}
@@ -190,7 +193,6 @@ export async function MaterialIssuePanel() {
         {
           key: 'stock',
           label: 'Stock on hand',
-          badge: String(lots.length),
           panel: <StockTable lots={lots} />,
         },
       ]}
@@ -271,11 +273,16 @@ export async function BatchRecordPanel() {
     );
   }
 
+  // The New batch button is ALWAYS OFFERED, even with nothing waiting. It used
+  // to disappear when no work order had material issued, which reads as the
+  // feature being missing rather than the prerequisite being unmet — and left
+  // nowhere to find out what to do about it. RecordBatchForm opens and says so
+  // instead.
   return (
     <ProductionRegister
-      newLabel={awaitingBatch.length > 0 ? 'New batch' : undefined}
+      newLabel="New batch"
       newTitle="New — Batch record"
-      form={awaitingBatch.length > 0 ? <RecordBatchForm orders={awaitingBatch} /> : undefined}
+      form={<RecordBatchForm orders={awaitingBatch} />}
     >
       <div className="p-6">
         {batches.length === 0 ? (
@@ -368,13 +375,11 @@ export async function BatchReleasePanel() {
           {
             key: 'gate',
             label: 'Batch release',
-            badge: String(pending.length),
             panel: <PendingReleaseList batches={pending} formFor={releaseForms} />,
           },
           {
             key: 'stock',
             label: 'Sellable stock',
-            badge: stockResult.ok ? String(stockResult.data.length) : undefined,
             panel: stockResult.ok ? (
               <SellableStockTable lots={stockResult.data} />
             ) : (
@@ -386,7 +391,6 @@ export async function BatchReleasePanel() {
           {
             key: 'decided',
             label: 'Decided',
-            badge: String(decided.length),
             panel: <DecidedTable batches={decided} />,
           },
         ]}

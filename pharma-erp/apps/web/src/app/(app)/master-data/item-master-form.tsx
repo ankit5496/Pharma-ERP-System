@@ -14,7 +14,7 @@ import {
   type ScheduleClassification,
 } from '@pharma-erp/types';
 
-import { saveItemAction, type ActionResult } from './actions';
+import { nextItemCodeAction, saveItemAction, type ActionResult } from './actions';
 import {
   CheckboxField,
   FormGrid,
@@ -85,6 +85,37 @@ export function ItemMasterForm({
   // reset the way an <input> does — so a rejected save came back with the text
   // preserved and every dropdown blank. See SelectField.
   const [category, setCategory] = useState<string>(item?.type ?? '');
+
+  /**
+   * The code this item would take, shown before it is saved.
+   *
+   * Asked per CATEGORY, because the prefix follows it — choosing "Packing
+   * material" has to change RM-00004 into PM-00011, not leave the previous
+   * answer standing.
+   *
+   * A prediction rather than a reservation: nothing is held, and if a
+   * colleague saves an item of the same category first they take this code and
+   * the next moves on. Not asked at all when editing — the item already has
+   * one, and it is fixed.
+   */
+  const [nextCode, setNextCode] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (item || !category) {
+      setNextCode(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    void nextItemCodeAction(category).then((code) => {
+      if (!cancelled) setNextCode(code);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [item, category]);
   const [schedule, setSchedule] = useState<string>(item?.scheduleClassification ?? 'NONE');
   const [uom, setUom] = useState<string>(item?.uom ?? '');
   const [gstRate, setGstRate] = useState<string>(
@@ -136,19 +167,41 @@ export function ItemMasterForm({
     <form action={formAction} className="flex flex-col gap-8" noValidate>
       <FormSection title="Identity">
         <FormGrid>
+          {/* ALLOCATED BY THE SERVER as RM-00001, and read-only here.
+              The prefix follows the category, so the preview changes when the
+              category does.
+
+              It used to be typed, and the register ended up holding "pcm-500",
+              "PCM- 500", "PCM 500" and "PCM-500" as four separate items, plus
+              bare numbers like 1001 carrying no category at all. A code that
+              appears on every document citing the item is not something to
+              leave to typing.
+
+              `readOnly` rather than `disabled`: a disabled input is left out of
+              the submission entirely, and the value still has to be readable
+              and copyable. The server ignores what is sent regardless. */}
           <TextField
+            // KEYED ON THE CODE AND THE CATEGORY, so the control is remounted
+            // when either changes. `defaultValue` is only read on mount, and
+            // the code arrives after the first render and again whenever the
+            // category changes — without the key the box would keep showing
+            // the first answer. The category is in the key too because
+            // clearing it changes only the PLACEHOLDER, which is read on mount
+            // for the same reason.
+            key={`${item?.code ?? nextCode ?? 'pending'}:${category}`}
             name="code"
-            error={errorFor('code')}
             label="Item code"
-            required
-            maxLength={64}
-            placeholder="FG-0142"
-            defaultValue={typed('code', item?.code)}
-            readOnly={Boolean(item)}
+            readOnly
+            defaultValue={item?.code ?? nextCode ?? ''}
+            // The prefix comes FROM the category, so there is no code to show
+            // until one is chosen. "Select Category" says what to do about it;
+            // "Assigned on save" would have read as a promise the form cannot
+            // keep yet.
+            placeholder={item ? undefined : category ? 'Assigned on save' : 'Select Category'}
             hint={
               item
                 ? 'Fixed once created — it is printed on every document that already cites this item.'
-                : 'Short, unique, and never reused — it appears on every document that cites this item.'
+                : 'Assigned automatically from the category when this item is saved.'
             }
           />
           <SelectField

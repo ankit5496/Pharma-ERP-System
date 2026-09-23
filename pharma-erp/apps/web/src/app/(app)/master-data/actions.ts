@@ -239,7 +239,9 @@ export async function saveItemAction(
   _previous: ActionResult,
   formData: FormData,
 ): Promise<ActionResult> {
-  const code = String(formData.get('code') ?? '').trim();
+  // The form posts `code` — it is a read-only box showing the preview — and it
+  // is deliberately not read here. The server allocates the real code, and
+  // trusting the submitted one would let a crafted request pick its own.
   const name = String(formData.get('brandName') ?? '').trim();
   const type = String(formData.get('category') ?? '') as ItemType;
   const uom = String(formData.get('uom') ?? '').trim();
@@ -259,7 +261,9 @@ export async function saveItemAction(
   // without a round trip. The API's own validation is the one that counts.
   // The third entry is the input's `name`, which is what marks the control.
   const itemMissing = requireFields([
-    ['Item code', code, 'code'],
+    // NO ITEM CODE. It is allocated by the server as RM-00001 from a
+    // per-category counter, so there is nothing here for somebody to leave
+    // blank — and asking for it would refuse a form that never offered it.
     ['Category', type, 'category'],
     // THE COMPOSITION IS REQUIRED; THE BRAND IS NOT. It used to be "one or the
     // other", which meant neither field could be starred and the rule surfaced
@@ -285,7 +289,6 @@ export async function saveItemAction(
   const displayName = name || genericName;
 
   const payload: CreateItemRequest = {
-    code,
     name: displayName,
     type,
     uom,
@@ -315,11 +318,11 @@ export async function saveItemAction(
       : {}),
   };
 
-  // On an update the code is not sent at all — it is fixed once created, so
-  // the API does not accept it. Optional fields left blank are sent as null
+  // The code is never sent: it is allocated on create and fixed thereafter,
+  // so neither request carries it. Optional fields left blank are sent as null
   // to CLEAR them, which is the difference between editing and creating: on
   // a create an empty field is simply omitted.
-  const { code: _code, ...editable } = payload;
+  const editable = payload;
 
   const update = {
     ...editable,
@@ -754,6 +757,21 @@ export async function setLicenceAlertAction(days: number): Promise<ActionResult>
  * stop an agreement being recorded — the server allocates the real number
  * regardless.
  */
+/**
+ * The code the next item of this category would take.
+ *
+ * Null when the call fails, and the form then shows "Assigned on save" — a
+ * failed preview should cost a reassurance, not the ability to add an item.
+ */
+export async function nextItemCodeAction(type: string): Promise<string | null> {
+  const result = await apiFetch<{ code: string }>(
+    `/api/v1/production/items/next-code?type=${encodeURIComponent(type)}`,
+    { authenticated: true, timeoutMs: 20_000 },
+  );
+
+  return result.ok ? result.data.code : null;
+}
+
 export async function nextAgreementReferenceAction(): Promise<string | null> {
   const result = await apiFetch<{ agreementReference: string }>(
     '/api/v1/job-work/agreements/next-reference',
