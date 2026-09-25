@@ -191,9 +191,15 @@ export class QcService {
     const rows = await this.prisma.scoped.stockLot.findMany({
       where,
       include: LOT_INCLUDE,
-      // Pending first, then soonest expiry: the two things that decide what a
-      // Quality Officer should look at next.
-      orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'desc' }],
+      // NEWEST FIRST. A lot booked in this morning is the one the Quality
+      // Officer is looking for, and it used to land wherever its expiry date
+      // put it — often pages down. Expiry still breaks ties between lots
+      // entered in the same instant.
+      //
+      // WHAT THIS GIVES UP: the register no longer surfaces the soonest-expiry
+      // lot at the top on its own. Expiry-first triage is now the Expiry
+      // column's sort and the pending filter's job, not the default order.
+      orderBy: [{ createdAt: 'desc' }, { expiryDate: { sort: 'asc', nulls: 'last' } }],
       skip,
       take,
     });

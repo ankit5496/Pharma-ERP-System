@@ -946,6 +946,15 @@ export interface JobWorkBatchView {
   notes: string | null;
 
   /**
+   * Which packing components the batch used, and how much of each.
+   *
+   * Returned WITH the batch so the packing form can seed its component boxes
+   * on a correction rather than asking for them again — the same reason the
+   * internal batch record returns its own.
+   */
+  packagingConsumed: { itemId: string; quantityConsumed: string }[];
+
+  /**
    * What the formulation called for against what was actually drawn.
    *
    * Computed, never stored: it is the BOM scaled to the order's planned
