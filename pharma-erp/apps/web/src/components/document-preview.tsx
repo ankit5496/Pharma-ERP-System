@@ -241,12 +241,21 @@ export function DocumentPreview({
               <iframe
                 src={blobUrl}
                 title={document.fileName}
-                // The sandbox now stands on its own — the response header that
-                // used to back it up is what Chrome's PDF viewer could not
-                // survive. `allow-scripts` lets the viewer run;
-                // `allow-same-origin` is deliberately absent, and that absence
-                // is what keeps the file away from our cookies and storage.
-                sandbox="allow-scripts"
+                // NO `sandbox`, and that absence is load-bearing rather than an
+                // oversight. A blob: URL may only be read by the origin that
+                // created it; `sandbox` without `allow-same-origin` puts the
+                // frame in an OPAQUE origin, which is not that origin — so
+                // Chrome refuses the navigation and paints "This page has been
+                // blocked by Chrome". The sandbox added to protect this frame
+                // was the thing preventing it from ever loading.
+                //
+                // WHAT KEEPS THE FILE WALLED OFF INSTEAD is the line above that
+                // builds the blob: its type is forced to application/pdf
+                // whatever the server said, so the document is handed to
+                // Chrome's PDF viewer — which runs out of process, with no
+                // reach into our DOM, cookies or storage — and can never be
+                // interpreted as HTML in our origin, which is the attack the
+                // sandbox was there to stop.
                 className="h-[70vh] w-full rounded border border-slate-200 bg-white"
               />
             ) : (

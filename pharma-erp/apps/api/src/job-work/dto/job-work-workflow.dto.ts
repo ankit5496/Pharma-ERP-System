@@ -96,6 +96,25 @@ export class RecordJobWorkBatchDto {
  * Accepting them here would offer a route to rewrite them from the packing
  * screen.
  */
+/** One packing component a batch used. Mirrors the internal packing record. */
+export class JobWorkPackagingConsumptionDto {
+  @IsUUID()
+  itemId!: string;
+
+  @Matches(QUANTITY, { message: `quantityConsumed ${QUANTITY_MESSAGE}` })
+  quantityConsumed!: string;
+
+  /** The lot it came out of, where packing material is lot-tracked. */
+  @IsOptional()
+  @IsUUID()
+  lotId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  notes?: string;
+}
+
 export class RecordJobWorkPackingDto {
   @IsOptional()
   @Matches(QUANTITY, { message: `actualQuantity ${QUANTITY_MESSAGE}` })
@@ -117,6 +136,20 @@ export class RecordJobWorkPackingDto {
   @IsOptional()
   @Matches(CALENDAR_DAY, { message: `packedOn ${CALENDAR_DAY_MESSAGE}` })
   packedOn?: string;
+
+  /**
+   * What the pack actually consumed, component by component.
+   *
+   * ABSENT AND EMPTY MEAN DIFFERENT THINGS. Omitting the field leaves what was
+   * recorded alone; sending an empty array clears it. Re-recording packing
+   * RESTATES what was used, so a present array replaces the set rather than
+   * merging into it — merging would make removing a component impossible.
+   */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => JobWorkPackagingConsumptionDto)
+  consumptions?: JobWorkPackagingConsumptionDto[];
 
   @IsOptional()
   @IsString()
