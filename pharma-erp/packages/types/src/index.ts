@@ -7,6 +7,7 @@ export * from './job-work';
 export * from './job-work-execution';
 export * from './licences';
 export * from './master-data';
+export * from './notifications';
 export * from './order-to-cash';
 export * from './packaging';
 export * from './parties';

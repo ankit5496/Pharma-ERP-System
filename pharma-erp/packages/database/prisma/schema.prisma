@@ -217,6 +217,7 @@ model Tenant {
   salesReturns          SalesReturn[]
   salesReturnItems      SalesReturnItem[]
   receivableEntries     ReceivableLedgerEntry[]
+  notificationReads     NotificationRead[]
 
   @@index([deletedAt])
   @@map("tenants")
@@ -284,6 +285,9 @@ model User {
 
   tenant    Tenant     @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   auditLogs AuditLog[]
+
+  /// Which bell notifications this person has marked read.
+  notificationReads NotificationRead[]
 
   /// Who uploaded a customer's document, for the audit trail.
   customerDocumentsUploaded CustomerDocument[]
@@ -361,6 +365,33 @@ model AuditLog {
   @@index([tenantId, entityType, entityId, createdAt])
   @@index([tenantId, userId, createdAt])
   @@map("audit_logs")
+}
+
+/// Per-user read state for the notification bell — US-COMP-01.
+///
+/// Notifications themselves are NOT stored: they are derived from live data
+/// each time the bell is read (see packages/types/src/notifications.ts). This
+/// table only remembers "this person has read the notification with this key".
+/// A row means read; marking unread deletes the row.
+///
+/// Hard deletes are allowed on purpose, unlike the business tables: this is a
+/// person's UI state, not a compliance record, and rows for notifications
+/// that no longer exist are pruned.
+model NotificationRead {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  userId   String @map("user_id") @db.Uuid
+
+  /// The notification's key, e.g. "licence-expiry:<id>:<expiry date>:<status>".
+  notificationKey String @map("notification_key") @db.VarChar(200)
+
+  readAt DateTime @default(now()) @map("read_at") @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([tenantId, userId, notificationKey])
+  @@map("notification_reads")
 }
 
 // =============================================================================

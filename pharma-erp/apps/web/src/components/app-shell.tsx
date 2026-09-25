@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 
 import { logoutAction } from '@/app/(auth)/login/actions';
+import { NotificationBell } from '@/components/notifications/notification-bell';
 import { PrimaryNav } from '@/components/primary-nav';
 import { SectionMenu } from '@/components/section-menu';
 import {
@@ -85,6 +86,7 @@ export function AppShell({
             </div>
 
             <div className="flex items-center justify-between gap-3 sm:justify-end">
+              <NotificationBell />
               <div className="min-w-0 text-left sm:text-right">
                 <p className="truncate text-sm font-medium text-slate-900">{user.fullName}</p>
                 <p className="truncate text-xs text-slate-500">{USER_ROLE_LABELS[user.role]}</p>

@@ -194,6 +194,17 @@ BEGIN
 END
 $platform$;
 
+-- Read markers for the notification bell: DELETE is how "mark as unread"
+-- works, and the blanket grant above withholds it. Mirrors migration
+-- 20260925120000.
+DO $notification_reads$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'public' AND tablename = 'notification_reads') THEN
+    GRANT DELETE ON TABLE notification_reads TO pharma_app;
+  END IF;
+END
+$notification_reads$;
+
 -- Tables added by future migrations get the same treatment without anyone
 -- having to remember. `current_user` here is the owner running this script.
 DO $defaults$
