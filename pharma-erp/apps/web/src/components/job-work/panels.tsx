@@ -22,6 +22,7 @@ import {
   type JobWorkProductionOrderView,
   type JobWorkProductionStage,
   type JobWorkRegisterGroup,
+  type PackagingRequirementView,
 } from '@pharma-erp/types';
 
 import {
@@ -53,8 +54,8 @@ import {
   EditJobWorkOrderButton,
   JobWorkQualityCheckRowActions,
   JobWorkProductionRowActions,
-  SendForApprovalButton,
-  ViewJobWorkReceiptButton,
+  JobWorkInwardRowActions,
+  ViewJobWorkInvoiceButton,
 } from './forms';
 // The Production & Quality Gate register, drawer, confirmation dialog and
 // sub-tab switcher, imported and used unchanged. That module is not modified by
@@ -71,7 +72,9 @@ import { requireSession } from '@/lib/session';
 
 import {
   IssueJobWorkMaterialForm,
+  JobWorkPackingRecordSummary,
   JobWorkReleaseDecisionForm,
+  type JobWorkPackSpecification,
   RaiseJobWorkProductionOrderForm,
   RecordJobWorkBatchForm,
   RecordJobWorkPackingForm,
@@ -666,7 +669,7 @@ export async function InwardMaterialsPanel(query: StepQuery) {
                 <Th>Challans</Th>
                 <Th>Status</Th>
                 <Th>Recorded</Th>
-                <Th>Action</Th>
+                <Th align="right">Action</Th>
               </tr>
             </thead>
             <tbody>
@@ -738,16 +741,11 @@ export async function InwardMaterialsPanel(query: StepQuery) {
                     )}
                   </Td>
 
-                  <Td>
-                    <span className="flex flex-wrap items-center gap-2">
-                      <ViewJobWorkReceiptButton receipt={receipt} />
-                      {/* Only a draft can be submitted. A receipt already with
-                          the quality user is theirs to decide, and one already
-                          decided is finished. */}
-                      {receipt.status === 'DRAFT' && (
-                        <SendForApprovalButton receipt={receipt} />
-                      )}
-                    </span>
+                  <Td align="right">
+                    {/* ONE Actions menu, as every other register on these
+                        screens has. The two controls that used to sit here
+                        side by side are its entries. */}
+                    <JobWorkInwardRowActions receipt={receipt} />
                   </Td>
                 </tr>
               ))}            </tbody>
@@ -1228,9 +1226,14 @@ export async function JobWorkMaterialIssuePanel() {
  * principal's consignment, and the packing record.
  */
 export async function JobWorkBatchRecordPanel() {
-  const [batchesResult, ordersResult] = await Promise.all([
+  const [batchesResult, ordersResult, packagingResult] = await Promise.all([
     get<JobWorkBatchView[]>('/api/v1/job-work/batches'),
     get<JobWorkProductionOrderView[]>('/api/v1/job-work/production-orders'),
+    // THE SAME SPECIFICATION REGISTER the internal batch record reads. A pack
+    // specification describes the PRODUCT — how many units go in a carton,
+    // which leaflet it takes — and that does not change according to who owns
+    // the goods. The consumption it drives is written to job work's own table.
+    get<PackagingRequirementView[]>('/api/v1/packaging/requirements'),
   ]);
 
   if (!batchesResult.ok) {
@@ -1253,16 +1256,83 @@ export async function JobWorkBatchRecordPanel() {
 
   const batches = batchesResult.data;
 
+  // The active specifications, by product, for the packing form below.
+  //
+  // Read here rather than folded into JobWorkBatchView because a product can
+  // have several presentations and the operator picks which one was run — the
+  // batch record does not know that until it is written. A failed read is not
+  // fatal: the form falls back to a free-text variant with no component rows,
+  // which is what a product with no specification gets anyway.
+  const specificationsByProduct = new Map<string, JobWorkPackSpecification[]>();
+
+  for (const requirement of packagingResult.ok ? packagingResult.data : []) {
+    if (!requirement.isActive) continue;
+
+    const specifications = specificationsByProduct.get(requirement.product.id) ?? [];
+
+    specifications.push({
+      id: requirement.id,
+      packVariant: requirement.packVariant,
+      unitsPerPack: requirement.unitsPerPack,
+      components: requirement.lines.map((line) => ({
+        id: line.item.id,
+        code: line.item.code,
+        name: line.item.name,
+        uom: line.item.uom,
+      })),
+    });
+
+    specificationsByProduct.set(requirement.product.id, specifications);
+  }
+
   // The packing form per batch, built HERE because it carries the server action
-  // binding. Only for a batch still awaiting a decision: packing cannot be
-  // amended once the quality gate has ruled, so offering the form afterwards
-  // would be a control the API refuses.
+  // binding and the product's pack specifications, neither of which the client
+  // list carries.
   const packingForms: Record<string, React.ReactNode> = {};
 
   for (const batch of batches) {
-    if (batch.releaseStatus !== 'PENDING') continue;
+    // DECIDED: the record, with no way to change it. The API refuses an
+    // amendment once the quality gate has ruled, so the form is not offered —
+    // but the figures are still part of the batch's history, and a decided
+    // batch is exactly the one somebody looks up. This used to render nothing
+    // at all, so a released batch's packing was simply unreadable.
+    if (batch.releaseStatus !== 'PENDING') {
+      if (batch.packedQuantity !== null) {
+        const specification = specificationsByProduct
+          .get(batch.product.id)
+          ?.find((entry) => entry.packVariant === batch.packVariant);
 
-    packingForms[batch.id] = <RecordJobWorkPackingForm key={batch.id} batch={batch} />;
+        packingForms[batch.id] = (
+          <JobWorkPackingRecordSummary
+            key={batch.id}
+            packedQuantity={batch.packedQuantity}
+            rejectedQuantity={batch.rejectedQuantity}
+            packVariant={batch.packVariant}
+            packedOn={batch.packedOn}
+            consumed={batch.packagingConsumed.map((entry) => {
+              const component = specification?.components.find((item) => item.id === entry.itemId);
+
+              return {
+                label: component ? `${component.code} ${component.name}` : entry.itemId,
+                quantity: component
+                  ? `${entry.quantityConsumed} ${component.uom}`
+                  : entry.quantityConsumed,
+              };
+            })}
+          />
+        );
+      }
+
+      continue;
+    }
+
+    packingForms[batch.id] = (
+      <RecordJobWorkPackingForm
+        key={batch.id}
+        batch={batch}
+        packSpecifications={specificationsByProduct.get(batch.product.id) ?? []}
+      />
+    );
   }
 
   // NO `form` ON THE REGISTER — the form opens its own modal, the requisition
@@ -1271,20 +1341,28 @@ export async function JobWorkBatchRecordPanel() {
     <ProductionRegister>
       <div className="p-6">
         {batches.length === 0 ? (
-          <ProductionEmptyState>
-            {awaitingBatch.length > 0
-              ? 'No batches yet. A production order has material issued and is ready to open one.'
-              : 'No batches yet. Issue the principal’s material against a production order first.'}
-          </ProductionEmptyState>
+          // The trigger sits WITH the empty state rather than being withheld
+          // until the first batch exists: an empty register is exactly when
+          // somebody is looking for the way to open one.
+          <div className="space-y-4">
+            <div className="flex justify-end">
+              <RecordJobWorkBatchForm orders={awaitingBatch} />
+            </div>
+
+            <ProductionEmptyState>
+              {awaitingBatch.length > 0
+                ? 'No batches yet. A production order has material issued and is ready to open one.'
+                : 'No batches yet. Issue the principal’s material against a production order first.'}
+            </ProductionEmptyState>
+          </div>
         ) : (
           <JobWorkBatchRecords
             batches={batches}
             packingFormFor={packingForms}
-            toolbarAction={
-              awaitingBatch.length > 0 ? (
-                <RecordJobWorkBatchForm orders={awaitingBatch} />
-              ) : undefined
-            }
+            // ALWAYS OFFERED, as the internal register offers its own: a
+            // trigger that vanishes when nothing is waiting reads as the
+            // feature being missing. The form opens and explains instead.
+            toolbarAction={<RecordJobWorkBatchForm orders={awaitingBatch} />}
           />
         )}
       </div>
@@ -1331,7 +1409,27 @@ export async function JobWorkBatchReleasePanel() {
     );
   }
 
-  const pending = batchesResult.data.filter((batch) => batch.releaseStatus === 'PENDING');
+  /**
+   * AWAITING A DECISION, AND ACTUALLY READY FOR ONE.
+   *
+   * `PENDING` alone is not enough: a batch is pending from the moment it is
+   * opened, so the gate used to list batches whose packing had never been
+   * entered. The quality officer was being asked to release something nobody
+   * had finished making, and the figures the verdict turns on — quantity
+   * manufactured, quantity packed — were dashes on the row.
+   *
+   * `packedOn` is the signal rather than `packedQuantity`, because it records
+   * the packing HAVING HAPPENED. A run that genuinely packed nothing still has
+   * a date and is still a batch someone must decide on; keying on the quantity
+   * would hide it forever.
+   *
+   * A batch still in production is not lost — it sits in the Batch record
+   * register until its packing is entered, which is where the work to finish it
+   * is done.
+   */
+  const pending = batchesResult.data.filter(
+    (batch) => batch.releaseStatus === 'PENDING' && batch.packedOn !== null,
+  );
   const decided = batchesResult.data.filter((batch) => batch.releaseStatus !== 'PENDING');
   const released = batchesResult.data.filter((batch) => batch.releaseStatus === 'RELEASED');
 
@@ -1347,29 +1445,40 @@ export async function JobWorkBatchReleasePanel() {
     releaseForms[batch.id] = <JobWorkReleaseDecisionForm key={batch.id} batch={batch} />;
   }
 
+  // THE SAME THREE TABS, IN THE SAME ORDER, as the internal gate: the decision,
+  // the stock it produced, then every decision already made.
+  //
+  // ONE NAME DIFFERS, deliberately. The internal middle tab is "Sellable
+  // Stock"; a released job-work batch is NOT sellable by us — it belongs to the
+  // principal and leaves on a dispatch challan — so calling it that here would
+  // put a claim on screen that is wrong in the one place it matters. The tab is
+  // the same register of what release produced, under a name that is true.
   return (
-    <ProductionTabs
-      tabs={[
-        {
-          key: 'gate',
-          label: 'Batch release',
-          badge: String(pending.length),
-          panel: <JobWorkPendingReleaseList batches={pending} formFor={releaseForms} />,
-        },
-        {
-          key: 'released',
-          label: 'Released',
-          badge: String(released.length),
-          panel: <JobWorkReleasedTable batches={released} />,
-        },
-        {
-          key: 'decided',
-          label: 'Decided',
-          badge: String(decided.length),
-          panel: <JobWorkDecidedTable batches={decided} />,
-        },
-      ]}
-    />
+    <div className="space-y-4">
+      <ProductionTabs
+        tabs={[
+          // NO COUNT BADGES. Each register below states its own total in its
+          // toolbar — "4 batches" — so a number on the tab restated it, and two
+          // counts for one list invite a comparison to check they agree. It is
+          // also what the internal gate does: its tabs carry labels only.
+          {
+            key: 'gate',
+            label: 'Batch Release',
+            panel: <JobWorkPendingReleaseList batches={pending} formFor={releaseForms} />,
+          },
+          {
+            key: 'stock',
+            label: 'Released Stock',
+            panel: <JobWorkReleasedTable batches={released} />,
+          },
+          {
+            key: 'decided',
+            label: 'Released',
+            panel: <JobWorkDecidedTable batches={decided} />,
+          },
+        ]}
+      />
+    </div>
   );
 }
 
@@ -1378,25 +1487,29 @@ export async function JobWorkBatchReleasePanel() {
 // ---------------------------------------------------------------------------
 
 export async function OutwardDispatchPanel(query: StepQuery) {
-  const orders = await apiFetch<JobWorkOrderSummary[]>('/api/v1/job-work/orders', {
-    authenticated: true,
-  });
+  // THREE READS FOR THE WHOLE SCREEN, not three plus one per order.
+  //
+  // This used to ask `/orders/:id/dispatchable` once per job-work order —
+  // eighty requests on the current data, each opening its own tenant-scoped
+  // transaction, with the page waiting on the slowest. It is the same fan-out
+  // that tripped the thirty-second timeout on production orders, and the same
+  // remedy: one endpoint that answers for every order at once.
+  const [orders, ready, invoices] = await Promise.all([
+    apiFetch<JobWorkOrderSummary[]>('/api/v1/job-work/orders', { authenticated: true }),
+    apiFetch<Record<string, JobWorkDispatchableBatch[]>>('/api/v1/job-work/dispatchable', {
+      authenticated: true,
+    }),
+    apiFetch<JobWorkInvoiceView[]>('/api/v1/job-work/invoices', { authenticated: true }),
+  ]);
+
+  // An order with nothing ready is simply absent from the map, which is what
+  // the row filter below already tests for.
+  const batchesFor = (orderId: string): JobWorkDispatchableBatch[] =>
+    (ready.ok ? (ready.data[orderId] ?? []) : []);
 
   const dispatchable = orders.ok
-    ? await Promise.all(
-        orders.data.map(async (order) => ({
-          order,
-          batches: await apiFetch<JobWorkDispatchableBatch[]>(
-            `/api/v1/job-work/orders/${order.id}/dispatchable`,
-            { authenticated: true },
-          ),
-        })),
-      )
+    ? orders.data.map((order) => ({ order, batches: batchesFor(order.id) }))
     : [];
-
-  const invoices = await apiFetch<JobWorkInvoiceView[]>('/api/v1/job-work/invoices', {
-    authenticated: true,
-  });
 
   const search = param(query, 'search');
   const principalId = param(query, 'principalId');
@@ -1448,8 +1561,12 @@ export async function OutwardDispatchPanel(query: StepQuery) {
 
         {!orders.ok ? (
           <ErrorState message={`Could not load job-work orders: ${orders.error}`} />
-        ) : dispatchable.length === 0 ? (
-          <EmptyState title="No job-work orders yet." hint="Raise one to begin." />
+        ) : readyRows.length === 0 ? (
+          <EmptyState
+            title={dispatchable.length === 0 ? 'No job-work orders yet.' : 'No order matches that.'}
+            hint={dispatchable.length === 0 ? 'Raise one to begin.' : undefined}
+            filtered={dispatchable.length > 0}
+          />
         ) : (
           <TableWrap>
             <table className="w-full min-w-[78rem] text-left text-sm">
@@ -1464,7 +1581,10 @@ export async function OutwardDispatchPanel(query: StepQuery) {
                 </tr>
               </thead>
               <tbody>
-                {dispatchable.map(({ order, batches }) => (
+                {/* `readyRows`, NOT `dispatchable`. The body listed every order
+                    while the heading counted the filtered ones, so searching
+                    this register changed the count and nothing else. */}
+                {readyRows.map(({ order, batches }) => (
                   <tr key={order.id}>
                     <Td>
                       <p className="font-mono text-xs font-semibold text-slate-900">
@@ -1486,7 +1606,7 @@ export async function OutwardDispatchPanel(query: StepQuery) {
                       </DerivedValue>
                     </Td>
 
-                    <Td align="right">{batches.ok ? batches.data.length : '—'}</Td>
+                    <Td align="right">{batches.length}</Td>
 
                     <Td align="right">
                       <Qty value={order.dispatchedQuantity} />
@@ -1495,7 +1615,7 @@ export async function OutwardDispatchPanel(query: StepQuery) {
                     <Td>
                       <CreateJobWorkDispatchButton
                         order={order}
-                        batches={batches.ok ? batches.data : []}
+                        batches={batches}
                       />
                     </Td>
                   </tr>
@@ -1564,9 +1684,16 @@ export async function OutwardDispatchPanel(query: StepQuery) {
 // ---------------------------------------------------------------------------
 
 export async function JobWorkBillingPanel(query: StepQuery) {
-  const invoices = await apiFetch<JobWorkInvoiceView[]>('/api/v1/job-work/invoices', {
-    authenticated: true,
-  });
+  // TWO READS, IN PARALLEL, AND NO MORE. The orders carry the product, the
+  // ordered quantity and the delivery date, none of which is on the invoice —
+  // so the View dialog needs them. Fetched once for the page and matched by id
+  // below, rather than once per row.
+  const [invoices, orders] = await Promise.all([
+    apiFetch<JobWorkInvoiceView[]>('/api/v1/job-work/invoices', { authenticated: true }),
+    apiFetch<JobWorkOrderSummary[]>('/api/v1/job-work/orders', { authenticated: true }),
+  ]);
+
+  const orderById = new Map((orders.ok ? orders.data : []).map((order) => [order.id, order]));
 
   const search = param(query, 'search');
   const principalId = param(query, 'principalId');
@@ -1631,10 +1758,15 @@ export async function JobWorkBillingPanel(query: StepQuery) {
                 <Th align="right">GST</Th>
                 <Th align="right">Total</Th>
                 <Th>Date</Th>
+                <Th align="right">Action</Th>
               </tr>
             </thead>
             <tbody>
-              {invoices.data.map((invoice) => (
+              {/* `rows`, NOT `invoices.data`. The body listed every invoice
+                  while the heading counted the filtered ones, so searching this
+                  register changed the count and nothing else — which reads as
+                  the search being broken. */}
+              {rows.map((invoice) => (
                 <tr key={invoice.id}>
                   <Td>
                     <p className="font-mono text-xs font-semibold text-slate-900">
@@ -1694,6 +1826,13 @@ export async function JobWorkBillingPanel(query: StepQuery) {
 
                   <Td>
                     <DateText value={invoice.dispatchDate} />
+                  </Td>
+
+                  <Td align="right">
+                    <ViewJobWorkInvoiceButton
+                      invoice={invoice}
+                      order={orderById.get(invoice.jobWorkOrderId)}
+                    />
                   </Td>
                 </tr>
               ))}

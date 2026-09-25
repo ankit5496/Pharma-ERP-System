@@ -820,6 +820,37 @@ export async function recordJobWorkPackingAction(
     if (value) body[field] = value;
   }
 
+  // WHAT THE PACK CONSUMED, component by component. The rows are named
+  // `component.<row>.itemId`, so they are found by walking the field names
+  // rather than by guessing how many the specification put on screen.
+  const consumptions: { itemId: string; quantityConsumed: string }[] = [];
+
+  for (const [key, value] of form.entries()) {
+    const match = /^component\.(\d+)\.itemId$/.exec(key);
+
+    if (!match || typeof value !== 'string' || !value) continue;
+
+    const quantity = String(form.get(`component.${match[1]}.quantityConsumed`) ?? '').trim();
+
+    // A component left blank is a row nobody filled in, not an error: the form
+    // offers a line per component the specification expects, and a run that
+    // used none of one is a real answer.
+    if (!quantity) continue;
+
+    consumptions.push({ itemId: value, quantityConsumed: quantity });
+  }
+
+  // CONSUMPTION WITHOUT A VARIANT IS NOT RECORDABLE. The component rows exist
+  // because a pack specification named them, so figures arriving with no
+  // variant mean the select was left on --None-- while the rows were filled
+  // in, and the record would carry consumption nobody could tie back to a
+  // presentation.
+  if (consumptions.length > 0 && !body.packVariant) {
+    return { status: 'error', message: 'Choose the pack variant that was run.' };
+  }
+
+  if (consumptions.length > 0) body.consumptions = consumptions;
+
   const result = await apiFetch<JobWorkBatchView>(`/api/v1/job-work/batches/${id}`, {
     method: 'PATCH',
     authenticated: true,

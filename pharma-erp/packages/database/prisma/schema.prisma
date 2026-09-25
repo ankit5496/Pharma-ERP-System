@@ -169,6 +169,7 @@ model Tenant {
   jobWorkMaterialIssues       JobWorkMaterialIssue[]
   jobWorkMaterialIssueLines   JobWorkMaterialIssueLine[]
   jobWorkBatches              JobWorkBatch[]
+  jobWorkBatchPackagingUse    JobWorkBatchPackagingConsumption[]
   jobWorkInvoices         JobWorkInvoice[]
 
   // Packaging: what each pack presentation consumes.
@@ -1342,6 +1343,7 @@ model Item {
   issueLines        MaterialIssueLine[]
   jobWorkReceiptLines   JobWorkMaterialReceiptLine[]
   jobWorkIssueLines     JobWorkMaterialIssueLine[]
+  jobWorkPackagingUse   JobWorkBatchPackagingConsumption[] @relation("JobWorkBatchPackagingComponent")
   finishedGoodsLots FinishedGoodsLot[]
   salesOrderItems   SalesOrderItem[]
   salesInvoiceItems SalesInvoiceItem[]
@@ -2048,6 +2050,48 @@ model JobWorkMaterialIssue {
   @@map("job_work_material_issues")
 }
 
+/// One packing component a job-work batch consumed.
+///
+/// Modelled on BatchPackagingConsumption, and separate from it for the reason
+/// every other table in this module is: a job-work batch is not a Batch, and
+/// pointing one child table at two parents is not possible.
+///
+/// WHY IT IS RECORDED AT ALL: a recall asks which carton lot went onto which
+/// batch, and a packed quantity alone cannot answer that.
+model JobWorkBatchPackagingConsumption {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  jobWorkBatchId String @map("job_work_batch_id") @db.Uuid
+
+  /// The packing material. An Item of type PACKING_MATERIAL, checked by the
+  /// service — a CHECK constraint cannot read another table.
+  itemId String @map("item_id") @db.Uuid
+
+  quantityConsumed Decimal @map("quantity_consumed") @db.Decimal(14, 3)
+
+  /// The stock lot it came out of, where the line recorded one. Nullable for
+  /// the same reason as internally: packing material is not always
+  /// lot-tracked, and a recall that cannot name the carton lot is still
+  /// better than no record of the carton.
+  lotId String? @map("lot_id") @db.Uuid
+
+  notes String? @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  batch  JobWorkBatch @relation(fields: [jobWorkBatchId], references: [id], onDelete: Cascade)
+  item   Item         @relation("JobWorkBatchPackagingComponent", fields: [itemId], references: [id], onDelete: Restrict)
+  lot    StockLot?    @relation("JobWorkBatchPackagingLot", fields: [lotId], references: [id], onDelete: Restrict)
+
+  /// One line per component per batch.
+  @@unique([jobWorkBatchId, itemId])
+  @@index([tenantId, itemId])
+  @@map("job_work_batch_packaging_consumptions")
+}
+
 /// One drum drawn against a job-work batch.
 model JobWorkMaterialIssueLine {
   id       String @id @default(uuid()) @db.Uuid
@@ -2131,6 +2175,9 @@ model JobWorkBatch {
 
   /// What has been sent back to the principal out of this batch.
   invoices JobWorkInvoice[]
+
+  /// Which packing components this batch actually used, and how much of each.
+  packagingConsumptions JobWorkBatchPackagingConsumption[]
   releaseDecidedBy User?                  @relation("JobWorkBatchReleaseDecidedBy", fields: [releaseDecidedById], references: [id], onDelete: Restrict)
 
   @@unique([tenantId, batchNumber])
@@ -2765,6 +2812,7 @@ model StockLot {
   qcResults             QcResult[]
   ledgerEntries         StockLedgerEntry[]
   jobWorkIssueLines     JobWorkMaterialIssueLine[] @relation("JobWorkIssueLotLines")
+  jobWorkPackagingUse   JobWorkBatchPackagingConsumption[] @relation("JobWorkBatchPackagingLot")
   /// Production consumes the same stock Procure-to-Pay received; see the note
   /// on MaterialIssueLine.lot.
   issueLines            MaterialIssueLine[]

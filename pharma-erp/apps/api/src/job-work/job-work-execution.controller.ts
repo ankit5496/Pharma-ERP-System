@@ -441,6 +441,23 @@ export class JobWorkExecutionController {
   // US-JW-05 — dispatch and invoice
   // ---------------------------------------------------------------------------
 
+  /**
+   * The same answer for every order at once, keyed by order id.
+   *
+   * DECLARED BEFORE `orders/:id/dispatchable` ON PURPOSE — Nest matches routes
+   * in declaration order, and a literal that could be read as a parameter has
+   * to come first or the parameterised route swallows it.
+   *
+   * It exists because the Outward dispatch screen lists every order: asking per
+   * order meant eighty requests to draw one page, which is the fan-out that
+   * tripped the thirty-second timeout on production orders.
+   */
+  @Get('dispatchable')
+  @SkipAudit('Read-only lookup for the dispatch screen.')
+  async dispatchableByOrder(): Promise<Record<string, JobWorkDispatchableBatch[]>> {
+    return this.dispatch.dispatchableByOrder();
+  }
+
   /** Released batches with stock left, for this order. */
   @Get('orders/:id/dispatchable')
   @SkipAudit('Read-only lookup for the dispatch form.')
