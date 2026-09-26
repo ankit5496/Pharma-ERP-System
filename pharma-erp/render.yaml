@@ -1,7 +1,12 @@
 # Render Blueprint — https://render.com/docs/blueprint-spec
 #
-# Creates three resources: a Postgres database, the NestJS API, and the Next.js
-# web app. Deploy with Render → New → Blueprint, pointed at this repository.
+# Creates two resources: a Postgres database, and one web service that runs
+# BOTH the Next.js web app and the NestJS API in a single process (see
+# apps/server). They used to be two separate Render web services; merging
+# them into one saves a full service's cost and turns what used to be a
+# public-internet round trip (web → API) into an in-process call — see
+# apps/server/src/index.ts and docs/Service-Merge-Plan-Web-API.docx for why.
+# Deploy with Render → New → Blueprint, pointed at this repository.
 #
 # BEFORE the first deploy succeeds you must do two manual things — see
 # "Deploying to Render" in the README for the walkthrough:
@@ -14,7 +19,7 @@
 #      so Render cannot supply it. JWT_SECRET no longer needs a manual value:
 #      Render generates it (see the note on that key).
 #
-# If the API deploy crash-loops on "Invalid environment configuration", read the
+# If the deploy crash-loops on "Invalid environment configuration", read the
 # variable name in that error and set it here — the API validates its whole
 # environment before starting, on purpose, so a missing secret is a refusal to
 # boot rather than a runtime failure once users are on it. Note the second-order
@@ -38,20 +43,24 @@ databases:
 
 services:
   # ---------------------------------------------------------------------------
-  # API — NestJS
+  # Merged web + API — Next.js and NestJS in one process (apps/server)
   # ---------------------------------------------------------------------------
   - type: web
-    name: Pharma-ERP
+    name: pharma-erp
     runtime: node
     plan: starter
-    region: oregon # keep the database and both services in one region
+    region: oregon # keep the database and this service in one region
     branch: main
     # The project lives in a subfolder of the repository, so every command runs
     # from here. Omit it and paths resolve one directory too high, which surfaces
-    # as "Cannot find module .../apps/api/dist/main.js" at start-up.
+    # as "Cannot find module .../apps/server/dist/index.js" at start-up.
     rootDir: pharma-erp
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm turbo run build --filter=@pharma-erp/api
-    startCommand: node apps/api/dist/main.js
+    # Explicit --filter per package, not `@pharma-erp/server...`: apps/server's
+    # reliance on apps/web's build output is a directory Next.js reads at
+    # runtime, not a JS import, so Turborepo's dependency-graph inference can't
+    # be trusted to pull apps/web's build in automatically.
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm turbo run build --filter=@pharma-erp/api --filter=@pharma-erp/web --filter=@pharma-erp/server
+    startCommand: node apps/server/dist/index.js
     # Migrations run once per deploy, before the new instance takes traffic.
     # Requires a paid instance type; on the free tier, run `pnpm db:migrate:deploy`
     # from a shell against MIGRATION_DATABASE_URL instead.
@@ -80,14 +89,24 @@ services:
       - key: DATABASE_URL
         sync: false
 
-      # Still set, though CORS is no longer load-bearing: the browser talks only
-      # to the web origin and Next.js forwards to the API server-side, so there is
-      # no cross-origin request to permit. Kept for direct API clients.
+      # apps/web's server-side API client (apps/web/src/lib/env.ts) reads this
+      # at runtime and prefers it over NEXT_PUBLIC_API_URL. Since the API now
+      # lives in the SAME process as the web app, this is a loopback call, not
+      # a network hop — the exact thing that used to leave Render's network,
+      # cross the public edge, and risk a 429 under load. Value must match the
+      # PORT Render assigns this service (Render's default is 10000; check the
+      # dashboard's "Port" field if this service ever binds a different one).
+      - key: API_URL
+        value: http://127.0.0.1:10000
+
+      # CORS origin. No longer load-bearing for browser traffic — the browser
+      # only ever talks to this one service now — but the API's env schema
+      # still reads it, so it's kept for direct API clients. Defaults to
+      # http://localhost:3000 if unset; set to this service's own public URL
+      # after the first deploy if you want it to reflect reality.
       - key: WEB_ORIGIN
-        fromService:
-          name: pharma-erp-web
-          type: web
-          property: host
+        sync: false
+
       # HMAC key for signing access tokens.
       #
       # generateValue rather than sync:false, because sync:false leaves the
@@ -110,60 +129,3 @@ services:
 
       - key: APP_VERSION
         value: '0.1.0'
-
-  # ---------------------------------------------------------------------------
-  # Web — Next.js
-  # ---------------------------------------------------------------------------
-  - type: web
-    name: pharma-erp-web
-    runtime: node
-    plan: starter
-    region: oregon
-    branch: main
-    # The project lives in a subfolder of the repository, so every command runs
-    # from here. Omit it and paths resolve one directory too high, which surfaces
-    # as "Cannot find module .../apps/api/dist/main.js" at start-up.
-    rootDir: pharma-erp
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm turbo run build --filter=@pharma-erp/web
-    startCommand: pnpm --filter @pharma-erp/web start
-    healthCheckPath: /login
-    autoDeploy: true
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: NODE_VERSION
-        value: '22'
-      - key: PNPM_VERSION
-        value: '9.15.4'
-
-      # NEXT_PUBLIC_* are inlined into the browser bundle at BUILD time, not read
-      # at runtime. Changing either of these requires a rebuild, not a restart —
-      # Render does rebuild on an env var change, so this is handled, but it is
-      # why a "just restart it" fix will not pick up a new value.
-      # `host` is a bare hostname with no scheme — Render exposes no property
-      # that includes one — so readApiUrl() in apps/web/src/lib/env.ts accepts a
-      # hostname and assumes https.
-      - key: NEXT_PUBLIC_API_URL
-        fromService:
-          name: Pharma-ERP
-          type: web
-          property: host
-
-      # API_URL — server-to-server address for the API, over Render private
-      # networking. NOT set here, and cannot be: the private hostname carries the
-      # same Render-assigned slug as the public one (this deployment’s API is
-      # pharma-erp-5hav.onrender.com, not pharma-erp.onrender.com, because the
-      # plain name was taken), and no `fromService` property exposes a private
-      # address. Any value written here would be a guess that is wrong for every
-      # deployment but the one it was written for.
-      #
-      # Set it in the dashboard instead, on the WEB service, to the private address
-      # Render shows for the API service:
-      #   API_URL = http://<api-private-host>:<port>
-      # The port is the one the API logs at start-up ("API listening on port").
-      #
-      # Leaving it unset is safe and is the default: readApiUrl falls back to
-      # NEXT_PUBLIC_API_URL above, which reaches the API over its public hostname.
-      # That works, but every page render then leaves Render’s network and returns
-      # through the edge, which rate-limits it — the cause of a 429 answered to
-      # this very service under load.
