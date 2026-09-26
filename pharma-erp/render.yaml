@@ -59,7 +59,14 @@ services:
     # reliance on apps/web's build output is a directory Next.js reads at
     # runtime, not a JS import, so Turborepo's dependency-graph inference can't
     # be trusted to pull apps/web's build in automatically.
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm turbo run build --filter=@pharma-erp/api --filter=@pharma-erp/web --filter=@pharma-erp/server
+    #
+    # --prod=false on install: NODE_ENV=production is set below (the API reads
+    # it at runtime), but pnpm also reads it during `install` and — on a build
+    # with no prior node_modules cache — skips devDependencies entirely on that
+    # signal alone. turbo itself is a root devDependency, so a from-scratch
+    # build then fails with "Command "turbo" not found" before a single package
+    # builds. --prod=false forces devDependencies in regardless of NODE_ENV.
+    buildCommand: corepack enable && pnpm install --frozen-lockfile --prod=false && pnpm turbo run build --filter=@pharma-erp/api --filter=@pharma-erp/web --filter=@pharma-erp/server
     startCommand: node apps/server/dist/index.js
     # Migrations run once per deploy, before the new instance takes traffic.
     # Requires a paid instance type; on the free tier, run `pnpm db:migrate:deploy`
