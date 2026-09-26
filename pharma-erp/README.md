@@ -446,7 +446,7 @@ The script refuses without elevation rather than failing halfway through.
 
 ## Deploying to Render
 
-`render.yaml` is a [Blueprint](https://render.com/docs/blueprint-spec) that creates three resources: a Postgres database, the API, and the web app.
+`render.yaml` is a [Blueprint](https://render.com/docs/blueprint-spec) that creates two resources: a Postgres database, and one web service running both the API and the web app (see `apps/server`, and `docs/Service-Merge-Plan-Web-API.docx` for why they're merged).
 
 ### The one thing that will bite you
 
@@ -464,7 +464,7 @@ This was found by running the migrations against a deliberately non-superuser ow
 
 1. **Push the repo** to GitHub or GitLab.
 
-2. **Render → New → Blueprint**, select the repo. It reads `render.yaml` and shows three resources. Create them. The first deploy will fail — expected, since the secrets are not set yet.
+2. **Render → New → Blueprint**, select the repo. It reads `render.yaml` and shows two resources. Create them. The first deploy will fail — expected, since the secrets are not set yet.
 
 3. **Apply migrations, then run the bootstrap script**, using the _External Database URL_ from the Render dashboard. Edit `app_password` at the top of the script to a long random value first:
 
@@ -508,7 +508,7 @@ This was found by running the migrations against a deliberately non-superuser ow
 - **`PORT`** is injected by Render and takes precedence over `API_PORT`. Binding anything else means the deploy never turns healthy, with no error explaining why.
 - **`preDeployCommand`** runs migrations before the new instance takes traffic, and requires a paid instance type. On the free tier, remove it and run `pnpm db:migrate:deploy` by hand.
 - **The health check** is `/health/ready`, which returns 503 when Postgres is unreachable — so Render will not route traffic to an instance that cannot serve.
-- **Keep all three resources in one region.** Cross-region database latency is paid on every request.
+- **Keep both resources in one region.** Cross-region database latency is paid on every request.
 
 ### Fallback if you cannot create a second role
 
