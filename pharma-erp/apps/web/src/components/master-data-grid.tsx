@@ -26,6 +26,7 @@ import {
   type LicenceRegister,
   type LicenceStatus,
   type LicenceSummary,
+  type MaterialRequirementRegisterRow,
   type PackagingLevel,
   type PackagingLineView,
   type PackagingRequirementView,
@@ -130,7 +131,12 @@ function Toolbar({
   values: Record<string, string>;
   onField: (name: string, value: string) => void;
   onClear: () => void;
-  onNew: () => void;
+  /**
+   * Omitted by a register nothing is entered into — the material requirement
+   * is computed when a sales order is confirmed, and a "New" button there
+   * would promise a form that does not and should not exist.
+   */
+  onNew?: () => void;
 }) {
   return (
     <ListFilters
@@ -146,13 +152,15 @@ function Toolbar({
       onQuery={onQuery}
       searchPlaceholder={`Search ${noun}…`}
     >
-      <button
-        type="button"
-        onClick={onNew}
-        className="h-9 whitespace-nowrap rounded-md bg-slate-900 px-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
-      >
-        New {singular}
-      </button>
+      {onNew && (
+        <button
+          type="button"
+          onClick={onNew}
+          className="h-9 whitespace-nowrap rounded-md bg-slate-900 px-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+        >
+          New {singular}
+        </button>
+      )}
     </ListFilters>
   );
 }
@@ -277,7 +285,8 @@ export function Grid<Row>({
   singular: string;
   /** The heading. Defaults to the plural noun, capitalised. */
   title?: string;
-  onNew: () => void;
+  /** Omitted by a computed register — see the toolbar's own note. */
+  onNew?: () => void;
   empty: ReactNode;
   /** Shown under the toolbar — a refusal from a row action, typically. */
   notice?: ReactNode;
@@ -2349,4 +2358,154 @@ export function PlannedGrid({
 
 function LoadFailed({ error }: { error: string }) {
   return <p className="px-6 py-8 text-sm text-red-800">Could not load this register: {error}</p>;
+}
+
+/**
+ * The material requirement register — US-MD-07.
+ *
+ * THE ONE REGISTER HERE NOBODY TYPES INTO. Every other tab in Master Data holds
+ * records somebody defines; these are computed when a sales order is confirmed.
+ * So there is no New button and no row actions: nothing on this screen is
+ * anybody's to change, and a control that implied otherwise would be a lie
+ * about where the numbers come from.
+ *
+ * SHORTFALLS FIRST, from the API. The reason to open this is to find what
+ * cannot be covered, and a register sorted by date buries the four rows
+ * somebody has to act on beneath three hundred that are fine.
+ *
+ * COVERED SHORTFALLS STAY. A material that was short and now has a requisition
+ * against it is exactly what somebody chasing a purchase comes here to find.
+ */
+export function MaterialRequirementGrid({
+  result,
+}: {
+  result: ApiResult<MaterialRequirementRegisterRow[]>;
+}) {
+  if (!result.ok) return <LoadFailed error={result.error} />;
+
+  const columns: GridColumn<MaterialRequirementRegisterRow>[] = [
+    {
+      key: 'order',
+      label: 'Sales Order',
+      render: (row) => (
+        <>
+          <p className="font-mono text-xs font-medium text-slate-900">
+            {row.salesOrder.orderNumber}
+          </p>
+          <p className="mt-0.5 text-[11px] text-slate-500">{row.salesOrder.customerName}</p>
+        </>
+      ),
+    },
+    {
+      key: 'material',
+      label: 'Material',
+      render: (row) => (
+        <>
+          <p className="text-sm text-slate-900">{row.item.name}</p>
+          <p className="mt-0.5 font-mono text-[11px] text-slate-500">{row.item.code}</p>
+        </>
+      ),
+    },
+    {
+      key: 'required',
+      label: 'Required',
+      align: 'right',
+      render: (row) => (
+        <span className="tabular-nums text-slate-900">
+          {row.quantityRequired} <span className="text-xs text-slate-500">{row.item.uom}</span>
+        </span>
+      ),
+    },
+    {
+      key: 'available',
+      label: 'Available',
+      align: 'right',
+      render: (row) => (
+        <span className="tabular-nums text-slate-600">{row.quantityAvailable}</span>
+      ),
+    },
+    {
+      key: 'short',
+      label: 'Short',
+      align: 'right',
+      // A zero shortfall reads as a dash, not "0". This column is SCANNED for
+      // what is missing, and a screen of zeroes hides the rows that are not.
+      render: (row) =>
+        Number(row.quantityShort) > 0 ? (
+          <span className="font-semibold tabular-nums text-red-700">{row.quantityShort}</span>
+        ) : (
+          <span className="text-slate-400">—</span>
+        ),
+    },
+    {
+      key: 'requisition',
+      label: 'Requisition',
+      render: (row) =>
+        row.requisition ? (
+          <span className="font-mono text-xs text-slate-700">{row.requisition.number}</span>
+        ) : (
+          <span className="text-xs text-slate-400">—</span>
+        ),
+    },
+    {
+      key: 'determined',
+      label: 'Determined',
+      render: (row) => (
+        <span className="whitespace-nowrap text-xs text-slate-600">
+          {new Date(row.determinedAt).toLocaleDateString('en-IN', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+          })}
+        </span>
+      ),
+    },
+  ];
+
+  const short = result.data.filter((row) => Number(row.quantityShort) > 0).length;
+
+  return (
+    <Grid
+      rows={result.data}
+      columns={columns}
+      rowKey={(row) => row.id}
+      searchText={(row) =>
+        [
+          row.salesOrder.orderNumber,
+          row.salesOrder.customerName,
+          row.salesOrder.customerCode,
+          row.item.code,
+          row.item.name,
+          row.requisition?.number,
+        ]
+          .filter(Boolean)
+          .join(' ')
+      }
+      noun="material requirements"
+      singular="material requirement"
+      title="Material Requirement"
+      notice={
+        <p className="border-b border-slate-200 bg-slate-50/60 px-4 py-2 text-xs text-slate-600">
+          {short > 0 ? (
+            <>
+              <strong className="font-semibold text-red-700">
+                {short} {short === 1 ? 'material is' : 'materials are'} short
+              </strong>{' '}
+              across confirmed orders.{' '}
+            </>
+          ) : (
+            <>Every confirmed order can be made from stock. </>
+          )}
+          Determined when a sales order is confirmed — required includes overage, and available is
+          stock as at that moment rather than now.
+        </p>
+      }
+      empty={
+        <>
+          Nothing determined yet. Confirming a sales order works out what it will take to make and
+          records it here, raising a requisition for anything short.
+        </>
+      }
+    />
+  );
 }

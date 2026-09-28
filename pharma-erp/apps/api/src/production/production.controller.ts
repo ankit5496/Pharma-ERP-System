@@ -13,18 +13,20 @@ import {
   Query,
 } from '@nestjs/common';
 
-import type {
-  BatchView,
-  BomView,
-  FinishedGoodsLotView,
-  ItemSummary,
-  MaterialIssuePlan,
-  MaterialIssueView,
-  ProductionStockLot,
-  ProductionOrderSummary,
-  WorkOrderFeasibility,
+import {
+  ITEM_TYPES,
+  type BatchView,
+  type BomView,
+  type FinishedGoodsLotView,
+  type ItemSummary,
+  type ItemType,
+  type MaterialIssuePlan,
+  type MaterialIssueView,
+  type MaterialRequirementRegisterRow,
+  type ProductionStockLot,
+  type ProductionOrderSummary,
+  type WorkOrderFeasibility,
 } from '@pharma-erp/types';
-import { ITEM_TYPES, type ItemType } from '@pharma-erp/types';
 
 import { Roles } from '../auth/auth.decorators';
 import { Auditable, SkipAudit } from '../common/audit/audit.decorators';
@@ -42,6 +44,7 @@ import {
   UpdateItemDto,
 } from './dto/production.dto';
 import { MaterialIssueService } from './material-issue.service';
+import { MaterialRequirementService } from './material-requirement.service';
 import { ProductionService } from './production.service';
 
 /**
@@ -70,6 +73,7 @@ export class ProductionController {
     private readonly production: ProductionService,
     private readonly materialIssue: MaterialIssueService,
     private readonly batches: BatchService,
+    private readonly materialRequirement: MaterialRequirementService,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -136,6 +140,19 @@ export class ProductionController {
   @SkipAudit('Read-only stock listing.')
   async listStockLots(): Promise<ProductionStockLot[]> {
     return this.production.listStockLots();
+  }
+
+  /**
+   * The material requirement register — US-MD-07, across every order.
+   *
+   * A READ, and only a read: the determination is written when a sales order is
+   * confirmed. A register that recomputed on being opened would raise
+   * requisitions every time somebody looked at it.
+   */
+  @Get('material-requirements')
+  @SkipAudit('Read-only listing.')
+  async listMaterialRequirements(): Promise<MaterialRequirementRegisterRow[]> {
+    return this.materialRequirement.listRegister();
   }
 
   // -------------------------------------------------------------------------

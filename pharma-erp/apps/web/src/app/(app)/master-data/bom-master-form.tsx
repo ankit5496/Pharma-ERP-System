@@ -327,6 +327,9 @@ export function BomMasterForm({
                 defaultValue={typed(`raw.${id}.overagePercent`)}
                 hint="Blank uses the formulation default."
               />
+              {/* Descriptive, and honest about it: nothing schedules by stage,
+                  but a formulation that names where each material goes in is
+                  worth more to whoever reads it than one that does not. */}
               <TextField
                 name={`raw.${id}.manufacturingStage`}
                 label="Stage"
@@ -335,16 +338,18 @@ export function BomMasterForm({
                 placeholder="Granulation"
                 defaultValue={typed(`raw.${id}.manufacturingStage`)}
               />
-              {/* A CHECKBOX, defaulting to ticked: every line written before
-                  this field existed was mandatory in practice, and the common
-                  case should not need a decision. Unticking it says a batch may
-                  proceed without this material rather than being blocked. */}
-              <CheckboxField
-                name={`raw.${id}.isMandatory`}
-                label="Mandatory"
-                defaultChecked={typed(`raw.${id}.isMandatory`) !== 'off'}
-                hint="Short stock blocks the issue."
-              />
+              {/* NO "MANDATORY" CHECKBOX. It shipped with US-MD-03 hinting
+                  "Short stock blocks the issue", which no rule does: the
+                  material issue treats every line alike and has never read the
+                  column. A tickbox that states a consequence the system will
+                  not apply is worse than no tickbox — it invites somebody to
+                  untick it and believe a batch may now proceed short.
+
+                  The column stays, with its NOT NULL DEFAULT TRUE, so nothing
+                  is lost and this reappears as one field the day a rule
+                  actually consumes it. Restoring it before that would mean
+                  inventing the rule here, which is a decision for the story,
+                  not for the form. */}
             </LineRow>
           ))}
         </LineList>
