@@ -380,9 +380,25 @@ export interface SalesOrderListItem {
   customerName: string;
   orderDate: string;
   requestedDeliveryDate: string | null;
+
+  /** The customer's own reference for this order. */
+  customerPoNumber: string | null;
+  /** Terms agreed for THIS order, not the party's standing terms. */
+  shippingTerms: string | null;
+  insurance: string | null;
+  transportName: string | null;
+
   status: SalesOrderStatus;
   totalQuantity: string;
+  /** Goods value: the lines, net of their discounts, before tax. */
   subtotal: string;
+  /**
+   * Charged on the order and taxed with the goods.
+   *
+   * `subtotal + processingCharges` is the taxable amount, which is what
+   * `taxAmount` was computed on.
+   */
+  processingCharges: string;
   taxAmount: string;
   grandTotal: string;
   licenceCheck: CheckResult;
@@ -415,8 +431,65 @@ export interface CreateSalesOrderRequest {
   customerId: string;
   orderDate: string;
   requestedDeliveryDate?: string;
+
+  customerPoNumber?: string;
+  shippingTerms?: string;
+  insurance?: string;
+  transportName?: string;
+  /** Order-level charge, taxed with the goods. Defaults to zero. */
+  processingCharges?: string;
+
   notes?: string;
   items: readonly CreateSalesOrderItemRequest[];
+}
+
+/**
+ * What a customer owes, read from the receivable ledger.
+ *
+ * READ-ONLY AND DERIVED. The ledger is written by the invoice, receipt and
+ * credit-note flows and is append-only in the database; this is a view of it
+ * for the order screen, so the figures cannot drift from the entries.
+ */
+export interface CustomerBalance {
+  customerId: string;
+  /** Debits less credits. Positive means the customer owes. */
+  ledgerBalance: string;
+  /** Of that, the part whose invoice due date has passed. */
+  overdueAmount: string;
+  /** False when the ledger cannot be read; the screen then says so. */
+  available: boolean;
+}
+
+/**
+ * An item's packaging specification, for the Sales Order's product panel.
+ *
+ * Every field is optional because the master fills them in over time: what
+ * exists is shown, what does not is left blank rather than invented.
+ */
+export interface ItemPackagingSpec {
+  itemId: string;
+  itemCode: string;
+  itemName: string;
+  brandName: string | null;
+  genericName: string | null;
+  hsnCode: string | null;
+  uom: string;
+  mrp: string | null;
+  scheduleClassification: string;
+  storageConditions: string | null;
+  /** From PackagingRequirement: the pack variant and its components. */
+  packVariant: string | null;
+  unitsPerPack: string | null;
+  primaryComponents: readonly PackagingComponentView[];
+  secondaryComponents: readonly PackagingComponentView[];
+  tertiaryComponents: readonly PackagingComponentView[];
+}
+
+export interface PackagingComponentView {
+  itemCode: string;
+  itemName: string;
+  quantityPer: string;
+  uom: string;
 }
 
 // ---------------------------------------------------------------------------

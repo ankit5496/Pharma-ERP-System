@@ -3257,6 +3257,19 @@ model SalesOrder {
   orderDate             DateTime  @map("order_date") @db.Date
   requestedDeliveryDate DateTime? @map("requested_delivery_date") @db.Date
 
+  /// The customer's own reference for this order, as they gave it.
+  customerPoNumber String? @map("customer_po_number") @db.VarChar(64)
+
+  /// Terms agreed for THIS order. Not master data: a customer's usual terms
+  /// live on the party, but what was agreed here travels with the order.
+  shippingTerms String? @map("shipping_terms") @db.VarChar(255)
+  insurance     String? @map("insurance") @db.VarChar(255)
+  transportName String? @map("transport_name") @db.VarChar(255)
+
+  /// Charged on the order and taxed with the goods:
+  /// goods value + processing charges = taxable amount.
+  processingCharges Decimal @default(0) @map("processing_charges") @db.Decimal(14, 2)
+
   status SalesOrderStatus @default(DRAFT)
 
   /// Denormalised from the lines: the list screen sorts by them, and summing

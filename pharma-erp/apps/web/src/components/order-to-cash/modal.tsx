@@ -21,11 +21,17 @@ export function Modal({
   description,
   onClose,
   children,
+  wide = false,
 }: {
   title: string;
   description?: string;
   onClose: () => void;
   children: ReactNode;
+  /**
+   * A wider dialog, for a form that is a document rather than a handful of
+   * fields. Off by default, so every existing dialog keeps the width it has.
+   */
+  wide?: boolean;
 }) {
   const ref = useRef<HTMLDialogElement>(null);
 
@@ -51,7 +57,9 @@ export function Modal({
     <dialog
       ref={ref}
       aria-label={title}
-      className="w-[min(46rem,92vw)] rounded-lg border border-slate-200 bg-white p-0 shadow-xl backdrop:bg-slate-900/40"
+      className={`${
+        wide ? 'w-[min(76rem,95vw)]' : 'w-[min(46rem,92vw)]'
+      } rounded-lg border border-slate-200 bg-white p-0 shadow-xl backdrop:bg-slate-900/40`}
       // A click on the backdrop lands on the dialog itself, never on its
       // children, which is how the two are told apart without a wrapper div.
       onClick={(event) => {

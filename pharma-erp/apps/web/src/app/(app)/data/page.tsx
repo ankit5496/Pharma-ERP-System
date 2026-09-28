@@ -54,6 +54,34 @@ export default async function DataIndexPage() {
           </ul>
         </section>
 
+        {/* US-ACC-03. A report is not a dataset — it aggregates several
+            tables over a period rather than listing one — so it is its own
+            section rather than being squeezed into DATASETS, whose entries
+            each name a single table. It sits after the tables that exist and
+            before the ones that do not. */}
+        <section aria-labelledby="reports" className="mb-10">
+          <h2 id="reports" className="text-sm font-semibold text-slate-900">
+            Reports
+          </h2>
+          <ul className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <li>
+              <Link
+                href="/data/reports"
+                className="block h-full rounded-lg border border-slate-200 bg-white p-4 shadow-sm transition hover:border-slate-300 hover:shadow"
+              >
+                <p className="text-sm font-medium text-slate-900">Accounting Reports</p>
+                <p className="mt-1 text-xs leading-relaxed text-slate-600">
+                  Purchase and sales registers over a date range, with GST totals and an export.
+                  Read-only.
+                </p>
+                <p className="mt-2 font-mono text-[11px] text-slate-400">
+                  purchase_invoices · sales_invoices
+                </p>
+              </Link>
+            </li>
+          </ul>
+        </section>
+
         <section aria-labelledby="planned">
           <h2 id="planned" className="text-sm font-semibold text-slate-900">
             Not built yet
