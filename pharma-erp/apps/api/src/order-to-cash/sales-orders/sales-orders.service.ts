@@ -13,7 +13,6 @@ import type {
 
 import { PrismaService } from '../../prisma/prisma.service';
 import { NumberingService } from '../../procurement/numbering.service';
-import { MaterialRequirementService } from '../../production/material-requirement.service';
 import { TenantContextService } from '../../tenant/tenant-context.service';
 import { AllocationService } from '../allocation/allocation.service';
 import { licencesOnFile } from '../customers/licences-on-file';
@@ -43,9 +42,6 @@ export class SalesOrdersService {
     // Reused, never reimplemented: the sellable-stock rule and FEFO both live
     // in AllocationService, and a second copy here would be a second answer.
     private readonly allocation: AllocationService,
-    // US-MD-07. Confirming an order is what causes its material requirement to
-    // be determined; the arithmetic itself is production's.
-    private readonly materialRequirement: MaterialRequirementService,
   ) {}
 
   async list(search?: string): Promise<SalesOrderListItem[]> {
@@ -540,16 +536,6 @@ export class SalesOrdersService {
 
     const passed = licenceCheck === 'PASS' && creditCheck === 'PASS';
 
-    // Whether THIS call is the one that confirms the order, which is not the
-    // same as the order ending up APPROVED: a re-check of an order already
-    // approved leaves the status untouched and confirms nothing. US-MD-07 hangs
-    // off the transition, not off the state.
-    const confirmsNow =
-      passed &&
-      (order.status === 'DRAFT' ||
-        order.status === 'PENDING_CHECK' ||
-        order.status === 'BLOCKED');
-
     const updated = await this.prisma.scoped.salesOrder.update({
       where: { id },
       data: {
@@ -572,21 +558,8 @@ export class SalesOrdersService {
           ? { status: (passed ? 'APPROVED' : 'BLOCKED') satisfies SalesOrderStatus }
           : {}),
       },
-      select: { id: true, status: true },
+      select: { id: true },
     });
-
-    // US-MD-07: the determination runs on CONFIRMATION, and only on it.
-    //
-    // On the TRANSITION rather than on the resulting status — a re-check of an
-    // order already approved would otherwise re-determine a requirement whose
-    // requisitions may already be on a purchase order.
-    //
-    // Awaited, but it cannot fail: the determination swallows its own errors
-    // and reports zero. Confirmation is about credit and licence, and neither
-    // verdict should be undone because a formulation was missing.
-    if (confirmsNow) {
-      await this.materialRequirement.determineForSalesOrder(updated.id);
-    }
 
     return this.get(updated.id);
   }

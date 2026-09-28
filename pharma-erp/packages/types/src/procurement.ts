@@ -122,25 +122,13 @@ export const PARTY_CODE_DIGITS = 5;
 export const REQUISITION_STATUSES = ['OPEN', 'APPROVED', 'CONVERTED_TO_PO', 'CANCELLED'] as const;
 export type RequisitionStatus = (typeof REQUISITION_STATUSES)[number];
 
-/**
- * Why a requisition exists: the reorder check, a person, or a confirmed order.
- *
- * The three are not variations on one another. AUTO_REORDER asks "is this
- * shared consumable below its safety level", which no customer order asks;
- * PRODUCTION_SHORTFALL asks "can we make what has just been sold". Both remain
- * live — US-MD-07 adds the second question rather than replacing the first.
- */
-export const REQUISITION_TRIGGER_TYPES = [
-  'AUTO_REORDER',
-  'MANUAL',
-  'PRODUCTION_SHORTFALL',
-] as const;
+/** Why a requisition exists: raised by the reorder check, or by a person. */
+export const REQUISITION_TRIGGER_TYPES = ['AUTO_REORDER', 'MANUAL'] as const;
 export type RequisitionTriggerType = (typeof REQUISITION_TRIGGER_TYPES)[number];
 
 export const REQUISITION_TRIGGER_LABELS: Record<RequisitionTriggerType, string> = {
   AUTO_REORDER: 'Auto Create',
   MANUAL: 'Manual',
-  PRODUCTION_SHORTFALL: 'Order Shortfall',
 };
 
 /**
@@ -153,8 +141,6 @@ export const REQUISITION_TRIGGER_LABELS: Record<RequisitionTriggerType, string> 
 export const REQUISITION_TRIGGER_HINTS: Record<RequisitionTriggerType, string> = {
   AUTO_REORDER: 'Low stock is reported but raises nothing. Create requisitions on the form.',
   MANUAL: 'Raised by a person on the requisition form.',
-  PRODUCTION_SHORTFALL:
-    'Raised automatically when a confirmed sales order needs more material than is in stock.',
 };
 
 /** Where a packaging component sits: blister, carton, shipper. */
