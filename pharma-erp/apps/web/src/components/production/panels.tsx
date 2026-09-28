@@ -206,10 +206,15 @@ export async function MaterialIssuePanel() {
 // ---------------------------------------------------------------------------
 
 export async function BatchRecordPanel() {
-  const [ordersResult, batchesResult, packagingResult] = await Promise.all([
+  const [ordersResult, batchesResult, packagingResult, lotsResult] = await Promise.all([
     get<ProductionOrderSummary[]>('/api/v1/production/orders'),
     get<BatchView[]>('/api/v1/production/batches'),
     get<PackagingRequirementView[]>('/api/v1/packaging/requirements'),
+    // US-MD-06: the packing record names the LOT each component came from, so
+    // a carton lot can be traced to the batches it went into. Fetched here
+    // because the form cannot ask for it — it is rendered by this server
+    // component, one per batch.
+    get<ProductionStockLot[]>('/api/v1/production/stock-lots'),
   ]);
 
   if (!batchesResult.ok) {
@@ -223,6 +228,12 @@ export async function BatchRecordPanel() {
   const awaitingBatch = ordersResult.ok
     ? ordersResult.data.filter((order) => order.status === 'MATERIAL_ISSUED')
     : [];
+
+  // The work order behind each batch, for the ownership bucket its packing may
+  // consume from. A batch carries the order's id but not its job-work terms.
+  const orderById = new Map(
+    (ordersResult.ok ? ordersResult.data : []).map((order) => [order.id, order]),
+  );
 
   // The active specifications, by product, for the packing form below.
   //
@@ -288,6 +299,16 @@ export async function BatchRecordPanel() {
         batchId={batch.id}
         batchNumber={batch.batchNumber}
         packSpecifications={specificationsByProduct.get(batch.product.id) ?? []}
+        // WHOSE MATERIAL THIS BATCH MAY CONSUME, resolved from the work order
+        // it was made against — the same rule the raw-material issue applies.
+        // A pure-conversion job draws the principal's own packaging; anything
+        // else draws ours.
+        lots={lotsResult.ok ? lotsResult.data : []}
+        ownership={
+          orderById.get(batch.productionOrderId)?.jobWork?.billingModel === 'PURE_CONVERSION'
+            ? 'PRINCIPAL_OWNED'
+            : 'COMPANY_OWNED'
+        }
         // WHAT IS ALREADY RECORDED. Packing can be entered and then corrected
         // while the batch waits at the quality gate, and a form that came back
         // blank after a save read as the entry having been discarded.

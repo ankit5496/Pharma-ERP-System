@@ -469,6 +469,7 @@ export class BatchService {
         batch.packingRecord?.consumptions.map((consumption) => ({
           itemId: consumption.itemId,
           quantityConsumed: consumption.quantityConsumed.toString(),
+          lotId: consumption.lotId,
         })) ?? [],
       materialVariances: await this.materialVariances(batch),
       varianceThresholdPercent: BatchService.VARIANCE_THRESHOLD_PERCENT,
@@ -556,7 +557,7 @@ interface BatchWithIncludes {
     packedOn: Date;
     rejectedQuantity: Prisma.Decimal;
     packVariant: string | null;
-    consumptions: { itemId: string; quantityConsumed: Prisma.Decimal }[];
+    consumptions: { itemId: string; quantityConsumed: Prisma.Decimal; lotId: string | null }[];
   } | null;
   productionOrder: {
     orderNumber: string;

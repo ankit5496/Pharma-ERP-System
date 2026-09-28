@@ -3,9 +3,10 @@
 import { useActionToast } from '@/components/toast';
 import { useActionState, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { formatDateDMY } from '@pharma-erp/types';
 import type { BomView, ItemSummary } from '@pharma-erp/types';
 
-import { saveBomAction, type ActionResult } from './actions';
+import { approveBomAction, saveBomAction, type ActionResult } from './actions';
 import {
   AddLineButton,
   CheckboxField,
@@ -88,6 +89,12 @@ export function BomMasterForm({
   // Which item each line points at, so the unit beside its quantity is the
   // item's own — and so the batch-size unit follows the product.
   const [productId, setProductId] = useState(bom?.product.id ?? '');
+
+  // Approval runs outside the form's own action: it is a separate request with
+  // no fields of its own, so it carries its own pending and error state rather
+  // than borrowing the save's.
+  const [approving, setApproving] = useState(false);
+  const [approveError, setApproveError] = useState<string | null>(null);
   const [lineItems, setLineItems] = useState<Record<string, string>>(() => {
     const seeded: Record<string, string> = {};
     existingRaw.forEach((line, index) => {
@@ -216,6 +223,31 @@ export function BomMasterForm({
                 : 'Every quantity below is stated against this size.'
             }
           />
+          {/* US-MD-03. One figure for the whole formulation, which any line may
+              override. Blank stores 0 — no allowance — which is what every BOM
+              written before this field existed already had. */}
+          <TextField
+            name="defaultOveragePercent"
+            error={errorFor('defaultOveragePercent')}
+            label="Default Overage %"
+            type="number"
+            min="0"
+            step="0.01"
+            placeholder="0"
+            defaultValue={typed('defaultOveragePercent')}
+            hint="Applied to any raw material that does not set its own."
+          />
+          {/* The change-control document this revision was raised under. FREE
+              TEXT and unchecked: the reference belongs to whatever QMS the
+              company keeps, which this system does not talk to. */}
+          <TextField
+            name="changeControlId"
+            label="Change Control ID"
+            maxLength={64}
+            placeholder="CC-2026-014"
+            defaultValue={typed('changeControlId')}
+            hint="Optional. The QMS reference, recorded for the audit trail."
+          />
           {!bom && (
             // Absent when editing: which version is current is a decision about
             // the whole set of versions, not about the one being corrected.
@@ -246,7 +278,7 @@ export function BomMasterForm({
             <LineRow
               key={id}
               index={index}
-              columns={2}
+              columns={4}
               canRemove={rawMaterials.ids.length > 1}
               onRemove={() => rawMaterials.remove(id)}
             >
@@ -273,6 +305,45 @@ export function BomMasterForm({
                 min="0"
                 step="0.001"
                 defaultValue={typed(`raw.${id}.quantityPer`)}
+              />
+              {/* US-MD-03. Wastage of 5–10% during manufacturing is normal and
+                  has to be built into what gets procured and issued — it used
+                  to be absorbed by a safety-stock buffer that no longer exists
+                  under the order-driven model.
+
+                  BLANK MEANS "use the formulation's default", which is not the
+                  same as 0. Zero says this material takes no overage whatever
+                  the default allows — an active dosed exactly, in a BOM that
+                  permits 5% on its excipients. The placeholder shows which
+                  figure a blank box will actually apply. */}
+              <TextField
+                name={`raw.${id}.overagePercent`}
+                label="Overage %"
+                compact
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder={bom?.defaultOveragePercent ?? '0'}
+                defaultValue={typed(`raw.${id}.overagePercent`)}
+                hint="Blank uses the formulation default."
+              />
+              <TextField
+                name={`raw.${id}.manufacturingStage`}
+                label="Stage"
+                compact
+                maxLength={120}
+                placeholder="Granulation"
+                defaultValue={typed(`raw.${id}.manufacturingStage`)}
+              />
+              {/* A CHECKBOX, defaulting to ticked: every line written before
+                  this field existed was mandatory in practice, and the common
+                  case should not need a decision. Unticking it says a batch may
+                  proceed without this material rather than being blocked. */}
+              <CheckboxField
+                name={`raw.${id}.isMandatory`}
+                label="Mandatory"
+                defaultChecked={typed(`raw.${id}.isMandatory`) !== 'off'}
+                hint="Short stock blocks the issue."
               />
             </LineRow>
           ))}
@@ -329,6 +400,49 @@ export function BomMasterForm({
           </>
         )}
       </FormSection>
+
+      {/* APPROVAL IS ITS OWN ACT — US-MD-03, and the compliance gap the story
+          names: one checkbox used to draft and approve at once, so whoever
+          wrote a recipe also signed it off.
+
+          Only on an EDIT: a formulation being drafted has no id to approve
+          yet. Once approved it says so and the button goes — a second person
+          approving would overwrite the first name, and who signed it off is
+          the whole point. The API refuses that regardless of this. */}
+      {bom &&
+        (bom.approvedBy ? (
+          <p className="rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+            Approved by <strong className="font-semibold">{bom.approvedBy}</strong>
+            {bom.approvedAt ? ` on ${formatDateDMY(bom.approvedAt.slice(0, 10))}` : ''}.
+          </p>
+        ) : (
+          <div className="flex flex-wrap items-center gap-3 rounded-md border border-slate-200 bg-slate-50 px-4 py-3">
+            <button
+              type="button"
+              disabled={approving}
+              onClick={() => {
+                setApproving(true);
+
+                void approveBomAction(bom.id).then((result) => {
+                  setApproving(false);
+                  if (result.ok) {
+                    router.refresh();
+                    onSaved?.(result.message);
+                  } else {
+                    setApproveError(result.message ?? 'Could not approve this formulation.');
+                  }
+                });
+              }}
+              className="rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {approving ? 'Approving…' : 'Approve formulation'}
+            </button>
+
+            <p className="text-xs text-slate-600">
+              {approveError ?? 'Not yet approved. Approval is recorded against your name.'}
+            </p>
+          </div>
+        ))}
 
       <SubmitActions label="Save formulation" pending={isPending} />
     </form>

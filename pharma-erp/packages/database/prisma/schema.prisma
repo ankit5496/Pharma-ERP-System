@@ -207,6 +207,7 @@ model Tenant {
   packagingConsumptions BatchPackagingConsumption[]
   finishedGoodsLots     FinishedGoodsLot[]
   customerLicences      CustomerLicence[]
+  partyDeliveryAddresses PartyDeliveryAddress[]
   salesOrders           SalesOrder[]
   salesOrderItems       SalesOrderItem[]
   batchAllocations      BatchAllocation[]
@@ -1384,6 +1385,26 @@ model Bom {
   isActive      Boolean  @default(false) @map("is_active")
   effectiveFrom DateTime @default(now()) @map("effective_from") @db.Date
 
+  /// US-MD-03. APPROVAL IS SEPARATE FROM ACTIVATION, which is the compliance
+  /// gap the story names: one checkbox used to do both, so the person drafting
+  /// a formulation was also the person approving it. A BOM may now be drafted,
+  /// approved by somebody holding the role, and only then activated.
+  ///
+  /// Null means not approved. `approvedAt` is set with `approvedById` and
+  /// never alone — the pair is written in one update.
+  approvedById String?   @map("approved_by_id") @db.Uuid
+  approvedAt   DateTime? @map("approved_at") @db.Timestamptz(6)
+
+  /// The change-control document this revision was raised under, in whatever
+  /// QMS the company keeps. FREE TEXT and optional: the reference belongs to a
+  /// system this one does not talk to, so it is recorded, not validated.
+  changeControlId String? @map("change_control_id") @db.VarChar(64)
+
+  /// Applied to any raw-material line that does not set its own — US-MD-03.
+  /// Percent, so 5 means 5%. Defaults to zero so every BOM written before this
+  /// existed keeps consuming exactly what it always did.
+  defaultOveragePercent Decimal @default(0) @map("default_overage_percent") @db.Decimal(5, 2)
+
   /// Who entered it. A UUID, not a relation — see the schema header.
   createdById String? @map("created_by_id") @db.Uuid
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -1415,6 +1436,24 @@ model BomLine {
   /// Quantity of this component per unit of the BOM's output.
   quantityPer Decimal @map("quantity_per") @db.Decimal(14, 3)
 
+  /// US-MD-03. An optional line may be left out of a batch without the issue
+  /// being short; a mandatory one may not. Defaults to mandatory, which is what
+  /// every line written before this was.
+  isMandatory Boolean @default(true) @map("is_mandatory")
+
+  /// Where in the process this material goes in — granulation, compression,
+  /// coating. FREE TEXT rather than an enum: the stages differ by dosage form
+  /// and by plant, and a closed list would have to be extended for each.
+  manufacturingStage String? @map("manufacturing_stage") @db.VarChar(120)
+
+  /// Wastage allowance, as a percent of the scaled quantity — US-MD-03.
+  ///
+  /// Null falls back to the BOM's `defaultOveragePercent`, which is how a
+  /// formulation sets one figure for every line and overrides it where the
+  /// material needs a different one. Null and zero are therefore DIFFERENT: one
+  /// means "use the default", the other means "no overage on this line".
+  overagePercent Decimal? @map("overage_percent") @db.Decimal(5, 2)
+
   notes String? @db.VarChar(255)
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
@@ -1435,6 +1474,10 @@ model Party {
   partyType PartyType @default(VENDOR) @map("party_type")
 
   gstin             String? @db.VarChar(15)
+  /// US-MD-02. Ten characters, e.g. AABCU9603R — the same PAN that sits inside
+  /// a GSTIN, but captured separately because a party without GST registration
+  /// still has one, and TDS is deducted against the PAN rather than the GSTIN.
+  panNumber         String? @map("pan_number") @db.VarChar(10)
   /// Vendors of pharmaceutical raw material hold a drug licence too.
   drugLicenceNumber String? @map("drug_licence_number") @db.VarChar(64)
 
@@ -1497,6 +1540,7 @@ model Party {
   documents                CustomerDocument[]
   /// Set only on a CUSTOMER; see CustomerLicence.
   customerLicences         CustomerLicence[]
+  deliveryAddresses        PartyDeliveryAddress[]
   salesOrders              SalesOrder[]
   dispatches               Dispatch[]
   salesInvoices            SalesInvoice[]
@@ -1568,6 +1612,53 @@ model CustomerDocument {
 /// `Party.drugLicenceNumber` / `drugLicenceValidTo` pair holds one and is what
 /// US-MD-02's CHECK constraint reads, so it is left untouched; this register
 /// sits alongside it.
+/// Where a party's goods are actually delivered — US-MD-02.
+///
+/// REPEATABLE, because one customer routinely receives at several places: a
+/// registered office that never takes stock, two depots and a hospital store.
+/// The party row already holds a single registered address and a single
+/// billing address; neither answers "where does this consignment go".
+///
+/// THE DEFAULT ROW FEEDS `parties.shipping_*`. Those columns are not dead — a
+/// sales invoice prints its shipping address from them — so rather than
+/// retire them and break invoicing, the address marked default is written back
+/// to them whenever it changes. One address stays authoritative per invoice
+/// while the register holds the full list.
+model PartyDeliveryAddress {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+  partyId  String @map("party_id") @db.Uuid
+
+  /// What the people there call it — "Bhiwandi depot", "Head office".
+  /// Required: an unlabelled address in a list of four is one nobody can pick.
+  label String @db.VarChar(120)
+
+  line1 String  @db.VarChar(255)
+  line2 String? @db.VarChar(255)
+  city  String  @db.VarChar(120)
+  state String  @db.VarChar(120)
+  pin   String  @db.VarChar(10)
+
+  /// Whose address is used when nothing else is chosen. Not a database-enforced
+  /// singleton: the service clears the flag on the party's other rows in the
+  /// same transaction, because a partial unique index would refuse the moment
+  /// TWO rows are briefly true mid-update.
+  isDefault Boolean @default(false) @map("is_default")
+
+  notes String? @db.VarChar(1000)
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  party  Party  @relation(fields: [partyId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, partyId, label])
+  @@index([tenantId, partyId, deletedAt])
+  @@map("party_delivery_addresses")
+}
+
 model CustomerLicence {
   id       String @id @default(uuid()) @db.Uuid
   tenantId String @map("tenant_id") @db.Uuid
@@ -2368,6 +2459,11 @@ model PackagingRequirement {
   /// quantity cannot be scaled to a batch at all. A batch of 100,000 tablets
   /// needs 1,000 cartons only if something records that a carton holds 100.
   unitsPerPack Decimal @map("units_per_pack") @db.Decimal(14, 3)
+
+  /// US-MD-06. The item master carries ONE mrp, but a strip and a bottle of the
+  /// same product sell at different prices and there was nowhere to put the
+  /// second. Null falls back to the item's own MRP.
+  mrp Decimal? @db.Decimal(12, 2)
 
   /// US-MD-06's gate. Deactivating is how a superseded pack stops blocking
   /// work orders without destroying the record of how it used to be packed.

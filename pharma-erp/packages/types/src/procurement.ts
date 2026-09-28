@@ -334,6 +334,27 @@ export interface PartySummary {
   createdBy: string | null;
   partyType: PartyType;
   gstin: string | null;
+  /** Ten characters, e.g. AABCU9603R. Kept apart from the GSTIN — a party with
+   *  no GST registration still has one, and TDS is deducted against it. */
+  panNumber: string | null;
+  /**
+   * Where this party's goods go — US-MD-02. Empty for a party that has none.
+   *
+   * Typed structurally rather than importing PartyDeliveryAddress: ./parties
+   * imports PartyType from here, and naming its type here would close the
+   * circle.
+   */
+  deliveryAddresses: {
+    id: string;
+    label: string;
+    line1: string;
+    line2: string | null;
+    city: string;
+    state: string;
+    pin: string;
+    isDefault: boolean;
+    notes: string | null;
+  }[];
   drugLicenceNumber: string | null;
   email: string | null;
   phone: string | null;

@@ -218,6 +218,27 @@ export interface BomLineView {
   id: string;
   item: ItemSummary;
   quantityPer: string;
+  /**
+   * Whether a batch may proceed without this material — US-MD-03.
+   *
+   * An optional line short of stock is a warning; a mandatory one blocks the
+   * issue. Every line written before this existed is mandatory, which is what
+   * they were in practice.
+   */
+  isMandatory: boolean;
+  /** Where in the process it goes in — granulation, compression, coating. */
+  manufacturingStage: string | null;
+  /**
+   * Wastage allowance as a percent of the scaled quantity — US-MD-03.
+   *
+   * NULL MEANS "use the BOM's default", which is not the same as 0 ("no
+   * overage on this line, whatever the default says"). `effectiveOveragePercent`
+   * is the figure actually applied, resolved by the API so the two cannot
+   * disagree.
+   */
+  overagePercent: string | null;
+  /** The overage actually applied: this line's, or the BOM's default. */
+  effectiveOveragePercent: string;
   notes: string | null;
 }
 
@@ -232,6 +253,19 @@ export interface BomView {
   outputQuantity: string;
   effectiveFrom: string;
   instructions: string | null;
+  /**
+   * APPROVAL, SEPARATE FROM ACTIVATION — US-MD-03.
+   *
+   * A BOM may be drafted, approved by somebody holding the role, and only then
+   * activated. Both null until it is approved; they are written as a pair and
+   * the database refuses half of one.
+   */
+  approvedBy: string | null;
+  approvedAt: string | null;
+  /** The change-control document this revision was raised under, if any. */
+  changeControlId: string | null;
+  /** Applied to any line that does not set its own. "0" means none. */
+  defaultOveragePercent: string;
   product: ItemSummary;
   lines: BomLineView[];
 }
@@ -241,7 +275,16 @@ export interface CreateBomRequest {
   outputQuantity: string;
   instructions?: string;
   activate?: boolean;
-  lines: { itemId: string; quantityPer: string; notes?: string }[];
+  changeControlId?: string;
+  defaultOveragePercent?: string;
+  lines: {
+    itemId: string;
+    quantityPer: string;
+    notes?: string;
+    isMandatory?: boolean;
+    manufacturingStage?: string;
+    overagePercent?: string;
+  }[];
 }
 
 /**
@@ -256,7 +299,16 @@ export interface CreateBomRequest {
 export interface UpdateBomRequest {
   outputQuantity: string;
   instructions?: string;
-  lines: { itemId: string; quantityPer: string; notes?: string }[];
+  changeControlId?: string | null;
+  defaultOveragePercent?: string;
+  lines: {
+    itemId: string;
+    quantityPer: string;
+    notes?: string;
+    isMandatory?: boolean;
+    manufacturingStage?: string;
+    overagePercent?: string;
+  }[];
 }
 
 // ---------------------------------------------------------------------------
@@ -529,7 +581,12 @@ export interface BatchView {
    * Empty when nothing was recorded, which is a run whose components were
    * never counted — distinct from a run that counted zero of one.
    */
-  packagingConsumed: { itemId: string; quantityConsumed: string }[];
+  packagingConsumed: {
+    itemId: string;
+    quantityConsumed: string;
+    /** The lot it came from — US-MD-06's recall trail. Null where none was named. */
+    lotId: string | null;
+  }[];
   materialVariances: BatchMaterialVariance[];
   /** Above this absolute percentage a variance is flagged for review. */
   varianceThresholdPercent: number;

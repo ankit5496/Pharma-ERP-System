@@ -159,6 +159,24 @@ export class ProductionController {
   // 2. Production orders
   // -------------------------------------------------------------------------
 
+  /**
+   * Approves a formulation — US-MD-03.
+   *
+   * NARROWER THAN THE EDIT ABOVE: a production officer may draft and correct a
+   * recipe, but signing one off is a quality decision. That separation is the
+   * point of the story — one checkbox used to let the author approve their own
+   * work.
+   *
+   * POST rather than PATCH: this is an act with a consequence, not a field
+   * being set. The body is empty because there is nothing to choose — who and
+   * when come from the session and the clock.
+   */
+  @Post('boms/:id/approve')
+  @Roles('ADMIN', 'QUALITY_OFFICER')
+  async approveBom(@Param('id', ParseUUIDPipe) id: string): Promise<BomView> {
+    return this.production.approveBom(id);
+  }
+
   @Patch('boms/:id')
   @Roles('ADMIN', 'PRODUCTION_OFFICER', 'QUALITY_OFFICER')
   async updateBom(
