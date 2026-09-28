@@ -242,6 +242,31 @@ export class BomLineDto {
   @Matches(QUANTITY, { message: `quantityPer ${QUANTITY_MESSAGE}` })
   quantityPer!: string;
 
+  /**
+   * US-MD-03. Defaults to mandatory when the caller says nothing, which is
+   * what every line written before this field existed was in practice.
+   */
+  @IsOptional()
+  @IsBoolean()
+  isMandatory?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  manufacturingStage?: string;
+
+  /**
+   * Wastage allowance for this line, as a percent — US-MD-03.
+   *
+   * OMITTED MEANS "use the BOM's default", which is not the same as "0". A
+   * line sent as "0" says this material takes no overage whatever the
+   * formulation allows elsewhere — an active ingredient dosed exactly, in a
+   * BOM that permits 5% on its excipients.
+   */
+  @IsOptional()
+  @Matches(PERCENTAGE, { message: 'overagePercent must be a percentage between 0 and 100' })
+  overagePercent?: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(255)
@@ -264,6 +289,24 @@ export class CreateBomDto {
   @IsOptional()
   @IsBoolean()
   activate?: boolean;
+
+  /**
+   * The change-control document this revision was raised under — US-MD-03.
+   *
+   * FREE TEXT and unvalidated: the reference belongs to whatever QMS the
+   * company keeps, which this system does not talk to. Recorded, not checked.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  changeControlId?: string;
+
+  /** Applied to any line that does not set its own — US-MD-03. */
+  @IsOptional()
+  @Matches(PERCENTAGE, {
+    message: 'defaultOveragePercent must be a percentage between 0 and 100',
+  })
+  defaultOveragePercent?: string;
 
   // Bounded because each line becomes a row in one transaction, and an
   // unbounded array is a cheap way to hold a connection open.
@@ -295,6 +338,24 @@ export class CreateBomDto {
 export class UpdateBomDto {
   @Matches(QUANTITY, { message: `outputQuantity ${QUANTITY_MESSAGE}` })
   outputQuantity!: string;
+
+  /**
+   * The change-control document this revision was raised under — US-MD-03.
+   *
+   * FREE TEXT and unvalidated: the reference belongs to whatever QMS the
+   * company keeps, which this system does not talk to. Recorded, not checked.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  changeControlId?: string | null;
+
+  /** Applied to any line that does not set its own — US-MD-03. */
+  @IsOptional()
+  @Matches(PERCENTAGE, {
+    message: 'defaultOveragePercent must be a percentage between 0 and 100',
+  })
+  defaultOveragePercent?: string;
 
   @IsOptional()
   @IsString()

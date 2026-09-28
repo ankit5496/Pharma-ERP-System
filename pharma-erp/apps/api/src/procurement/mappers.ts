@@ -144,6 +144,7 @@ export const PARTY_SELECT = {
   name: true,
   partyType: true,
   gstin: true,
+  panNumber: true,
   drugLicenceNumber: true,
   email: true,
   phone: true,
@@ -173,6 +174,7 @@ type PartyRow = {
   name: string;
   partyType: string;
   gstin: string | null;
+  panNumber: string | null;
   drugLicenceNumber: string | null;
   email: string | null;
   phone: string | null;
@@ -197,6 +199,10 @@ export function toPartySummary(row: PartyRow): PartySummary {
     name: row.name,
     partyType: row.partyType as PartySummary['partyType'],
     gstin: row.gstin,
+    panNumber: row.panNumber,
+    // Not joined here: this resolves a party as a VENDOR for a purchase
+    // order, and a customer's delivery addresses are no part of that.
+    deliveryAddresses: [],
     drugLicenceNumber: row.drugLicenceNumber,
     email: row.email,
     phone: row.phone,

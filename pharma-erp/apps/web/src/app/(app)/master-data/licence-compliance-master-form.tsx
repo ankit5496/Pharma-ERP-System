@@ -174,17 +174,20 @@ export function LicenceComplianceMasterForm({
         </FormGrid>
       </FormSection>
 
-      <FormSection
-        title="Notes"
-        description="Anything the next person needs — conditions on the licence, the reference of a pending renewal application."
-      >
+      <FormSection title="Notes">
         {/* No maxLength: TextAreaField does not take one, and the API caps
             notes at 1000 characters — which is the cap that counts. */}
         <TextAreaField
           name="notes"
+          // HIDDEN, not absent: the section heading above already reads
+          // "Notes", and a visible label beneath it says the word twice in
+          // two lines — but a textarea with no accessible name is one a
+          // screen reader announces as "edit text, blank".
           label="Notes"
+          labelHidden
           rows={3}
           defaultValue={typed('notes', licence?.notes)}
+          hint="Anything the next person needs — conditions on the licence, the reference of a pending renewal application."
         />
       </FormSection>
 

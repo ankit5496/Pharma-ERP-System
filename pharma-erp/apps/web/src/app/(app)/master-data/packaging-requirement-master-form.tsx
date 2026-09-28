@@ -235,6 +235,21 @@ export function PackagingRequirementMasterForm({
             defaultValue={typed('unitsPerPack', requirement?.unitsPerPack)}
             hint={`How many${unitOfProduct ? ` ${unitOfProduct}` : ''} one pack holds — 100 for a 10x10 carton. This is what scales a per-pack quantity to a batch.`}
           />
+          {/* US-MD-06. The item master carries one MRP, but a strip and a
+              bottle of the same product sell at different prices and there was
+              nowhere to put the second. Blank falls back to the item's own
+              figure rather than storing a price nobody set. */}
+          <TextField
+            name="mrp"
+            error={errorFor('mrp')}
+            label="MRP for This Pack"
+            type="number"
+            min="0"
+            step="0.01"
+            placeholder="45.00"
+            defaultValue={typed('mrp', requirement?.mrp)}
+            hint="Optional. Blank uses the product's own MRP."
+          />
           <CheckboxField
             name="isActive"
             label="Active"
@@ -337,15 +352,18 @@ export function PackagingRequirementMasterForm({
         <AddLineButton onClick={components.add}>+ Add packaging component</AddLineButton>
       </FormSection>
 
-      <FormSection
-        title="Notes"
-        description="Anything the next person needs — artwork references, special handling at packing."
-      >
+      <FormSection title="Notes">
         <TextAreaField
           name="notes"
+          // HIDDEN, not absent: the section heading above already reads
+          // "Notes", and a visible label beneath it says the word twice in
+          // two lines — but a textarea with no accessible name is one a
+          // screen reader announces as "edit text, blank".
           label="Notes"
+          labelHidden
           rows={3}
           defaultValue={typed('notes', requirement?.notes)}
+          hint="Anything the next person needs — artwork references, special handling at packing."
         />
       </FormSection>
 

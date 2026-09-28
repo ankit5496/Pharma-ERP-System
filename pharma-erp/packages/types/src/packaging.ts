@@ -84,6 +84,14 @@ export interface PackagingRequirementView {
   packVariant: string;
   /** How many units of the product one pack holds. Decimal as a string. */
   unitsPerPack: string;
+  /**
+   * What this pack sells for — US-MD-06.
+   *
+   * The item master carries ONE mrp, but a strip and a bottle of the same
+   * product sell at different prices and there was nowhere to put the second.
+   * Null falls back to the item's own MRP.
+   */
+  mrp: string | null;
   isActive: boolean;
   notes: string | null;
   lines: PackagingLineView[];
@@ -230,6 +238,7 @@ export interface CreatePackagingRequirementRequest {
   productId: string;
   packVariant: string;
   unitsPerPack: string;
+  mrp?: string;
   lines: PackagingLineInput[];
   isActive?: boolean;
   notes?: string;
@@ -245,6 +254,7 @@ export interface CreatePackagingRequirementRequest {
 export interface UpdatePackagingRequirementRequest {
   packVariant?: string;
   unitsPerPack?: string;
+  mrp?: string | null;
   lines?: PackagingLineInput[];
   isActive?: boolean;
   notes?: string | null;

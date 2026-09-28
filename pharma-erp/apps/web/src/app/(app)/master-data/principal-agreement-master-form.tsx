@@ -341,15 +341,18 @@ export function PrincipalAgreementMasterForm({
         <AddLineButton onClick={mappings.add}>+ Add product mapping</AddLineButton>
       </FormSection>
 
-      <FormSection
-        title="Notes"
-        description="Anything the next person needs — special packing conditions, who supplies the artwork."
-      >
+      <FormSection title="Notes">
         <TextAreaField
           name="notes"
+          // HIDDEN, not absent: the section heading above already reads
+          // "Notes", and a visible label beneath it says the word twice in
+          // two lines — but a textarea with no accessible name is one a
+          // screen reader announces as "edit text, blank".
           label="Notes"
+          labelHidden
           rows={3}
           defaultValue={typed('notes', agreement?.notes)}
+          hint="Anything the next person needs — special packing conditions, who supplies the artwork."
         />
       </FormSection>
 

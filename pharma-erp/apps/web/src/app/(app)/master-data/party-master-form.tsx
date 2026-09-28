@@ -22,6 +22,7 @@ import {
   type ActionResult,
 } from './actions';
 import { CustomerDocuments } from './customer-documents';
+import { DeliveryAddresses } from './delivery-addresses';
 import {
   FormGrid,
   FormSection,
@@ -174,6 +175,7 @@ export function PartyMasterForm({
   const [phoneDial, setPhoneDial] = useState<string>(storedPhone.dial);
 
   const isCustomer = partyType === 'CUSTOMER';
+  const isSupplier = partyType === 'VENDOR';
 
   // Who is asked for a drug licence. A job-work principal is a licensed
   // pharmaceutical business too, so the fields are offered — but only a
@@ -348,6 +350,24 @@ export function PartyMasterForm({
             defaultValue={typed('gstin', party?.gstin)}
             hint="15 characters, from the GST certificate."
           />
+          {/* US-MD-02. Beside the GSTIN because it is the same ten characters
+              that sit inside one — but captured separately, since a party with
+              no GST registration still has a PAN, and TDS is deducted against
+              the PAN rather than the GSTIN.
+
+              Not starred, unlike the GSTIN: the story asks that it be captured
+              for every party, and refusing a record somebody is entering from a
+              phone call before the paperwork arrives would be the wrong way to
+              ask for it. */}
+          <TextField
+            name="panNumber"
+            error={errorFor('panNumber')}
+            label="PAN No."
+            maxLength={10}
+            placeholder="AABCU9603R"
+            defaultValue={typed('panNumber', party?.panNumber)}
+            hint="10 characters: five letters, four digits, one letter."
+          />
           <TextField
             name="email"
             error={errorFor('email')}
@@ -378,32 +398,62 @@ export function PartyMasterForm({
           />
           <TextAreaField
             name="address"
-            label="Address"
+            // "Registered Address", not "Address". The generic word sitting
+            // above "Delivery Addresses" read as though the second were a
+            // duplicate of the first; they answer different questions, and the
+            // labels now say which.
+            label="Registered Address"
             rows={3}
             wide
             defaultValue={typed('address', party?.address)}
-            hint="The registered place of business, as it appears on the GST certificate."
+            hint="The GST-registered place of business. Decides the place of supply, and prints as the billing address on invoices."
           />
         </FormGrid>
       </FormSection>
 
+      {/* US-MD-02. WHERE THE GOODS ACTUALLY GO, which the registered address
+          above does not answer: one customer routinely receives at several
+          places — a head office that never takes stock, two depots, a hospital
+          store.
+
+          The one marked default is written back to the party's shipping
+          address, which a sales invoice prints from. That keeps one address
+          authoritative per invoice while this list holds the rest. */}
       <FormSection
-        title="Supplier Terms"
-        description="Applied when a purchase order is raised on this party."
+        title="Delivery Addresses"
+        description="Where stock physically goes, which the registered address above need not be. Leave empty to ship there instead."
       >
-        <FormGrid>
-          <TextField
-            name="paymentTermsDays"
-            label="Payment Terms (days)"
-            type="number"
-            min="0"
-            step="1"
-            placeholder="30"
-            defaultValue={typed('paymentTermsDays', party?.paymentTermsDays)}
-            hint="Days from invoice to due date. 0 means payment on delivery."
-          />
-        </FormGrid>
+        <DeliveryAddresses addresses={party?.deliveryAddresses ?? []} typed={typed} />
       </FormSection>
+
+      {/* SUPPLIERS ONLY — US-MD-02's [FIX]. Payment terms are what WE owe when
+          a purchase order is raised on this party, so they mean nothing on a
+          customer. The section used to render for every type, which put
+          "Applied when a purchase order is raised on this party" on a customer
+          record and left the form asking two contradictory questions at once.
+
+          A job-work principal is invoiced BY us for conversion, not purchased
+          from, so it is excluded too. Customer Terms below has always been
+          conditional; this is the half that was missed. */}
+      {isSupplier && (
+        <FormSection
+          title="Supplier Terms"
+          description="Applied when a purchase order is raised on this party."
+        >
+          <FormGrid>
+            <TextField
+              name="paymentTermsDays"
+              label="Payment Terms (days)"
+              type="number"
+              min="0"
+              step="1"
+              placeholder="30"
+              defaultValue={typed('paymentTermsDays', party?.paymentTermsDays)}
+              hint="Days from invoice to due date. 0 means payment on delivery."
+            />
+          </FormGrid>
+        </FormSection>
+      )}
 
       {/* THE LICENCE IS ITS OWN SECTION, shared by customers and job-work
           principals. It used to sit inside "Customer terms" beside the credit

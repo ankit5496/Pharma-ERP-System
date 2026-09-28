@@ -20,6 +20,10 @@ import {
   type StockBucketRule,
 } from './job-work-tagging';
 import { issuableStockWhere, toIsoDate, toItemSummary } from './production.mappers';
+// The overage rule lives with the BOM service that owns it; shared rather
+// than repeated, so dispensing cannot drift from what the order was approved
+// against.
+import { effectiveOverage, requiredWithOverage } from './production.service';
 import { ProductionService } from './production.service';
 
 const ZERO = new Prisma.Decimal(0);
@@ -68,7 +72,16 @@ export class MaterialIssueService {
     const lines: MaterialIssuePlanLine[] = [];
 
     for (const bomLine of order.bom.lines) {
-      const required = new Prisma.Decimal(bomLine.quantityPer).mul(scale);
+      // THE SAME OVERAGE the work order was checked against — US-MD-03. Sharing
+      // the helper rather than repeating the arithmetic is what stops the two
+      // drifting: a plan that dispensed the bare BOM quantity while the order
+      // was approved against the adjusted one would come up short on the line
+      // every time.
+      const required = requiredWithOverage(
+        bomLine.quantityPer,
+        scale,
+        effectiveOverage(bomLine, order.bom),
+      );
       const allocations = await this.allocate(bomLine.itemId, required, bucket);
 
       const allocated = allocations.reduce(

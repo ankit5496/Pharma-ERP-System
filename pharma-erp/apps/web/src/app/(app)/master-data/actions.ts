@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache';
 
 import { DEFAULT_DIAL_CODE, joinPhoneNumber } from '@pharma-erp/types';
+import type { PartyDeliveryAddressInput } from '@pharma-erp/types';
 import type {
   BillingModel,
   BomView,
@@ -413,6 +414,50 @@ export async function savePartyAction(
   const holdsLicence = isCustomer || partyType === 'JOB_WORK_PRINCIPAL';
 
   const gstin = optional(formData, 'gstin')?.toUpperCase() ?? null;
+  const panNumber = optional(formData, 'panNumber')?.toUpperCase() ?? null;
+
+  /**
+   * The delivery-address rows — US-MD-02.
+   *
+   * Named `addr.<row>.<field>`, so the rows are found by walking the names
+   * rather than by counting: they can be added and removed in any order.
+   *
+   * AN ENTIRELY BLANK ROW IS DROPPED, not refused. The form always offers one
+   * empty row, so a party with no delivery address would otherwise be
+   * unsaveable. A PARTLY filled row IS sent, and the API refuses it naming the
+   * missing part — half an address is a mistake worth reporting, not one to
+   * silently discard.
+   */
+  const defaultRow = String(formData.get('addr.default') ?? '');
+  const addressRows: PartyDeliveryAddressInput[] = [];
+
+  for (const [key, value] of formData.entries()) {
+    const match = /^addr\.(\d+)\.label$/.exec(key);
+    if (!match) continue;
+
+    const row = match[1];
+    const read = (field: string) => String(formData.get(`addr.${row}.${field}`) ?? '').trim();
+
+    const entry = {
+      label: String(value).trim(),
+      line1: read('line1'),
+      line2: read('line2'),
+      city: read('city'),
+      state: read('state'),
+      pin: read('pin'),
+    };
+
+    if (!Object.values(entry).some(Boolean)) continue;
+
+    const id = read('id');
+
+    addressRows.push({
+      ...(id ? { id } : {}),
+      ...entry,
+      ...(entry.line2 ? { line2: entry.line2 } : { line2: undefined }),
+      isDefault: row === defaultRow,
+    });
+  }
   const email = optional(formData, 'email') ?? null;
   // The form submits a chosen country code and a typed national number; the
   // API stores E.164 and refuses anything that is not a real number for that
@@ -449,6 +494,8 @@ export async function savePartyAction(
     partyType,
     status,
     gstin,
+    panNumber,
+    deliveryAddresses: addressRows,
     email,
     phone,
     address: optional(formData, 'address') ?? null,
@@ -538,7 +585,13 @@ export async function saveBomAction(
   // Line fields are named `raw.<row>.itemId` / `pack.<row>.itemId`, so the
   // rows are found by walking the names rather than by guessing how many
   // there are — rows can be added and removed in any order.
-  const lines: { itemId: string; quantityPer: string }[] = [];
+  const lines: {
+    itemId: string;
+    quantityPer: string;
+    isMandatory?: boolean;
+    manufacturingStage?: string;
+    overagePercent?: string;
+  }[] = [];
 
   for (const [key, value] of formData.entries()) {
     const match = /^(raw|pack)\.(\d+)\.itemId$/.exec(key);
@@ -554,7 +607,25 @@ export async function saveBomAction(
       };
     }
 
-    lines.push({ itemId: value, quantityPer });
+    const prefix = `${match[1]}.${match[2]}`;
+    const overagePercent = String(formData.get(`${prefix}.overagePercent`) ?? '').trim();
+    const manufacturingStage = String(formData.get(`${prefix}.manufacturingStage`) ?? '').trim();
+
+    lines.push({
+      itemId: value,
+      quantityPer,
+      // An unticked checkbox is absent from FormData entirely, which is how a
+      // form spells false. Packing lines carry no checkbox at all, so they
+      // arrive undefined and the API defaults them to mandatory.
+      ...(match[1] === 'raw'
+        ? { isMandatory: formData.get(`${prefix}.isMandatory`) !== null }
+        : {}),
+      ...(manufacturingStage ? { manufacturingStage } : {}),
+      // OMITTED WHEN BLANK, not sent as "0": blank means "use the
+      // formulation's default", and sending zero would store "no overage on
+      // this line" instead.
+      ...(overagePercent ? { overagePercent } : {}),
+    });
   }
 
   if (lines.length === 0) {
@@ -582,6 +653,8 @@ export async function saveBomAction(
   }
 
   const instructions = optional(formData, 'instructions');
+  const changeControlId = optional(formData, 'changeControlId');
+  const defaultOveragePercent = optional(formData, 'defaultOveragePercent');
 
   const result = await apiFetch<BomView>(
     bomId ? `/api/v1/production/boms/${bomId}` : '/api/v1/production/boms',
@@ -589,11 +662,21 @@ export async function saveBomAction(
       method: bomId ? 'PATCH' : 'POST',
       authenticated: true,
       json: bomId
-        ? { outputQuantity, lines, ...(instructions ? { instructions } : {}) }
+        ? {
+            outputQuantity,
+            lines,
+            ...(instructions ? { instructions } : {}),
+            // Sent as null when cleared, so an edit can remove a reference
+            // that was entered by mistake.
+            changeControlId: changeControlId ?? null,
+            ...(defaultOveragePercent ? { defaultOveragePercent } : {}),
+          }
         : {
             productId,
             outputQuantity,
             lines,
+            ...(changeControlId ? { changeControlId } : {}),
+            ...(defaultOveragePercent ? { defaultOveragePercent } : {}),
             // Absent from FormData when unticked, which is how a form spells
             // false.
             activate: formData.get('activate') !== null,
@@ -810,6 +893,33 @@ export async function nextPartyCodeAction(type: string): Promise<string | null> 
   );
 
   return result.ok ? result.data.code : null;
+}
+
+/**
+ * Approves a formulation — US-MD-03.
+ *
+ * A SEPARATE ACT FROM SAVING, which is the point: one checkbox used to draft
+ * and approve at once, so the author signed off their own work. The API
+ * restricts this to roles that may sign one, and records who and when.
+ *
+ * Takes no form data — there is nothing to choose. Who and when come from the
+ * session and the clock.
+ */
+export async function approveBomAction(bomId: string): Promise<ActionResult> {
+  const result = await apiFetch<BomView>(`/api/v1/production/boms/${bomId}/approve`, {
+    method: 'POST',
+    authenticated: true,
+    timeoutMs: 20_000,
+  });
+
+  if (!result.ok) return failure(result);
+
+  revalidatePath('/master-data', 'layout');
+
+  return {
+    ok: true,
+    message: `Formulation v${result.data.version} of ${result.data.product.code} approved.`,
+  };
 }
 
 export async function nextAgreementReferenceAction(): Promise<string | null> {
@@ -1121,6 +1231,7 @@ export async function savePackagingAction(
     unitsPerPack,
     lines,
     isActive,
+    ...(optional(formData, 'mrp') ? { mrp: optional(formData, 'mrp')! } : {}),
     ...(optional(formData, 'notes') ? { notes: optional(formData, 'notes')! } : {}),
   } satisfies CreatePackagingRequirementRequest;
 
@@ -1131,6 +1242,9 @@ export async function savePackagingAction(
     unitsPerPack,
     lines,
     isActive,
+    // Null when cleared, so an edit can remove a per-pack price and fall back
+    // to the product's own MRP.
+    mrp: optional(formData, 'mrp') ?? null,
     notes: optional(formData, 'notes') ?? null,
   } satisfies UpdatePackagingRequirementRequest;
 

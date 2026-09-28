@@ -19,7 +19,7 @@ import type {
 } from '@pharma-erp/types';
 import { ITEM_CODE_DIGITS, ITEM_CODE_PREFIXES } from '@pharma-erp/types';
 
-import { withCreatedBy } from '../common/created-by';
+import { withApprovedBy, withCreatedBy } from '../common/created-by';
 import { fieldBadRequest, fieldConflict } from '../common/field-error';
 import { JobWorkOrdersService } from '../job-work/job-work-orders.service';
 import { PackagingService } from '../packaging/packaging.service';
@@ -361,26 +361,14 @@ export class ProductionService {
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     });
 
-    const views = boms.map((bom) => ({
-      // Filled in by the register that lists these; see PeopleService.
-      createdBy: null,
-      id: bom.id,
-      createdAt: bom.createdAt.toISOString(),
-      version: bom.version,
-      isActive: bom.isActive,
-      outputQuantity: bom.outputQuantity.toString(),
-      effectiveFrom: toIsoDate(bom.effectiveFrom),
-      instructions: bom.instructions,
-      product: toItemSummary(bom.product),
-      lines: bom.lines.map((line) => ({
-        id: line.id,
-        item: toItemSummary(line.item),
-        quantityPer: line.quantityPer.toString(),
-        notes: line.notes,
-      })),
-    }));
+    const views = boms.map((bom) => toBomView(bom));
 
-    return withCreatedBy(this.prisma, boms, views);
+    // BOTH names, in turn: each is one query for the whole page, not a join
+    // per row. See the note in ./common/created-by on why the mappers cannot
+    // do this themselves.
+    const withCreator = await withCreatedBy(this.prisma, boms, views);
+
+    return withApprovedBy(this.prisma, boms, withCreator);
   }
 
   /**
@@ -484,11 +472,18 @@ export class ProductionService {
           outputQuantity: dto.outputQuantity,
           instructions: dto.instructions ?? null,
           isActive: activate,
+          changeControlId: dto.changeControlId?.trim() || null,
+          defaultOveragePercent: dto.defaultOveragePercent ?? 0,
           lines: {
             create: dto.lines.map((line) => ({
               tenantId,
               itemId: line.itemId,
               quantityPer: line.quantityPer,
+              // Undefined is not the same as null here: an omitted overage
+              // means "use the BOM's default", which is what null stores.
+              isMandatory: line.isMandatory ?? true,
+              manufacturingStage: line.manufacturingStage?.trim() || null,
+              overagePercent: line.overagePercent ?? null,
               notes: line.notes ?? null,
             })),
           },
@@ -499,30 +494,70 @@ export class ProductionService {
         },
       });
 
-      return {
-        // Filled in by the register that lists these; see PeopleService.
-        createdBy: null,
-        id: created.id,
-        createdAt: created.createdAt.toISOString(),
-        version: created.version,
-        isActive: created.isActive,
-        outputQuantity: created.outputQuantity.toString(),
-        effectiveFrom: toIsoDate(created.effectiveFrom),
-        instructions: created.instructions,
-        product: toItemSummary(created.product),
-        lines: created.lines.map((line) => ({
-          id: line.id,
-          item: toItemSummary(line.item),
-          quantityPer: line.quantityPer.toString(),
-          notes: line.notes,
-        })),
-      };
+      return toBomView(created);
     });
   }
 
   // -------------------------------------------------------------------------
   // Production orders
   // -------------------------------------------------------------------------
+
+  /**
+   * Approves a formulation — US-MD-03.
+   *
+   * A SEPARATE ACT FROM ACTIVATION, which is the compliance gap the story
+   * names: one `isActive` checkbox used to do both, so whoever drafted a
+   * recipe was also the person who approved it. Approval is now its own
+   * request, restricted to roles that may sign one off, and recorded with who
+   * and when.
+   *
+   * IDEMPOTENT ON THE SAME APPROVER, refused for a different one. Pressing the
+   * button twice is a double-click, not a second approval; a second person
+   * approving a formulation already approved would overwrite the first name,
+   * and the record of who signed it off is the whole point.
+   *
+   * Nothing here activates the BOM. Which version is current stays a separate
+   * decision, and a formulation may sit approved and inactive indefinitely.
+   */
+  async approveBom(id: string): Promise<BomView> {
+    const userId = this.tenantContext.getUserId();
+
+    if (!userId) {
+      throw new BadRequestException('Approving a formulation needs a signed-in user.');
+    }
+
+    const existing = await this.prisma.scoped.bom.findFirst({
+      where: { id, deletedAt: null },
+      select: { id: true, approvedById: true, version: true, product: { select: { code: true } } },
+    });
+
+    if (!existing) throw new NotFoundException('That formulation does not exist.');
+
+    if (existing.approvedById && existing.approvedById !== userId) {
+      throw new ConflictException(
+        `Formulation v${existing.version} of ${existing.product.code} has already been ` +
+          'approved by somebody else. Save a new version if it needs to change.',
+      );
+    }
+
+    const approved = await this.prisma.scoped.bom.update({
+      where: { id },
+      data: { approvedById: userId, approvedAt: new Date() },
+      include: {
+        product: true,
+        lines: { include: { item: true }, orderBy: { item: { code: 'asc' } } },
+      },
+    });
+
+    // The approver's own name, resolved here so the view carries it without a
+    // second round trip.
+    const approver = await this.prisma.scoped.user.findFirst({
+      where: { id: userId },
+      select: { fullName: true },
+    });
+
+    return toBomView(approved, approver?.fullName ?? null);
+  }
 
   /**
    * Rewrites a formulation in place — US-MD-03's edit path.
@@ -586,6 +621,14 @@ export class ProductionService {
         data: {
           outputQuantity: dto.outputQuantity,
           instructions: dto.instructions?.trim() || null,
+          // Only when sent: omitting either leaves what is stored, which is how
+          // every other optional field on these forms behaves.
+          ...(dto.changeControlId !== undefined
+            ? { changeControlId: dto.changeControlId?.trim() || null }
+            : {}),
+          ...(dto.defaultOveragePercent !== undefined
+            ? { defaultOveragePercent: dto.defaultOveragePercent }
+            : {}),
         },
       });
 
@@ -599,6 +642,11 @@ export class ProductionService {
           bomId: id,
           itemId: line.itemId,
           quantityPer: line.quantityPer,
+          // Undefined is not the same as null here: an omitted overage
+          // means "use the BOM's default", which is what null stores.
+          isMandatory: line.isMandatory ?? true,
+          manufacturingStage: line.manufacturingStage?.trim() || null,
+          overagePercent: line.overagePercent ?? null,
           notes: line.notes?.trim() || null,
         })),
       });
@@ -611,24 +659,7 @@ export class ProductionService {
         },
       });
 
-      return {
-        // Filled in by the register that lists these; see PeopleService.
-        createdBy: null,
-        id: saved.id,
-        createdAt: saved.createdAt.toISOString(),
-        version: saved.version,
-        isActive: saved.isActive,
-        outputQuantity: saved.outputQuantity.toString(),
-        effectiveFrom: toIsoDate(saved.effectiveFrom),
-        instructions: saved.instructions,
-        product: toItemSummary(saved.product),
-        lines: saved.lines.map((line) => ({
-          id: line.id,
-          item: toItemSummary(line.item),
-          quantityPer: line.quantityPer.toString(),
-          notes: line.notes,
-        })),
-      };
+      return toBomView(saved);
     });
   }
 
@@ -842,7 +873,8 @@ export class ProductionService {
 
     const lines = bom.lines.map((line) => {
       const details = detailsById.get(line.itemId);
-      const required = new Prisma.Decimal(line.quantityPer).mul(scale).toDecimalPlaces(3);
+      // OVERAGE-ADJUSTED per US-MD-03, not the bare BOM quantity.
+      const required = requiredWithOverage(line.quantityPer, scale, effectiveOverage(line, bom));
       const available = new Prisma.Decimal(availableById.get(line.itemId) ?? 0).toDecimalPlaces(3);
       const short = Prisma.Decimal.max(required.sub(available), new Prisma.Decimal(0));
 
@@ -886,7 +918,15 @@ export class ProductionService {
   async materialShortages(
     bom: {
       outputQuantity: Prisma.Decimal;
-      lines: { itemId: string; quantityPer: Prisma.Decimal }[];
+      // The overage figures travel with the BOM: a shortfall computed without
+      // them would under-order every material the formulation allows wastage
+      // on — see requiredWithOverage.
+      defaultOveragePercent: Prisma.Decimal;
+      lines: {
+        itemId: string;
+        quantityPer: Prisma.Decimal;
+        overagePercent: Prisma.Decimal | null;
+      }[];
     },
     plannedQuantity: string,
     /**
@@ -946,7 +986,8 @@ export class ProductionService {
     const shortages = [];
 
     for (const line of bom.lines) {
-      const required = new Prisma.Decimal(line.quantityPer).mul(scale).toDecimalPlaces(3);
+      // OVERAGE-ADJUSTED per US-MD-03, not the bare BOM quantity.
+      const required = requiredWithOverage(line.quantityPer, scale, effectiveOverage(line, bom));
       const available = new Prisma.Decimal(availableById.get(line.itemId) ?? 0).toDecimalPlaces(3);
 
       if (available.greaterThanOrEqualTo(required)) continue;
@@ -1223,6 +1264,112 @@ interface OrderNumberReader {
  *
  * 0 is the sentinel for "not year-scoped". It cannot collide with a real year.
  */
+/**
+ * The overage that actually applies to a BOM line — US-MD-03.
+ *
+ * NULL ON THE LINE MEANS "USE THE BOM'S DEFAULT", which is not the same as a
+ * line set to 0. Zero says "no overage on this material whatever the
+ * formulation's default is" — an active ingredient dosed exactly, in a BOM
+ * that allows 5% on everything else. Collapsing the two would make the default
+ * unreachable per line.
+ */
+/**
+ * One BOM, as the wire sees it.
+ *
+ * ONE MAPPER, used by the listing, the create and the update. The same shape
+ * was written out three times, and adding US-MD-03's approval and overage
+ * fields broke all three at once — which is the cheap version of the failure:
+ * the expensive one is a field added to two of the three and quietly missing
+ * from whichever path nobody tested.
+ *
+ * `createdBy` is null here and filled in by the caller that lists these; see
+ * `withCreatedBy`.
+ */
+function toBomView(
+  bom: {
+    id: string;
+    createdAt: Date;
+    version: number;
+    isActive: boolean;
+    outputQuantity: Prisma.Decimal;
+    effectiveFrom: Date;
+    instructions: string | null;
+    approvedAt: Date | null;
+    changeControlId: string | null;
+    defaultOveragePercent: Prisma.Decimal;
+    product: Parameters<typeof toItemSummary>[0];
+    lines: {
+      id: string;
+      quantityPer: Prisma.Decimal;
+      isMandatory: boolean;
+      manufacturingStage: string | null;
+      overagePercent: Prisma.Decimal | null;
+      notes: string | null;
+      item: Parameters<typeof toItemSummary>[0];
+    }[];
+  },
+  approvedBy: string | null = null,
+): BomView {
+  return {
+    createdBy: null,
+    id: bom.id,
+    createdAt: bom.createdAt.toISOString(),
+    version: bom.version,
+    isActive: bom.isActive,
+    outputQuantity: bom.outputQuantity.toString(),
+    effectiveFrom: toIsoDate(bom.effectiveFrom),
+    instructions: bom.instructions,
+    approvedBy,
+    approvedAt: bom.approvedAt?.toISOString() ?? null,
+    changeControlId: bom.changeControlId,
+    defaultOveragePercent: bom.defaultOveragePercent.toString(),
+    product: toItemSummary(bom.product),
+    lines: bom.lines.map((line) => ({
+      id: line.id,
+      item: toItemSummary(line.item),
+      quantityPer: line.quantityPer.toString(),
+      isMandatory: line.isMandatory,
+      manufacturingStage: line.manufacturingStage,
+      overagePercent: line.overagePercent?.toString() ?? null,
+      // Resolved HERE rather than in the browser, so the figure on screen is
+      // the one the requirement calculation uses.
+      effectiveOveragePercent: effectiveOverage(line, bom).toString(),
+      notes: line.notes,
+    })),
+  };
+}
+
+export function effectiveOverage(
+  line: { overagePercent: Prisma.Decimal | null },
+  bom: { defaultOveragePercent: Prisma.Decimal },
+): Prisma.Decimal {
+  return line.overagePercent ?? bom.defaultOveragePercent;
+}
+
+/**
+ * A BOM line's quantity for a batch, with its wastage allowance added.
+ *
+ * US-MD-03: "The Work Order's Material Requirement calculation must use the
+ * Overage-adjusted quantity, not the bare BOM quantity." Raw-material wastage
+ * of 5–10% during manufacturing is normal and has to be built into what is
+ * procured and issued — it used to be left to a safety-stock buffer, which no
+ * longer exists under the order-driven model.
+ *
+ * Rounded to three places, matching `Decimal(14,3)` on every quantity column:
+ * a figure the database would round anyway should be rounded where it is
+ * computed, so the number shown is the number stored.
+ */
+export function requiredWithOverage(
+  quantityPer: Prisma.Decimal | string,
+  scale: Prisma.Decimal,
+  overagePercent: Prisma.Decimal,
+): Prisma.Decimal {
+  const base = new Prisma.Decimal(quantityPer).mul(scale);
+  const multiplier = new Prisma.Decimal(100).add(overagePercent).div(100);
+
+  return base.mul(multiplier).toDecimalPlaces(3);
+}
+
 const ITEM_CODE_YEAR = 0;
 
 /**

@@ -1,4 +1,8 @@
+import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
+  IsBoolean,
   IsEmail,
   IsIn,
   IsInt,
@@ -6,10 +10,12 @@ import {
   IsOptional,
   IsPhoneNumber,
   IsString,
+  IsUUID,
   Matches,
   Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 
 import type { PartyStatus, PartyType } from '@pharma-erp/types';
@@ -38,6 +44,18 @@ void _statusesMatch;
  */
 const GSTIN = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$/;
 
+/**
+ * PAN: five letters, four digits, one letter — e.g. AABCU9603R.
+ *
+ * The same ten characters that sit inside a GSTIN (positions 3–12), captured
+ * separately because a party with no GST registration still has one. Checked
+ * here rather than left to the column, so the refusal names the field.
+ */
+const PAN = /^[A-Z]{5}[0-9]{4}[A-Z]$/;
+
+const PAN_MESSAGE =
+  'panNumber must be 10 characters: five letters, four digits, one letter (e.g. AABCU9603R)';
+
 const GSTIN_MESSAGE =
   'gstin must be 15 characters: state code, PAN, entity number, Z, checksum (e.g. 27AABCU9603R1ZM)';
 
@@ -63,6 +81,59 @@ const EMAIL_MESSAGE = 'must be a valid email address, e.g. purchasing@vendor.co.
  */
 const PHONE_MESSAGE =
   'must include the country code and be a real number for that country, e.g. +91 98765 43210';
+
+/**
+ * One delivery address — US-MD-02.
+ *
+ * Every part of an address that a courier needs is REQUIRED: a row with no
+ * city or no PIN is not an address, and storing one would put a consignment
+ * note in the hands of somebody who cannot deliver it. `line2` is the
+ * exception, being genuinely optional on most.
+ */
+export class PartyDeliveryAddressDto {
+  /** Present when amending an existing row, absent when adding one. */
+  @IsOptional()
+  @IsUUID()
+  id?: string;
+
+  @IsString()
+  @MaxLength(120)
+  @Matches(/\S/, { message: 'label must not be blank' })
+  label!: string;
+
+  @IsString()
+  @MaxLength(255)
+  @Matches(/\S/, { message: 'line1 must not be blank' })
+  line1!: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  line2?: string;
+
+  @IsString()
+  @MaxLength(120)
+  @Matches(/\S/, { message: 'city must not be blank' })
+  city!: string;
+
+  @IsString()
+  @MaxLength(120)
+  @Matches(/\S/, { message: 'state must not be blank' })
+  state!: string;
+
+  /** Six digits. An Indian PIN is exactly that, and a typo here misdelivers. */
+  @Matches(/^[1-9][0-9]{5}$/, { message: 'pin must be six digits, e.g. 421302' })
+  pin!: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isDefault?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  notes?: string;
+}
 
 export class CreatePartyDto {
   /**
@@ -102,6 +173,27 @@ export class CreatePartyDto {
    */
   @Matches(GSTIN, { message: GSTIN_MESSAGE })
   gstin!: string;
+
+  /**
+   * OPTIONAL, unlike the GSTIN beside it. US-MD-02 asks that PAN be captured
+   * for every party, but making it mandatory on create would refuse a record
+   * somebody is entering from a phone call before the paperwork arrives — the
+   * same reason the licence fields are optional here.
+   */
+  @IsOptional()
+  @Matches(PAN, { message: PAN_MESSAGE })
+  panNumber?: string;
+
+  /**
+   * US-MD-02. Sent AS A WHOLE on an update — a row missing from the list is
+   * withdrawn — and omitted entirely to leave the party's addresses untouched.
+   */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => PartyDeliveryAddressDto)
+  deliveryAddresses?: PartyDeliveryAddressDto[];
 
   @IsEmail({}, { message: `email ${EMAIL_MESSAGE}` })
   @MaxLength(320)
@@ -168,6 +260,21 @@ export class UpdatePartyDto {
   @IsOptional()
   @Matches(GSTIN, { message: GSTIN_MESSAGE })
   gstin?: string | null;
+
+  @IsOptional()
+  @Matches(PAN, { message: PAN_MESSAGE })
+  panNumber?: string | null;
+
+  /**
+   * US-MD-02. Sent AS A WHOLE on an update — a row missing from the list is
+   * withdrawn — and omitted entirely to leave the party's addresses untouched.
+   */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => PartyDeliveryAddressDto)
+  deliveryAddresses?: PartyDeliveryAddressDto[];
 
   @IsOptional()
   @IsEmail({}, { message: `email ${EMAIL_MESSAGE}` })

@@ -46,6 +46,15 @@ interface FieldShell {
   wide?: boolean;
   /** Smaller control, for the line-item rows where a full-height field is too tall. */
   compact?: boolean;
+  /**
+   * Keeps the label for screen readers but takes it off the screen.
+   *
+   * For a field whose SECTION already names it — a "Notes" box under a
+   * "Notes" heading reads the word twice in two lines. The label still has to
+   * exist: a textarea with no accessible name is one a screen reader
+   * announces as "edit text, blank".
+   */
+  labelHidden?: boolean;
 }
 
 /**
@@ -67,13 +76,20 @@ function Shell({
   error,
   wide,
   compact,
+  labelHidden,
   children,
 }: FieldShell & { children: ReactNode }) {
   return (
     <div className={wide ? 'sm:col-span-2' : undefined}>
       <label
         htmlFor={name}
-        className={compact ? 'block text-xs font-medium text-slate-600' : 'field-label'}
+        className={
+          labelHidden
+            ? 'sr-only'
+            : compact
+              ? 'block text-xs font-medium text-slate-600'
+              : 'field-label'
+        }
       >
         {label}
         {required && <RequiredMark />}

@@ -1544,6 +1544,8 @@ export function RecordPackingForm({
   rejectedQuantity = null,
   packVariant = null,
   packagingConsumed = [],
+  lots = [],
+  ownership = 'COMPANY_OWNED',
 }: {
   batchId: string;
   batchNumber: string;
@@ -1569,7 +1571,24 @@ export function RecordPackingForm({
    * saving from there wiped the figures — the API replaces the consumption
    * rows wholesale, so a blank box is not "unchanged", it is "none used".
    */
-  packagingConsumed?: { itemId: string; quantityConsumed: string }[];
+  packagingConsumed?: { itemId: string; quantityConsumed: string; lotId: string | null }[];
+  /**
+   * Stock on hand, for the lot each component is drawn from — US-MD-06.
+   *
+   * The packing record names the LOT, not merely the component: "the recall
+   * trail from a carton lot to this batch" is the story's phrase, and without
+   * a lot on the line there is no trail. A recalled carton lot could not be
+   * traced to the batches it went into.
+   */
+  lots?: ProductionStockLot[];
+  /**
+   * Whose packaging this batch may consume, from its work order's terms.
+   *
+   * A pure-conversion job draws the principal's own material; anything else
+   * draws ours. The same rule the raw-material issue applies — offering the
+   * wrong bucket here would let a batch quietly consume a customer's cartons.
+   */
+  ownership?: StockOwnership;
 }) {
   const [state, action, pending] = useActionState(recordPackingAction, IDLE);
 
@@ -1597,6 +1616,28 @@ export function RecordPackingForm({
    */
   const consumedFor = (itemId: string) =>
     packagingConsumed.find((entry) => entry.itemId === itemId)?.quantityConsumed ?? '';
+
+  /** The lot recorded for a component last time, or '' if none was. */
+  const consumedLotFor = (itemId: string) =>
+    packagingConsumed.find((entry) => entry.itemId === itemId)?.lotId ?? '';
+
+  /**
+   * The lots a component may be drawn from.
+   *
+   * Filtered to the order's ownership bucket AND to stock that is actually
+   * usable — a quarantined carton is not packaging material yet, whoever owns
+   * it. Newest expiry last, so the one to use first is at the top.
+   */
+  const lotsFor = (itemId: string) =>
+    lots
+      .filter(
+        (lot) =>
+          lot.item.id === itemId &&
+          lot.status === 'USABLE' &&
+          lot.ownership === ownership &&
+          Number(lot.quantityAvailable) > 0,
+      )
+      .sort((a, b) => (a.expiryDate ?? '9999').localeCompare(b.expiryDate ?? '9999'));
 
   /**
    * Whether packing has been recorded for this batch.
@@ -1805,6 +1846,40 @@ export function RecordPackingForm({
                   <div className="min-w-0 flex-1">
                     <span className="font-mono text-xs text-slate-700">{component.code}</span>{' '}
                     <span className="text-sm text-slate-600">{component.name}</span>
+                  </div>
+
+                  {/* WHICH LOT IT CAME FROM — US-MD-06, and the point of the
+                      line: this is the recall trail from a carton lot to this
+                      batch. Without it the record says a carton was used but
+                      not which one, so a recalled lot cannot be traced to the
+                      batches that consumed it.
+
+                      Only lots in the order's OWNERSHIP BUCKET are offered. A
+                      pure-conversion job packs with the principal's own
+                      cartons; anything else uses ours, and mixing the two
+                      would consume a customer's material on our own batch. */}
+                  <div className="w-64">
+                    <label htmlFor={`lot-${batchId}-${index}`} className="sr-only">
+                      Lot of {component.code}
+                    </label>
+                    <select
+                      id={`lot-${batchId}-${index}`}
+                      name={`component.${index}.lotId`}
+                      defaultValue={consumedLotFor(component.id)}
+                      className={FIELD}
+                    >
+                      {/* Selectable and empty, so "not recorded" stays a real
+                          answer: packaging taken from an untracked bulk store
+                          has no lot to name, and refusing the line would stop
+                          the batch being recorded at all. */}
+                      <option value="">--None--</option>
+                      {lotsFor(component.id).map((lot) => (
+                        <option key={lot.id} value={lot.id}>
+                          {lot.lotNumber} · {lot.quantityAvailable} {component.uom}
+                          {lot.expiryDate ? ` · exp ${formatDateDMY(lot.expiryDate)}` : ''}
+                        </option>
+                      ))}
+                    </select>
                   </div>
 
                   <div className="w-40">

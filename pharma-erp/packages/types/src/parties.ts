@@ -147,6 +147,11 @@ export interface CreatePartyRequest {
   partyType: PartyType;
   status?: PartyStatus;
   gstin: string;
+  /** Optional, unlike the three above: not every party is PAN-registered with
+   *  us at the moment the record is created. */
+  panNumber?: string;
+  /** US-MD-02. Omit for a party with none; the default row syncs to shipping_*. */
+  deliveryAddresses?: PartyDeliveryAddressInput[];
   email: string;
   phone: string;
   address?: string;
@@ -168,6 +173,13 @@ export interface UpdatePartyRequest {
   partyType?: PartyType;
   status?: PartyStatus;
   gstin?: string | null;
+  panNumber?: string | null;
+  /**
+   * The party's addresses AS A WHOLE, not a patch: a row missing from this
+   * list is withdrawn. Omit the field entirely to leave them untouched, which
+   * is how every other repeating section on these forms behaves.
+   */
+  deliveryAddresses?: PartyDeliveryAddressInput[];
   email?: string | null;
   phone?: string | null;
   address?: string | null;
@@ -232,4 +244,47 @@ export function formatFileSize(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
 
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// ---------------------------------------------------------------------------
+// Delivery addresses — US-MD-02
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a party's goods actually go.
+ *
+ * REPEATABLE, because one customer routinely receives at several places: a
+ * registered office that never takes stock, two depots and a hospital store.
+ * The party row holds a single registered address and a single billing
+ * address; neither answers "where does this consignment go".
+ *
+ * The row marked `isDefault` is written back to the party's `shipping_*`
+ * columns, which a sales invoice prints from. That keeps one address
+ * authoritative per invoice while the register holds the full list.
+ */
+export interface PartyDeliveryAddress {
+  id: string;
+  /** What the people there call it — "Bhiwandi depot", "Head office". */
+  label: string;
+  line1: string;
+  line2: string | null;
+  city: string;
+  state: string;
+  pin: string;
+  isDefault: boolean;
+  notes: string | null;
+}
+
+/** One address as the form submits it. No id: a new row has none yet. */
+export interface PartyDeliveryAddressInput {
+  /** Present when amending an existing row, absent when adding one. */
+  id?: string;
+  label: string;
+  line1: string;
+  line2?: string;
+  city: string;
+  state: string;
+  pin: string;
+  isDefault?: boolean;
+  notes?: string;
 }
