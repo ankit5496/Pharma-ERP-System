@@ -17,7 +17,12 @@
  */
 
 /** Stable URL segment for each workflow. */
-export type WorkflowKey = 'procure-to-pay' | 'production-quality' | 'order-to-cash' | 'job-work';
+export type WorkflowKey =
+  | 'sales-order'
+  | 'procure-to-pay'
+  | 'production-quality'
+  | 'order-to-cash'
+  | 'job-work';
 
 /**
  * Whether a step has a real screen behind it.
@@ -71,6 +76,21 @@ export interface Workflow {
  * the point of holding the structure as data.
  */
 export const WORKFLOWS: readonly Workflow[] = [
+  {
+    // Taking the order is where the commercial flow starts, so it leads the
+    // tab row. The screen itself is unchanged and still the Order-to-Cash one:
+    // this moves where it is reached from, not what it does.
+    key: 'sales-order',
+    label: 'Sales Order',
+    steps: [
+      {
+        key: 'sales-orders',
+        label: 'Sales orders',
+        purpose: 'Orders received from a distributor, priced and confirmed.',
+        state: 'ready',
+      },
+    ],
+  },
   {
     key: 'procure-to-pay',
     label: 'Procure-to-Pay',
@@ -213,12 +233,6 @@ export const WORKFLOWS: readonly Workflow[] = [
         key: 'customers',
         label: 'Customers',
         purpose: 'Distributors and stockists, with their drug licence details.',
-        state: 'ready',
-      },
-      {
-        key: 'sales-orders',
-        label: 'Sales orders',
-        purpose: 'Orders received from a distributor, priced and confirmed.',
         state: 'ready',
       },
       {

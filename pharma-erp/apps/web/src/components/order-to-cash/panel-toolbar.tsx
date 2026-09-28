@@ -370,6 +370,7 @@ export function CreateDialogButton({
   disabled = false,
   disabledHint,
   closeOn = false,
+  wide = false,
   children,
 }: {
   label: string;
@@ -378,6 +379,8 @@ export function CreateDialogButton({
   disabled?: boolean;
   disabledHint?: string;
   closeOn?: boolean;
+  /** Passed through to the dialog: a wide form needs a wide dialog. */
+  wide?: boolean;
   /**
    * A PLAIN NODE, not a render function.
    *
@@ -409,7 +412,7 @@ export function CreateDialogButton({
       </button>
 
       {open && (
-        <Modal title={title} description={description} onClose={() => setOpen(false)}>
+        <Modal title={title} description={description} wide={wide} onClose={() => setOpen(false)}>
           {children}
         </Modal>
       )}

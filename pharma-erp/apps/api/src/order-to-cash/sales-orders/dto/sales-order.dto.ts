@@ -37,6 +37,41 @@ export class CreateSalesOrderDto {
   @IsUUID()
   customerId!: string;
 
+  /**
+   * The order's own terms. Free text on purpose: these are what was agreed for
+   * THIS order, not a code from a master, and the customer's standing terms
+   * stay where they are on the party record.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  customerPoNumber?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  shippingTerms?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  insurance?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  transportName?: string;
+
+  /**
+   * Order-level charge, taxed with the goods.
+   *
+   * MONEY, so it cannot be negative: the pattern admits digits only. A negative
+   * charge would be a discount, which the lines already express.
+   */
+  @IsOptional()
+  @Matches(MONEY, { message: 'processingCharges must be a decimal amount, e.g. "3000.00".' })
+  processingCharges?: string;
+
   @IsISO8601()
   orderDate!: string;
 
@@ -72,6 +107,41 @@ export class CreateSalesOrderDto {
  * a partial line edit has no meaning when totals and tax are derived from them.
  */
 export class UpdateSalesOrderDto {
+  /**
+   * The order's own terms. Free text on purpose: these are what was agreed for
+   * THIS order, not a code from a master, and the customer's standing terms
+   * stay where they are on the party record.
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  customerPoNumber?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  shippingTerms?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  insurance?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  transportName?: string;
+
+  /**
+   * Order-level charge, taxed with the goods.
+   *
+   * MONEY, so it cannot be negative: the pattern admits digits only. A negative
+   * charge would be a discount, which the lines already express.
+   */
+  @IsOptional()
+  @Matches(MONEY, { message: 'processingCharges must be a decimal amount, e.g. "3000.00".' })
+  processingCharges?: string;
+
   @IsOptional()
   @IsISO8601()
   orderDate?: string;

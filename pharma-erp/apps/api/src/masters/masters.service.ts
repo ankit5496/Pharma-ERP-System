@@ -1,7 +1,14 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 
 import { Prisma } from '@pharma-erp/database';
-import type { ItemListItem, O2cItemType, PriceControlType, ScheduleCategory } from '@pharma-erp/types';
+import type {
+  ItemListItem,
+  ItemPackagingSpec,
+  O2cItemType,
+  PackagingComponentView,
+  PriceControlType,
+  ScheduleCategory,
+} from '@pharma-erp/types';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
@@ -178,6 +185,64 @@ export class MastersService {
       };
     });
   }
+
+  /**
+   * An item's packaging specification, for the Sales Order product panel.
+   *
+   * READ-ONLY, AND IT INVENTS NOTHING. Every value is read from the item master
+   * and the packaging register as they stand; a field the master does not carry
+   * yet comes back null and the form leaves it blank. When the master gains
+   * those fields, this returns them without the Sales Order changing.
+   *
+   * The components are grouped by the packaging level the register already
+   * records — PRIMARY, SECONDARY, TERTIARY — which is where the order form's
+   * primary specification and its mono / outer / shipper details come from.
+   */
+  async itemPackagingSpec(itemId: string): Promise<ItemPackagingSpec> {
+    const item = await this.prisma.scoped.item.findFirst({
+      where: { id: itemId, deletedAt: null },
+      include: {
+        packagingRequirements: {
+          where: { deletedAt: null, isActive: true },
+          include: { lines: { include: { item: true } } },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
+      },
+    });
+
+    if (!item) throw new NotFoundException('Item not found.');
+
+    const packaging = item.packagingRequirements[0] ?? null;
+
+    const at = (level: 'PRIMARY' | 'SECONDARY' | 'TERTIARY'): PackagingComponentView[] =>
+      (packaging?.lines ?? [])
+        .filter((line) => line.level === level)
+        .map((line) => ({
+          itemCode: line.item.code,
+          itemName: line.item.name,
+          quantityPer: line.quantityPer.toFixed(3),
+          uom: line.item.uom,
+        }));
+
+    return {
+      itemId: item.id,
+      itemCode: item.code,
+      itemName: item.name,
+      brandName: item.brandName,
+      genericName: item.genericName,
+      hsnCode: item.hsnCode,
+      uom: item.uom,
+      mrp: item.mrp ? item.mrp.toFixed(2) : null,
+      scheduleClassification: item.scheduleClassification,
+      storageConditions: item.storageConditions,
+      packVariant: packaging?.packVariant ?? null,
+      unitsPerPack: packaging ? packaging.unitsPerPack.toFixed(3) : null,
+      primaryComponents: at('PRIMARY'),
+      secondaryComponents: at('SECONDARY'),
+      tertiaryComponents: at('TERTIARY'),
+    };
+  }
 }
 
 /**
@@ -261,4 +326,6 @@ function toScheduleClassification(category: string): 'NONE' | 'H' | 'H1' | 'X' |
     default:
       return 'NONE';
   }
+
+
 }

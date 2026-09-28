@@ -4,6 +4,9 @@ import { revalidatePath } from 'next/cache';
 
 import type {
   AllocationRow,
+  CustomerBalance,
+  CustomerDetail,
+  ItemPackagingSpec,
   DispatchDetail,
   ItemListItem,
   PartySummary,
@@ -131,6 +134,12 @@ export async function createSalesOrderAction(input: {
   customerId: string;
   orderDate: string;
   requestedDeliveryDate?: string;
+  /** The order's own terms, and the charge levied on it. */
+  customerPoNumber?: string;
+  shippingTerms?: string;
+  insurance?: string;
+  transportName?: string;
+  processingCharges?: string;
   notes?: string;
   items: readonly NewOrderLine[];
 }): Promise<ActionResult<SalesOrderDetail>> {
@@ -610,4 +619,59 @@ export async function updateSalesReturnAction(
   if (result.ok) revalidateFlow();
 
   return toResult(result);
+}
+
+// ---------------------------------------------------------------------------
+// Sales order: master-data lookups
+// ---------------------------------------------------------------------------
+// READ-ONLY, ALL THREE. The Sales Order form displays what the masters and the
+// receivable ledger already hold; none of these writes anything. They exist so
+// the form can fill itself in from existing records rather than asking someone
+// to retype what the system knows.
+
+/** The full customer record, for the Billed To / Shipped To panels. */
+export async function customerDetailAction(
+  customerId: string,
+): Promise<ActionResult<CustomerDetail>> {
+  return toResult(
+    await apiFetch<CustomerDetail>(`/api/v1/order-to-cash/customers/${customerId}`, {
+      authenticated: true,
+    }),
+  );
+}
+
+/** Ledger balance and overdue, read from the receivable ledger. */
+export async function customerBalanceAction(
+  customerId: string,
+): Promise<ActionResult<CustomerBalance>> {
+  return toResult(
+    await apiFetch<CustomerBalance>(`/api/v1/order-to-cash/customers/${customerId}/balance`, {
+      authenticated: true,
+    }),
+  );
+}
+
+/** An item's packaging specification, for the product panel. */
+export async function itemPackagingAction(
+  itemId: string,
+): Promise<ActionResult<ItemPackagingSpec>> {
+  return toResult(
+    await apiFetch<ItemPackagingSpec>(`/api/v1/masters/items/${itemId}/packaging`, {
+      authenticated: true,
+    }),
+  );
+}
+
+/**
+ * The number the next order would take.
+ *
+ * A preview: the number is allocated inside the create transaction, so nothing
+ * is consumed by opening the form.
+ */
+export async function nextSalesOrderNumberAction(): Promise<ActionResult<{ number: string }>> {
+  return toResult(
+    await apiFetch<{ number: string }>('/api/v1/order-to-cash/sales-orders/next-number', {
+      authenticated: true,
+    }),
+  );
 }

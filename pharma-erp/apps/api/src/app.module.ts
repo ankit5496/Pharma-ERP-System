@@ -2,6 +2,7 @@ import { Module, type MiddlewareConsumer, type NestModule } from '@nestjs/common
 import { ConfigModule } from '@nestjs/config';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 
+import { AccountingModule } from './accounting/accounting.module';
 import { AuthModule } from './auth/auth.module';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
 import { RolesGuard } from './auth/roles.guard';
@@ -13,6 +14,7 @@ import { HealthModule } from './health/health.module';
 import { JobWorkModule } from './job-work/job-work.module';
 import { LicencesModule } from './licences/licences.module';
 import { MastersModule } from './masters/masters.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { OrderToCashModule } from './order-to-cash/order-to-cash.module';
 import { PackagingModule } from './packaging/packaging.module';
 import { PartiesModule } from './parties/parties.module';
@@ -46,9 +48,11 @@ import { UsersModule } from './users/users.module';
     ProcurementModule,
     PartiesModule,
     LicencesModule,
+    NotificationsModule,
     JobWorkModule,
     PackagingModule,
     ProductionModule,
+    AccountingModule,
     OrderToCashModule,
     MastersModule,
   ],

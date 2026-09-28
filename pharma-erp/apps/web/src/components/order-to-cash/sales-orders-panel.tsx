@@ -137,6 +137,7 @@ export async function SalesOrdersPanel({
             <CreateDialogButton
               label="New sales order"
               title="New sales order"
+              wide
             >
               <NewSalesOrderForm
                 inDialog

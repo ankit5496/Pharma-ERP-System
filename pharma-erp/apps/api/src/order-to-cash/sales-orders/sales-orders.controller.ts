@@ -40,6 +40,18 @@ export class SalesOrdersController {
     return this.orders.list(search);
   }
 
+  /**
+   * The number the next order would take.
+   *
+   * Declared BEFORE `:id` so the literal segment is not swallowed by the
+   * parameter route. Read-only: it does not allocate the number.
+   */
+  @Get('next-number')
+  @SkipAudit('Read-only.')
+  async nextNumber(): Promise<{ number: string }> {
+    return this.orders.nextNumberPreview();
+  }
+
   @Get(':id')
   @SkipAudit('Read-only.')
   async get(@Param('id', ParseUUIDPipe) id: string): Promise<SalesOrderDetail> {

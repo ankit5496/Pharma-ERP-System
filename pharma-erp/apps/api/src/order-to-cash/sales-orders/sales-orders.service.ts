@@ -218,6 +218,12 @@ export class SalesOrdersService {
         },
       );
 
+      // Goods value + processing charges = taxable amount, and the charge is
+      // taxed with the goods. `subtotal` stays the GOODS value so the figure
+      // keeps the meaning every other screen reads it with.
+      const processingCharges = new Prisma.Decimal(dto.processingCharges ?? 0);
+      const chargeTax = taxOnProcessingCharges(lines, processingCharges);
+
       return tx.salesOrder.create({
         data: {
           tenantId,
@@ -225,11 +231,16 @@ export class SalesOrdersService {
           customerId: customer.id,
           orderDate,
           requestedDeliveryDate: deliveryDate,
+          customerPoNumber: dto.customerPoNumber?.trim() || null,
+          shippingTerms: dto.shippingTerms?.trim() || null,
+          insurance: dto.insurance?.trim() || null,
+          transportName: dto.transportName?.trim() || null,
+          processingCharges,
           status: 'DRAFT',
           totalQuantity: totals.quantity,
           subtotal: totals.subtotal,
-          taxAmount: totals.tax,
-          grandTotal: totals.grand,
+          taxAmount: totals.tax.add(chargeTax),
+          grandTotal: totals.grand.add(processingCharges).add(chargeTax),
           notes: dto.notes?.trim() || null,
           createdById: userId,
           items: { create: lines },
@@ -396,16 +407,36 @@ export class SalesOrdersService {
       // these lines, so no reservation is orphaned by replacing them.
       await tx.salesOrderItem.deleteMany({ where: { salesOrderId: id } });
 
+      // Unchanged when the caller does not mention it, so amending a date
+      // cannot silently drop a charge already agreed.
+      const processingCharges =
+        dto.processingCharges === undefined
+          ? order.processingCharges
+          : new Prisma.Decimal(dto.processingCharges);
+
+      const chargeTax = taxOnProcessingCharges(lines, processingCharges);
+
       await tx.salesOrder.update({
         where: { id },
         data: {
           orderDate,
           requestedDeliveryDate: deliveryDate,
+          ...(dto.customerPoNumber === undefined
+            ? {}
+            : { customerPoNumber: dto.customerPoNumber.trim() || null }),
+          ...(dto.shippingTerms === undefined
+            ? {}
+            : { shippingTerms: dto.shippingTerms.trim() || null }),
+          ...(dto.insurance === undefined ? {} : { insurance: dto.insurance.trim() || null }),
+          ...(dto.transportName === undefined
+            ? {}
+            : { transportName: dto.transportName.trim() || null }),
+          processingCharges,
           ...(dto.notes === undefined ? {} : { notes: dto.notes.trim() || null }),
           totalQuantity: totals.quantity,
           subtotal: totals.subtotal,
-          taxAmount: totals.tax,
-          grandTotal: totals.grand,
+          taxAmount: totals.tax.add(chargeTax),
+          grandTotal: totals.grand.add(processingCharges).add(chargeTax),
           // The gate compared a total that has just changed.
           licenceCheck: 'NOT_RUN',
           creditCheck: 'NOT_RUN',
@@ -558,6 +589,34 @@ export class SalesOrdersService {
 
     return this.get(id);
   }
+
+  /**
+   * The number the next order would take, for the form to display.
+   *
+   * A PEEK, NOT AN ALLOCATION. It reads the sequence without incrementing it,
+   * so opening the form does not burn a number — abandoning a half-filled order
+   * would otherwise leave a gap in a numbering series that auditors read as a
+   * deleted document.
+   *
+   * It is therefore a PREVIEW: two people with the form open see the same
+   * number, and whoever saves first takes it. The real number is allocated
+   * inside the create transaction, as it always was.
+   */
+  async nextNumberPreview(): Promise<{ number: string }> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const year = new Date().getUTCFullYear();
+
+    const sequence = await this.prisma.scoped.documentSequence.findUnique({
+      where: { tenantId_docType_year: { tenantId, docType: 'SO', year } },
+      select: { nextValue: true },
+    });
+
+    // No row yet means nothing has been numbered this year, and the first
+    // document will take 1.
+    const value = sequence?.nextValue ?? 1;
+
+    return { number: `SO-${year}-${String(value).padStart(4, '0')}` };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -583,9 +642,14 @@ function toListItem(order: OrderRow): SalesOrderListItem {
     requestedDeliveryDate: order.requestedDeliveryDate
       ? toIsoDate(order.requestedDeliveryDate)
       : null,
+    customerPoNumber: order.customerPoNumber,
+    shippingTerms: order.shippingTerms,
+    insurance: order.insurance,
+    transportName: order.transportName,
     status: order.status as SalesOrderStatus,
     totalQuantity: order.totalQuantity.toFixed(3),
     subtotal: order.subtotal.toFixed(2),
+    processingCharges: order.processingCharges.toFixed(2),
     taxAmount: order.taxAmount.toFixed(2),
     grandTotal: order.grandTotal.toFixed(2),
     licenceCheck: order.licenceCheck as CheckResult,
@@ -694,6 +758,52 @@ function toScheduleCategory(classification: string): ScheduleCategory {
  */
 function trimQuantity(value: Prisma.Decimal): string {
   return value.toDecimalPlaces(3).toString();
+}
+
+/**
+ * The tax on an order-level processing charge.
+ *
+ * WHICH RATE APPLIES IS NOT A NEW DECISION. The charge is spread across the
+ * order's lines in proportion to their taxable value and each share is taxed at
+ * THAT LINE'S rate — the rate the item master already gave. So an order of 12%
+ * and 18% goods taxes the charge partly at each, which is what makes the GST
+ * summary add up rather than needing a rate nobody chose.
+ *
+ * The last share absorbs the rounding remainder, so the shares sum to the
+ * charge exactly rather than to a paisa either side of it.
+ *
+ * A charge on an order whose goods are worth nothing cannot be apportioned at
+ * all, and is refused rather than silently untaxed.
+ */
+function taxOnProcessingCharges(
+  lines: readonly { taxableAmount: Prisma.Decimal; gstRatePercent: Prisma.Decimal }[],
+  charge: Prisma.Decimal,
+): Prisma.Decimal {
+  if (charge.isZero()) return new Prisma.Decimal(0);
+
+  const goods = lines.reduce((sum, line) => sum.add(line.taxableAmount), new Prisma.Decimal(0));
+
+  if (goods.isZero()) {
+    throw new BadRequestException(
+      'Processing charges cannot be taxed on an order whose lines have no value: there is no ' +
+        'line to take the GST rate from. Price the lines, or remove the charge.',
+    );
+  }
+
+  let apportioned = new Prisma.Decimal(0);
+  let tax = new Prisma.Decimal(0);
+
+  lines.forEach((line, index) => {
+    const last = index === lines.length - 1;
+    const share = last
+      ? charge.sub(apportioned)
+      : charge.mul(line.taxableAmount).div(goods).toDecimalPlaces(2);
+
+    apportioned = apportioned.add(share);
+    tax = tax.add(share.mul(line.gstRatePercent).div(100).toDecimalPlaces(2));
+  });
+
+  return tax;
 }
 
 function startOfUtcDay(value: Date): Date {
