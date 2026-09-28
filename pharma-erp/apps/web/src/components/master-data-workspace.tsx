@@ -12,7 +12,6 @@ import {
   type LicenceRegister,
   type LicenceSummary,
   type MasterDataFormKey,
-  type MaterialRequirementRegisterRow,
   type PackagingRequirementView,
   type PartySummary,
   type UserRole,
@@ -30,7 +29,6 @@ import {
   BomGrid,
   ItemGrid,
   LicenceGrid,
-  MaterialRequirementGrid,
   PackagingGrid,
   PartyGrid,
 } from '@/components/master-data-grid';
@@ -68,7 +66,6 @@ export function MasterDataWorkspace({
   licences,
   agreements,
   packaging,
-  materialRequirements,
 }: {
   initialKey: MasterDataFormKey;
   /** Decides which registers are listed; see `visible` below. */
@@ -80,8 +77,6 @@ export function MasterDataWorkspace({
   licences: ApiResult<LicenceRegister> | null;
   agreements: ApiResult<JobWorkAgreementSummary[]>;
   packaging: ApiResult<PackagingRequirementView[]>;
-  /** US-MD-07. Computed on sales-order confirmation, never entered. */
-  materialRequirements: ApiResult<MaterialRequirementRegisterRow[]>;
 }) {
   // US-MD-04: licence records are for Admin and Quality/Compliance only. This
   // hides the tab; it is NOT the enforcement. The API refuses the request and
@@ -205,7 +200,6 @@ export function MasterDataWorkspace({
             licences={licences}
             agreements={agreements}
             packaging={packaging}
-            materialRequirements={materialRequirements}
             onNew={() => setDrawer({ mode: 'new' })}
             onEditBom={(row) => setDrawer({ mode: 'edit-bom', bom: row })}
             onEditItem={(row) => setDrawer({ mode: 'edit', item: row })}
@@ -279,21 +273,13 @@ export function MasterDataWorkspace({
               items={items.ok ? items.data : []}
               onSaved={reportSaved}
             />
-          ) : Form ? (
+          ) : (
             <Form
               onSaved={reportSaved}
               items={items.ok ? items.data : []}
               parties={parties.ok ? parties.data : []}
               boms={boms.ok ? boms.data : []}
             />
-          ) : (
-            /* A register with no form — see FORMS. Unreachable through the UI,
-               which offers neither a New button nor a row action for one, so
-               this is the honest answer to a drawer opened some other way
-               rather than a state worth designing for. */
-            <p className="p-6 text-sm text-slate-600">
-              This register is computed, not entered. Nothing here is edited by hand.
-            </p>
           )}
         </MasterDataDrawer>
       )}
@@ -353,7 +339,6 @@ function Register({
   licences,
   agreements,
   packaging,
-  materialRequirements,
   onNew,
   onEditBom,
   onEditItem,
@@ -370,7 +355,6 @@ function Register({
   licences: ApiResult<LicenceRegister> | null;
   agreements: ApiResult<JobWorkAgreementSummary[]>;
   packaging: ApiResult<PackagingRequirementView[]>;
-  materialRequirements: ApiResult<MaterialRequirementRegisterRow[]>;
   onNew: () => void;
   onEditBom: (bom: BomView) => void;
   onEditItem: (item: ItemSummary) => void;
@@ -403,10 +387,6 @@ function Register({
       return <AgreementGrid result={agreements} onNew={onNew} onEdit={onEditAgreement} />;
     case 'packaging-requirement':
       return <PackagingGrid result={packaging} onNew={onNew} onEdit={onEditPackaging} />;
-    // No onNew and no onEdit: US-MD-07 is computed when a sales order is
-    // confirmed, not entered. See MaterialRequirementGrid.
-    case 'material-requirement':
-      return <MaterialRequirementGrid result={materialRequirements} />;
   }
 }
 
@@ -435,14 +415,8 @@ function Restricted() {
  * Which form the drawer opens for each register.
  *
  * A total record keyed by the same strings as MASTER_DATA_FORMS, so adding a
- * register to that list without deciding about its form here is a compile
- * error rather than an empty drawer nobody notices.
- *
- * UNDEFINED IS A DECISION, not an omission — a register with nothing to enter.
- * `material-requirement` is computed when a sales order is confirmed, so it has
- * no form and offers no New button; the entry is written out explicitly so the
- * record stays total and the next register added still has to answer the
- * question.
+ * register to that list without adding its form here is a compile error
+ * rather than an empty drawer nobody notices.
  *
  * Every prop is passed to every form; the ones that do not need them simply
  * ignore them — a function taking fewer parameters than its type allows is
@@ -453,13 +427,12 @@ function Restricted() {
  */
 const FORMS: Record<
   MasterDataFormKey,
-  | ((props: {
-      onSaved: () => void;
-      items: readonly ItemSummary[];
-      parties: readonly PartySummary[];
-      boms: readonly BomView[];
-    }) => React.ReactNode)
-  | undefined
+  (props: {
+    onSaved: () => void;
+    items: readonly ItemSummary[];
+    parties: readonly PartySummary[];
+    boms: readonly BomView[];
+  }) => React.ReactNode
 > = {
   'item-product': ItemMasterForm,
   party: PartyMasterForm,
@@ -467,5 +440,4 @@ const FORMS: Record<
   'licence-compliance': LicenceComplianceMasterForm,
   'principal-job-work': PrincipalAgreementMasterForm,
   'packaging-requirement': PackagingRequirementMasterForm,
-  'material-requirement': undefined,
 };

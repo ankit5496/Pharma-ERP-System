@@ -21,8 +21,7 @@ export type MasterDataFormKey =
   | 'bom-formulation'
   | 'licence-compliance'
   | 'principal-job-work'
-  | 'packaging-requirement'
-  | 'material-requirement';
+  | 'packaging-requirement';
 
 export interface MasterDataForm {
   key: MasterDataFormKey;
@@ -54,22 +53,6 @@ export const MASTER_DATA_FORMS: readonly MasterDataForm[] = [
     key: 'packaging-requirement',
     label: 'Packaging Requirement',
     title: 'Packaging Requirement Master',
-  },
-  /**
-   * US-MD-07, and the one register here that nobody types into.
-   *
-   * Every other entry is a thing somebody DEFINES; this one is COMPUTED, when a
-   * sales order is confirmed. It sits here because the story places it in
-   * Master Data and because the question it answers — "what have we committed
-   * to that we cannot cover" — spans every order at once, which is not a
-   * question any single order's screen can be asked.
-   *
-   * Last in the row, so the six registers that are maintained stay together.
-   */
-  {
-    key: 'material-requirement',
-    label: 'Material Requirement',
-    title: 'Material Requirement Determination',
   },
 ];
 

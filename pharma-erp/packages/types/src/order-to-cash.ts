@@ -14,7 +14,6 @@
  * reconcile against a ledger. The UI formats them; it never does arithmetic on
  * them.
  */
-import type { RequisitionStatus } from './procurement';
 
 // ---------------------------------------------------------------------------
 // Shared vocabulary
@@ -418,67 +417,6 @@ export interface SalesOrderDetail extends SalesOrderListItem {
   isFullyAllocated: boolean;
   hasInvoice: boolean;
   updatedAt: string;
-}
-
-/**
- * One material a confirmed order was determined to need — US-MD-07.
- *
- * QUANTITIES CROSS AS STRINGS, like every other quantity here: these are
- * PostgreSQL `numeric`, and a JS number would round them differently from the
- * way they are stored.
- *
- * `quantityRequired` is OVERAGE-ADJUSTED — what the material issue will
- * actually consume, not the bare BOM figure. `quantityAvailable` is a snapshot
- * taken when the order was confirmed, not a live reading: it is what was known
- * at the moment the decision was made, which is the thing an auditor asks
- * about.
- */
-export interface MaterialRequirementRow {
-  id: string;
-  item: { id: string; code: string; name: string; uom: string };
-  quantityRequired: string;
-  quantityAvailable: string;
-  /** required - available, floored at zero. Zero means the order is covered. */
-  quantityShort: string;
-  /** The requisition raised to cover a shortfall, when one was. */
-  requisition: { id: string; number: string; status: RequisitionStatus } | null;
-  determinedAt: string;
-}
-
-/**
- * What confirming an order was determined to require, and how it was covered.
- *
- * An EMPTY `rows` with `determinedAt` null means no determination has run —
- * the order predates US-MD-07, or nothing behind it is manufactured. That is
- * different from a determination that ran and found everything in stock, which
- * returns rows with every shortfall at zero.
- */
-export interface MaterialRequirementSummary {
-  salesOrderId: string;
-  rows: readonly MaterialRequirementRow[];
-  /** How many rows are short. Zero means the order can be made from stock. */
-  shortfallCount: number;
-  /** When the determination last ran, or null if it never has. */
-  determinedAt: string | null;
-}
-
-/**
- * One determination row in the cross-order register — US-MD-07.
- *
- * The same figures as {@link MaterialRequirementRow}, plus the order they
- * belong to. Carried on every row rather than grouped, because the register is
- * sorted by shortfall rather than by order: the four rows somebody has to act
- * on are scattered across four different orders, and a grouped shape would put
- * them back into the buckets the sort exists to break open.
- */
-export interface MaterialRequirementRegisterRow extends MaterialRequirementRow {
-  salesOrder: {
-    id: string;
-    orderNumber: string;
-    status: SalesOrderStatus;
-    customerCode: string;
-    customerName: string;
-  };
 }
 
 export interface CreateSalesOrderItemRequest {

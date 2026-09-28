@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 
 import { NumberingService } from '../procurement/numbering.service';
-import { ProductionModule } from '../production/production.module';
 
 import { AllocationController } from './allocation/allocation.controller';
 import { AllocationService } from './allocation/allocation.service';
@@ -35,14 +34,6 @@ import { SalesReturnsService } from './sales-returns/sales-returns.service';
  * PrismaModule and TenantModule are global, so nothing is imported here.
  */
 @Module({
-  // ProductionModule for US-MD-07: confirming an order determines what it will
-  // take to make, which is production arithmetic — BOM explosion and overage —
-  // so the determination lives there and is called from here.
-  //
-  // ONE WAY ONLY. Production does not import this module and must not: the
-  // determination is something confirmation causes, not something production
-  // asks for, and a cycle between the two would make either impossible to load.
-  imports: [ProductionModule],
   controllers: [
     CustomersController,
     SalesOrdersController,

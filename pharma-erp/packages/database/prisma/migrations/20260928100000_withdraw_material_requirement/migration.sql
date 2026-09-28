@@ -1,0 +1,45 @@
+-- =============================================================================
+-- Withdraw the Material Requirement Determination
+-- =============================================================================
+-- `20260928000000_material_requirement_determination` added US-MD-07. It is
+-- withdrawn at the product owner's request, and this drops the table it made.
+--
+-- A NEW MIGRATION rather than an edit to the applied one. The original has
+-- already run against the shared database and is recorded in
+-- `_prisma_migrations`; rewriting it would leave every other environment
+-- believing it had applied something different from what it actually did.
+-- Forward-only is the whole point of a migration history.
+--
+-- WHAT IS LOST, stated exactly, because DROP TABLE is not recoverable. Three
+-- rows existed at the time of writing: one determination against SO-2026-0028,
+-- covering RM-0421, RM-0311 and PM-0062, made on 2026-09-28. Every one of them
+-- had a shortfall of zero — the order could be made from stock — and NO
+-- requisition was raised from any of them, verified before this ran.
+--
+-- So nothing anybody acted on is being discarded. What goes is the record that
+-- the question was asked of that order and answered "yes", which has no reader
+-- once the feature is withdrawn.
+--
+-- `IF EXISTS` so this is safe on an environment that never received the
+-- original: the table is simply not there, and the statement is a no-op rather
+-- than an error that blocks every later migration.
+--
+-- THE ENUM LABEL STAYS. `PRODUCTION_SHORTFALL` remains on
+-- `RequisitionTriggerType`, and deliberately:
+--
+--   PostgreSQL cannot remove a value from an enum. Doing it means creating a
+--   replacement type, rewriting every column that uses it, moving the default
+--   and every dependent view, and dropping the old one — against a live
+--   `purchase_requisitions` table, to retire a label that nothing writes any
+--   more and nothing reads.
+--
+--   An unused label costs nothing. It is not a default, no row carries it now
+--   that the determination is gone, and the UI's own union no longer lists it
+--   so it cannot be chosen. The risk of the rewrite is entirely one-sided.
+--
+-- Nothing here touches `purchase_requisitions` itself. A requisition raised by
+-- a determination — had any been — would be a real order for real material,
+-- and withdrawing the feature that suggested it is not a reason to delete it.
+-- =============================================================================
+
+DROP TABLE IF EXISTS "material_requirements";

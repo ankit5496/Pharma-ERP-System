@@ -13,7 +13,6 @@ import {
   PanelSearch,
 } from './panel-toolbar';
 
-import { MaterialRequirementRow } from './material-requirement-panel';
 import { NewSalesOrderForm, SalesOrderRowActions } from './sales-order-forms';
 import {
   Cell,
@@ -253,18 +252,6 @@ function OrderRow({ order }: { order: SalesOrderListItem }) {
             </Note>
           </td>
         </tr>
-      )}
-
-      {/* US-MD-07, under the order it belongs to and spanning the full width:
-          five quantity columns cannot be read inside one cell of another table.
-          The whole row is a client component — this file is a server component,
-          and the disclosure needs state.
-
-          NOT OFFERED ON A DRAFT OR A CANCELLED ORDER. The determination is
-          written by confirmation, so those have nothing to show, and a toggle
-          that can only say "nothing here" is worse than no toggle. */}
-      {order.status !== 'DRAFT' && order.status !== 'CANCELLED' && (
-        <MaterialRequirementRow salesOrderId={order.id} colSpan={COLUMNS.length} />
       )}
     </>
   );
