@@ -1,15 +1,15 @@
-// Must be the first import: NestJS's DI reads the decorator metadata this shim
-// installs, and anything imported before it would be missing that metadata.
-import 'reflect-metadata';
-
-import { Logger, ValidationPipe } from '@nestjs/common';
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { NestFactory } from '@nestjs/core';
 
-import { AppModule } from './app.module';
+import { createApiApp } from './bootstrap';
 import type { EnvironmentVariables } from './config/env.validation';
-import { VALIDATION_PIPE_OPTIONS } from './config/validation-pipe.options';
 
+/**
+ * Standalone entrypoint — used for local dev and for any deployment that
+ * still runs the API as its own service. The merged production deployment
+ * (apps/server) uses `createApiApp` directly instead and never imports this
+ * file.
+ */
 async function bootstrap(): Promise<void> {
   // NOT bufferLogs: true. Buffering holds every log until the application
   // finishes initialising, so a crash during init — a database that will not
@@ -17,36 +17,12 @@ async function bootstrap(): Promise<void> {
   // with no output at all. That is the single worst thing a deploy log can do.
   // Buffering only pays off when a custom logger is attached later, which this
   // app does not do.
-  const app = await NestFactory.create(AppModule);
+  const app = await createApiApp();
   const logger = new Logger('Bootstrap');
 
   const config = app.get<ConfigService<EnvironmentVariables, true>>(ConfigService);
   const port = config.get('API_PORT', { infer: true });
   const nodeEnv = config.get('NODE_ENV', { infer: true });
-
-  app.useGlobalPipes(new ValidationPipe(VALIDATION_PIPE_OPTIONS));
-
-  app.enableCors({
-    origin: config
-      .get('WEB_ORIGIN', { infer: true })
-      .split(',')
-      .map((origin) => origin.trim())
-      .filter(Boolean),
-    credentials: true,
-    // x-tenant-id is the development-only tenant hint; x-request-id lets the web
-    // app correlate a browser action with the API's logs and audit rows.
-    allowedHeaders: ['Content-Type', 'Authorization', 'x-tenant-id', 'x-request-id'],
-    exposedHeaders: ['x-request-id'],
-  });
-
-  // Versioned from day one: retrofitting a prefix once clients exist is painful.
-  // /health is excluded so orchestrators and probes have a stable, unversioned
-  // URL that never moves.
-  app.setGlobalPrefix('api/v1', { exclude: ['health', 'health/live', 'health/ready'] });
-
-  // Run onModuleDestroy / onApplicationShutdown on SIGTERM, so Prisma closes
-  // its pool instead of leaving connections for Postgres to time out.
-  app.enableShutdownHooks();
 
   // Bind 0.0.0.0 explicitly rather than relying on the default. A container
   // platform routes traffic to the container's own address, so a server bound
