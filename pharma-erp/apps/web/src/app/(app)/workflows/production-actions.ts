@@ -199,7 +199,7 @@ export async function recordPackingAction(
   // US-PROD-04: what the pack actually consumed. Component rows are named
   // `component.<row>.itemId`, so they are found by walking the field names
   // rather than by guessing how many there are.
-  const consumptions: { itemId: string; quantityConsumed: string }[] = [];
+  const consumptions: { itemId: string; quantityConsumed: string; lotId?: string }[] = [];
 
   for (const [key, value] of formData.entries()) {
     const match = /^component\.(\d+)\.itemId$/.exec(key);
@@ -212,7 +212,17 @@ export async function recordPackingAction(
     // that used none of one is a real answer.
     if (!quantity) continue;
 
-    consumptions.push({ itemId: value, quantityConsumed: quantity });
+    // THE LOT, where one was picked — US-MD-06's recall trail from a carton lot
+    // to this batch. Omitted rather than sent empty: packaging drawn from an
+    // untracked bulk store has no lot to name, and the column is nullable for
+    // exactly that case.
+    const lotId = String(formData.get(`component.${match[1]}.lotId`) ?? '').trim();
+
+    consumptions.push({
+      itemId: value,
+      quantityConsumed: quantity,
+      ...(lotId ? { lotId } : {}),
+    });
   }
 
   // CONSUMPTION WITHOUT A VARIANT IS NOT RECORDABLE. The component rows exist

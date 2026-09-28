@@ -257,6 +257,7 @@ export class PackagingService {
             productId: dto.productId,
             packVariant: dto.packVariant.trim(),
             unitsPerPack: dto.unitsPerPack,
+            mrp: dto.mrp ?? null,
             isActive: dto.isActive ?? true,
             notes: dto.notes?.trim() || null,
           },
@@ -303,6 +304,7 @@ export class PackagingService {
 
     if (dto.packVariant !== undefined) data.packVariant = dto.packVariant.trim();
     if (dto.unitsPerPack !== undefined) data.unitsPerPack = dto.unitsPerPack;
+    if (dto.mrp !== undefined) data.mrp = dto.mrp || null;
     if (dto.isActive !== undefined) data.isActive = dto.isActive;
     if (dto.notes !== undefined) data.notes = dto.notes?.trim() || null;
 
@@ -560,6 +562,8 @@ function toRequirementView(requirement: RequirementWithRelations): PackagingRequ
     product: toItemSummary(requirement.product),
     packVariant: requirement.packVariant,
     unitsPerPack: requirement.unitsPerPack.toString(),
+    // Null falls back to the item's own MRP — US-MD-06.
+    mrp: requirement.mrp?.toString() ?? null,
     isActive: requirement.isActive,
     notes: requirement.notes,
     lines: requirement.lines.map((line) => ({

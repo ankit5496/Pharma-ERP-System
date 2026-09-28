@@ -1,13 +1,14 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 
 import type { Party, Prisma } from '@pharma-erp/database';
-import type { PartySummary, PartyStatus, PartyType } from '@pharma-erp/types';
 import { PARTY_CODE_DIGITS, PARTY_CODE_PREFIXES, PARTY_TYPE_LABELS } from '@pharma-erp/types';
+import type { PartySummary, PartyStatus, PartyType , PartyDeliveryAddressInput } from '@pharma-erp/types';
 
-import { fieldConflict } from '../common/field-error';
 import { withCreatedBy } from '../common/created-by';
+import { fieldConflict } from '../common/field-error';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
+
 
 import type { CreatePartyDto, UpdatePartyDto } from './dto/party.dto';
 
@@ -45,13 +46,23 @@ export class PartiesService {
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       // A count, never the documents: the bytes are in the row, so including
       // them would pull every customer's paperwork to draw a register.
-      include: { _count: { select: { documents: { where: { deletedAt: null } } } } },
+      include: {
+        _count: { select: { documents: { where: { deletedAt: null } } } },
+        // Included here rather than fetched per row: the register renders them
+        // and a party rarely has more than a handful.
+        deliveryAddresses: {
+          where: { deletedAt: null },
+          orderBy: [{ isDefault: 'desc' }, { label: 'asc' }],
+        },
+      },
     });
 
     return withCreatedBy(
       this.prisma,
       parties,
-      parties.map((party) => toPartySummary(party, party._count.documents)),
+      parties.map((party) =>
+        toPartySummary(party, party._count.documents, party.deliveryAddresses.map(toAddressView)),
+      ),
     );
   }
 
@@ -81,6 +92,9 @@ export class PartiesService {
             partyType: dto.partyType,
             status,
             gstin: dto.gstin?.trim().toUpperCase() || null,
+            // Upper-cased like the GSTIN: a PAN is upper case on the card,
+            // and the format check would refuse a lower-case one anyway.
+            panNumber: dto.panNumber?.trim().toUpperCase() || null,
             email: dto.email?.trim() || null,
             phone: dto.phone?.trim() || null,
             address: dto.address?.trim() || null,
@@ -89,11 +103,28 @@ export class PartiesService {
             drugLicenceValidTo: dto.drugLicenceValidTo ? fromIsoDate(dto.drugLicenceValidTo) : null,
             creditLimit: dto.creditLimit ?? null,
             creditPeriodDays: dto.creditPeriodDays ?? null,
+            // US-MD-02. Written with the party so a create is one atomic act:
+            // a party saved without the addresses somebody entered would be a
+            // half-made record they have to go back and finish.
+            ...shippingFromDefault(dto.deliveryAddresses),
+            deliveryAddresses: dto.deliveryAddresses?.length
+              ? {
+                  create: normaliseDefault(dto.deliveryAddresses).map((entry) =>
+                    addressData(entry, tenantId),
+                  ),
+                }
+              : undefined,
+          },
+          include: {
+            deliveryAddresses: {
+              where: { deletedAt: null },
+              orderBy: [{ isDefault: 'desc' }, { label: 'asc' }],
+            },
           },
         }),
       );
 
-      return toPartySummary(party);
+      return toPartySummary(party, 0, party.deliveryAddresses.map(toAddressView));
     } catch (error) {
       // No code to name in the message any more: the caller did not choose one.
       // A collision here would mean the counter has drifted behind the data
@@ -185,6 +216,9 @@ export class PartiesService {
     if (dto.partyType !== undefined) data.partyType = dto.partyType;
     if (dto.status !== undefined) data.status = dto.status;
     if (dto.gstin !== undefined) data.gstin = dto.gstin?.trim().toUpperCase() || null;
+    if (dto.panNumber !== undefined) {
+      data.panNumber = dto.panNumber?.trim().toUpperCase() || null;
+    }
     if (dto.email !== undefined) data.email = dto.email?.trim() || null;
     if (dto.phone !== undefined) data.phone = dto.phone?.trim() || null;
     if (dto.address !== undefined) data.address = dto.address?.trim() || null;
@@ -198,10 +232,75 @@ export class PartiesService {
     if (dto.creditLimit !== undefined) data.creditLimit = dto.creditLimit;
     if (dto.creditPeriodDays !== undefined) data.creditPeriodDays = dto.creditPeriodDays;
 
-    try {
-      const party = await this.prisma.scoped.party.update({ where: { id }, data });
+    // The default address also feeds `shipping_*`, which a sales invoice prints
+    // from. Sent only when addresses were sent: an update that says nothing
+    // about them must not blank the address an invoice is about to use.
+    Object.assign(data, shippingFromDefault(dto.deliveryAddresses));
 
-      return toPartySummary(party);
+    try {
+      const party = await this.prisma.transaction(async (tx) => {
+        await tx.party.update({ where: { id }, data });
+
+        /**
+         * REPLACED WHOLESALE, not diffed.
+         *
+         * The list arrives as the complete set, so a row missing from it was
+         * withdrawn. Matching rows up by id to decide which to amend would be
+         * effort spent reaching the same state — the same reasoning as BOM
+         * lines, which are replaced for the same reason.
+         *
+         * SOFT-DELETED rather than removed: an address a dispatch note already
+         * cites must still resolve. The unique index is on the label, so a
+         * withdrawn "Depot" would block a new one of the same name — hence the
+         * label is cleared as it goes, which is what makes the slot reusable.
+         */
+        if (dto.deliveryAddresses !== undefined) {
+          const kept = dto.deliveryAddresses
+            .map((entry) => entry.id)
+            .filter((value): value is string => !!value);
+
+          const withdrawn = await tx.partyDeliveryAddress.findMany({
+            where: { partyId: id, deletedAt: null, id: { notIn: kept } },
+            select: { id: true, label: true },
+          });
+
+          for (const address of withdrawn) {
+            // The label is released as the row goes. `(tenant, party, label)`
+            // is unique and counts soft-deleted rows, so a withdrawn "Depot"
+            // would otherwise refuse a new one of the same name for ever. The
+            // id keeps it distinct; the old label stays readable in the suffix.
+            await tx.partyDeliveryAddress.update({
+              where: { id: address.id },
+              data: {
+                deletedAt: new Date(),
+                label: `${address.label} (withdrawn ${address.id.slice(0, 8)})`.slice(0, 120),
+              },
+            });
+          }
+
+          for (const entry of normaliseDefault(dto.deliveryAddresses)) {
+            const values = addressData(entry, existing.tenantId);
+
+            if (entry.id) {
+              await tx.partyDeliveryAddress.update({ where: { id: entry.id }, data: values });
+            } else {
+              await tx.partyDeliveryAddress.create({ data: { ...values, partyId: id } });
+            }
+          }
+        }
+
+        return tx.party.findFirstOrThrow({
+          where: { id },
+          include: {
+            deliveryAddresses: {
+              where: { deletedAt: null },
+              orderBy: [{ isDefault: 'desc' }, { label: 'asc' }],
+            },
+          },
+        });
+      });
+
+      return toPartySummary(party, 0, party.deliveryAddresses.map(toAddressView));
     } catch (error) {
       throw translate(error, existing.code);
     }
@@ -348,7 +447,110 @@ function fromIsoDate(value: string): Date {
   return new Date(`${value.slice(0, 10)}T00:00:00.000Z`);
 }
 
-export function toPartySummary(party: Party, documentCount = 0): PartySummary {
+/**
+ * One address row, ready to write.
+ *
+ * `isDefault` defaults to FALSE rather than true: a party's first address is
+ * made default by the caller marking it, not by arriving first. See
+ * `normaliseDefault`, which guarantees exactly one.
+ */
+function addressData(entry: PartyDeliveryAddressInput, tenantId: string) {
+  return {
+    tenantId,
+    label: entry.label.trim(),
+    line1: entry.line1.trim(),
+    line2: entry.line2?.trim() || null,
+    city: entry.city.trim(),
+    state: entry.state.trim(),
+    pin: entry.pin.trim(),
+    isDefault: entry.isDefault ?? false,
+    notes: entry.notes?.trim() || null,
+  };
+}
+
+/**
+ * Exactly one default, whatever the caller sent.
+ *
+ * A list with two defaults is contradictory and a list with none leaves
+ * invoices with no shipping address to print, so neither is stored. The first
+ * one marked wins; failing that, the first row.
+ */
+function normaliseDefault(
+  entries: readonly PartyDeliveryAddressInput[],
+): PartyDeliveryAddressInput[] {
+  if (entries.length === 0) return [];
+
+  const chosen = entries.findIndex((entry) => entry.isDefault);
+  const index = chosen === -1 ? 0 : chosen;
+
+  return entries.map((entry, position) => ({ ...entry, isDefault: position === index }));
+}
+
+/**
+ * The party's `shipping_*` columns, from whichever address is default.
+ *
+ * THOSE COLUMNS ARE NOT DEAD: a sales invoice prints its shipping address from
+ * them. Rather than retire them and break invoicing, the default address is
+ * written back so one address stays authoritative per invoice while the
+ * register holds the full list.
+ *
+ * Returns nothing when the caller sent no addresses, which leaves the columns
+ * untouched — an update that says nothing about addresses must not blank the
+ * address an invoice is about to use.
+ */
+function shippingFromDefault(entries: readonly PartyDeliveryAddressInput[] | undefined) {
+  if (!entries?.length) return {};
+
+  const [primary] = normaliseDefault(entries).filter((entry) => entry.isDefault);
+
+  if (!primary) return {};
+
+  return {
+    shippingLine1: primary.line1.trim(),
+    shippingLine2: primary.line2?.trim() || null,
+    shippingCity: primary.city.trim(),
+    shippingState: primary.state.trim(),
+    shippingPin: primary.pin.trim(),
+  };
+}
+
+/** One delivery address, as the wire sees it. */
+function toAddressView(address: {
+  id: string;
+  label: string;
+  line1: string;
+  line2: string | null;
+  city: string;
+  state: string;
+  pin: string;
+  isDefault: boolean;
+  notes: string | null;
+}): PartySummary['deliveryAddresses'][number] {
+  return {
+    id: address.id,
+    label: address.label,
+    line1: address.line1,
+    line2: address.line2,
+    city: address.city,
+    state: address.state,
+    pin: address.pin,
+    isDefault: address.isDefault,
+    notes: address.notes,
+  };
+}
+
+/**
+ * `deliveryAddresses` is PASSED IN rather than read off `party`, because the
+ * bare `Party` row carries no relations — and the callers differ in what they
+ * need. The master-data register includes them; a vendor lookup in
+ * Procure-to-Pay has no use for a customer's depot list and should not pay for
+ * the join. Empty is the honest default for a caller that did not ask.
+ */
+export function toPartySummary(
+  party: Party,
+  documentCount = 0,
+  deliveryAddresses: PartySummary['deliveryAddresses'] = [],
+): PartySummary {
   const validTo = party.drugLicenceValidTo ? toIsoDate(party.drugLicenceValidTo) : null;
 
   return {
@@ -356,11 +558,13 @@ export function toPartySummary(party: Party, documentCount = 0): PartySummary {
     createdBy: null,
     id: party.id,
     createdAt: party.createdAt.toISOString(),
+    deliveryAddresses,
     code: party.code,
     name: party.name,
     partyType: party.partyType,
     status: party.status,
     gstin: party.gstin,
+    panNumber: party.panNumber,
     email: party.email,
     phone: party.phone,
     address: party.address,

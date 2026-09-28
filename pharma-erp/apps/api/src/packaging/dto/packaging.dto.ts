@@ -31,6 +31,9 @@ import {
  */
 
 /** Matches DECIMAL(14,3), and refuses zero — see the CHECK of the same name. */
+/** Matches DECIMAL(12,2) — a price, so two decimals rather than three. */
+const MRP = /^\d{1,10}(\.\d{1,2})?$/;
+
 const QUANTITY = /^(?!0+(\.0+)?$)\d{1,11}(\.\d{1,3})?$/;
 const QUANTITY_MESSAGE =
   'must be a positive quantity with at most 3 decimal places, sent as a string';
@@ -78,6 +81,18 @@ export class CreatePackagingRequirementDto {
    */
   @Matches(QUANTITY, { message: `unitsPerPack ${QUANTITY_MESSAGE}` })
   unitsPerPack!: string;
+  /**
+   * What this pack sells for — US-MD-06.
+   *
+   * The item master carries one MRP, but a strip and a bottle of the same
+   * product sell at different prices and there was nowhere to put the second.
+   * Optional: omitted falls back to the item's own figure.
+   */
+  @IsOptional()
+  @Matches(MRP, {
+    message: 'mrp must be an amount with at most 2 decimal places, sent as a string',
+  })
+  mrp?: string;
 
   /**
    * US-MD-06 turns on a pack having components — an empty specification would
@@ -119,6 +134,11 @@ export class UpdatePackagingRequirementDto {
   @IsOptional()
   @Matches(QUANTITY, { message: `unitsPerPack ${QUANTITY_MESSAGE}` })
   unitsPerPack?: string;
+  @IsOptional()
+  @Matches(MRP, {
+    message: 'mrp must be an amount with at most 2 decimal places, sent as a string',
+  })
+  mrp?: string;
 
   @IsOptional()
   @IsArray()

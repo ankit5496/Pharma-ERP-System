@@ -1278,6 +1278,16 @@ const PARTY_COLUMNS: readonly GridColumn<PartySummary>[] = [
     render: (party) => (party.gstin ? <Code>{party.gstin}</Code> : <Blank />),
   },
   {
+    // Beside the GSTIN, which is where somebody checking one checks the other.
+    // The three item presentation fields are deliberately NOT given columns:
+    // they belong on the form and on a sales order line, and three more
+    // columns on a register that already scrolls sideways would push the
+    // figures people come here for off the screen.
+    key: 'panNumber',
+    label: 'PAN',
+    render: (party) => (party.panNumber ? <Code>{party.panNumber}</Code> : <Blank />),
+  },
+  {
     key: 'documents',
     label: 'Documents',
     // The count, not a link, in the SHARED column definition: opening one needs
