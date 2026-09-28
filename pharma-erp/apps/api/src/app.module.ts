@@ -13,6 +13,7 @@ import { HealthModule } from './health/health.module';
 import { JobWorkModule } from './job-work/job-work.module';
 import { LicencesModule } from './licences/licences.module';
 import { MastersModule } from './masters/masters.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { OrderToCashModule } from './order-to-cash/order-to-cash.module';
 import { PackagingModule } from './packaging/packaging.module';
 import { PartiesModule } from './parties/parties.module';
@@ -46,6 +47,7 @@ import { UsersModule } from './users/users.module';
     ProcurementModule,
     PartiesModule,
     LicencesModule,
+    NotificationsModule,
     JobWorkModule,
     PackagingModule,
     ProductionModule,

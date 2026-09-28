@@ -201,7 +201,7 @@ function LicenceAlertPanel({ alert }: { alert: LicenceAlert }) {
         aria-labelledby="licence-alert"
         className="mb-8 rounded-lg border border-slate-200 bg-white px-6 py-4 shadow-sm"
       >
-        <h2 id="licence-alert" className="text-sm font-semibold text-slate-900">
+        <h2 id="licence-alert" className="scroll-mt-48 text-sm font-semibold text-slate-900">
           Licences
         </h2>
         <p className="mt-1 text-sm text-slate-600">
@@ -230,7 +230,8 @@ function LicenceAlertPanel({ alert }: { alert: LicenceAlert }) {
         <div>
           <h2
             id="licence-alert"
-            className={`text-sm font-semibold ${critical ? 'text-red-900' : 'text-amber-900'}`}
+            // Clears the sticky header when the bell links here by #licence-alert.
+            className={`scroll-mt-48 text-sm font-semibold ${critical ? 'text-red-900' : 'text-amber-900'}`}
           >
             {critical
               ? `${expired.length} ${expired.length === 1 ? 'licence has' : 'licences have'} expired`
