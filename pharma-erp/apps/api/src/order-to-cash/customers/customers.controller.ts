@@ -12,7 +12,7 @@ import {
   Query,
 } from '@nestjs/common';
 
-import type { CustomerDetail, CustomerListItem } from '@pharma-erp/types';
+import type { CustomerBalance, CustomerDetail, CustomerListItem } from '@pharma-erp/types';
 
 import { Roles } from '../../auth/auth.decorators';
 import { SkipAudit } from '../../common/audit/audit.decorators';
@@ -45,6 +45,19 @@ export class CustomersController {
   @SkipAudit('Read-only master data.')
   async list(@Query('search') search?: string): Promise<CustomerListItem[]> {
     return this.customers.list(search);
+  }
+
+  /**
+   * What the customer owes, for the Sales Order screen.
+   *
+   * Declared BEFORE `:id` so the literal segment is not swallowed by the
+   * parameter route. Read-only: it reports the receivable ledger and writes
+   * nothing to it.
+   */
+  @Get(':id/balance')
+  @SkipAudit('Read-only.')
+  async balance(@Param('id', ParseUUIDPipe) id: string): Promise<CustomerBalance> {
+    return this.customers.balance(id);
   }
 
   @Get(':id')

@@ -1,7 +1,9 @@
 import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 
-import type { CustomerLicence, Party, Prisma } from '@pharma-erp/database';
+import { Prisma } from '@pharma-erp/database';
+import type { CustomerLicence, Party } from '@pharma-erp/database';
 import type {
+  CustomerBalance,
   CustomerDetail,
   CustomerLicenceView,
   CustomerListItem,
@@ -322,6 +324,76 @@ export class CustomersService {
     if (!party) throw new NotFoundException('Customer not found.');
 
     return party;
+  }
+
+
+  /**
+   * What a customer owes, read from the receivable ledger.
+   *
+   * READ-ONLY, AND IT CHANGES NOTHING ABOUT THE LEDGER. The entries are written
+   * by the invoice, receipt and credit-note flows and the table grants the
+   * application SELECT and INSERT only — UPDATE and DELETE are revoked — so
+   * this can read balances without touching that system at all.
+   *
+   * THE BALANCE IS DEBITS LESS CREDITS, the ledger's own convention: an invoice
+   * debits the customer, a receipt credits them. Overdue is the part of that
+   * which sits on invoices whose due date has passed, taken from the invoices
+   * themselves because the ledger records amounts rather than due dates.
+   */
+  async balance(customerId: string): Promise<CustomerBalance> {
+    const party = await this.prisma.scoped.party.findFirst({
+      where: { id: customerId, partyType: 'CUSTOMER', deletedAt: null },
+      select: { id: true },
+    });
+
+    if (!party) throw new NotFoundException('Customer not found.');
+
+    const [debits, credits] = await Promise.all([
+      this.prisma.scoped.receivableLedgerEntry.aggregate({
+        where: { customerId, direction: 'DEBIT' },
+        _sum: { amount: true },
+      }),
+      this.prisma.scoped.receivableLedgerEntry.aggregate({
+        where: { customerId, direction: 'CREDIT' },
+        _sum: { amount: true },
+      }),
+    ]);
+
+    const balance = (debits._sum.amount ?? new Prisma.Decimal(0)).sub(
+      credits._sum.amount ?? new Prisma.Decimal(0),
+    );
+
+    // Past due: issued invoices whose due date has gone by, less what has been
+    // paid or credited against them.
+    const today = startOfUtcDay(new Date());
+
+    const overdueInvoices = await this.prisma.scoped.salesInvoice.findMany({
+      where: {
+        customerId,
+        deletedAt: null,
+        status: 'ISSUED',
+        dueDate: { lt: today },
+      },
+      select: { grandTotal: true, amountPaid: true, amountCredited: true },
+    });
+
+    const overdue = overdueInvoices.reduce(
+      (sum, invoice) =>
+        sum.add(
+          Prisma.Decimal.max(
+            invoice.grandTotal.sub(invoice.amountPaid).sub(invoice.amountCredited),
+            0,
+          ),
+        ),
+      new Prisma.Decimal(0),
+    );
+
+    return {
+      customerId,
+      ledgerBalance: balance.toFixed(2),
+      overdueAmount: overdue.toFixed(2),
+      available: true,
+    };
   }
 }
 

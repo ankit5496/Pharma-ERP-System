@@ -1,6 +1,16 @@
-import { Body, Controller, Get, HttpCode, HttpStatus, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Query,
+} from '@nestjs/common';
 
-import type { ItemListItem } from '@pharma-erp/types';
+import type { ItemListItem, ItemPackagingSpec } from '@pharma-erp/types';
 
 import { Roles } from '../auth/auth.decorators';
 import { SkipAudit } from '../common/audit/audit.decorators';
@@ -29,6 +39,18 @@ export class MastersController {
     @Query('search') search?: string,
   ): Promise<ItemListItem[]> {
     return this.masters.listItems(itemType, search);
+  }
+
+  /**
+   * The packaging specification behind one item, for the Sales Order form.
+   *
+   * Read-only, like the listing above it: the order screen displays what the
+   * masters hold and writes nothing back to them.
+   */
+  @Get('items/:id/packaging')
+  @SkipAudit('Read-only master data.')
+  async itemPackaging(@Param('id', new ParseUUIDPipe()) id: string): Promise<ItemPackagingSpec> {
+    return this.masters.itemPackagingSpec(id);
   }
 
   @Post('items')

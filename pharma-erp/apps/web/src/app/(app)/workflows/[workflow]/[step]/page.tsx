@@ -1,5 +1,5 @@
 import type { Metadata } from 'next';
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
 import { findWorkflow, findWorkflowStep } from '@pharma-erp/types';
 
 // AppShell is deliberately absent: the workflow layout renders it now, so a
@@ -31,7 +31,13 @@ export const dynamic = 'force-dynamic';
  * polarities. Production and the rest still render the heading, so this is a
  * list of exceptions and not a flag to delete.
  */
-const WORKFLOWS_OWNING_THEIR_HEADING: ReadonlySet<string> = new Set(['order-to-cash', 'job-work']);
+// 'sales-order' is here for the same reason as 'order-to-cash': it renders the
+// same panel, which carries its own heading and record count.
+const WORKFLOWS_OWNING_THEIR_HEADING: ReadonlySet<string> = new Set([
+  'sales-order',
+  'order-to-cash',
+  'job-work',
+]);
 
 /**
  * One step of one workflow.
@@ -41,6 +47,11 @@ const WORKFLOWS_OWNING_THEIR_HEADING: ReadonlySet<string> = new Set(['order-to-c
  * no route, no file. That is what "scalable for future workflow steps" has to
  * mean in practice, otherwise every new step is a copy-pasted page that drifts.
  */
+
+/** Old path → where that step lives now. */
+const MOVED_STEPS = new Map<string, string>([
+  ['order-to-cash/sales-orders', '/workflows/sales-order/sales-orders'],
+]);
 
 interface PageProps {
   // Next 15 hands params in as a promise.
@@ -68,6 +79,13 @@ export default async function WorkflowStepPage({ params, searchParams }: PagePro
   // means the layout has already admitted the request.
   const workflow = findWorkflow(workflowKey);
   const step = workflow && findWorkflowStep(workflow, stepKey);
+
+  // A step that has MOVED between tabs keeps working at its old address.
+  // Sales orders left Order-to-Cash for its own tab; bookmarks, open tabs and
+  // anything that linked to the old path would otherwise 404 at a screen that
+  // still exists, which reads as the feature having been removed.
+  const movedTo = MOVED_STEPS.get(`${workflowKey}/${stepKey}`);
+  if (!step && movedTo) redirect(movedTo);
 
   if (!workflow || !step) notFound();
 
@@ -106,7 +124,11 @@ export default async function WorkflowStepPage({ params, searchParams }: PagePro
         {/* The extension point promised in WORKFLOWS: a step whose `state` is
             'ready' has a screen registered for it and renders it; anything else
             still gets the honest placeholder. */}
-        {workflow.key === 'order-to-cash' && step.state === 'ready' ? (
+        {/* The Sales Order tab is the Order-to-Cash sales-orders screen reached
+            from its own tab, so it renders through the same dispatcher rather
+            than a second copy of the panel. */}
+        {(workflow.key === 'order-to-cash' || workflow.key === 'sales-order') &&
+        step.state === 'ready' ? (
           <OrderToCashStep step={step.key} search={search} filters={filters} />
         ) : step.state === 'ready' ? (
           <BuiltStep workflowKey={workflow.key} stepKey={step.key} query={query} />
