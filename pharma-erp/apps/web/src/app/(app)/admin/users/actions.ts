@@ -114,14 +114,3 @@ export async function resetPasswordAction(
 
   return result.ok ? { ok: true, temporaryPassword } : { ok: false, error: result.error };
 }
-
-export async function deleteUserAction(userId: string): Promise<{ ok: boolean; error?: string }> {
-  const result = await apiFetch<void>(`/api/v1/users/${userId}`, {
-    method: 'DELETE',
-    authenticated: true,
-  });
-
-  revalidatePath('/admin/users');
-
-  return result.ok ? { ok: true } : { ok: false, error: result.error };
-}

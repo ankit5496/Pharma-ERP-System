@@ -13,7 +13,7 @@ import type {
 
 import { PrismaService } from '../prisma/prisma.service';
 import { NumberingService } from '../procurement/numbering.service';
-import { fromIsoDate, toItemSummary, toIsoDate } from '../production/production.mappers';
+import { fromIsoDate, todayUtc, toItemSummary, toIsoDate } from '../production/production.mappers';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
 import type {
@@ -680,16 +680,72 @@ export class JobWorkWorkflowService {
       );
     }
 
-    await this.prisma.scoped.jobWorkBatch.update({
-      where: { id },
-      data: {
-        packedQuantity: packed,
-        rejectedQuantity: rejected,
-        packVariant: dto.packVariant?.trim() || null,
-        packedOn: dto.packedOn ? fromIsoDate(dto.packedOn) : null,
-        ...(dto.actualQuantity ? { actualQuantity: new Prisma.Decimal(dto.actualQuantity) } : {}),
-        ...(dto.notes !== undefined ? { notes: dto.notes?.trim() || null } : {}),
-      },
+    /**
+     * WHEN THE PACK HAPPENED, defaulted to today exactly as the internal
+     * packing record defaults it.
+     *
+     * This field is not decoration: it is what separates a batch that is
+     * FINISHED from one merely opened, and the release gate lists only the
+     * former. Left null when the form did not ask for a date, a packed batch
+     * would never reach the quality officer at all.
+     *
+     * NOT BEFORE THE BATCH WAS MADE, which is the same check the internal
+     * record applies — a pack dated before its own manufacture is a typo, and
+     * one that would survive into the dispatch paperwork.
+     */
+    const packedOn = packed ? (dto.packedOn ? fromIsoDate(dto.packedOn) : todayUtc()) : null;
+
+    if (packedOn && packedOn.getTime() < batch.manufacturedOn.getTime()) {
+      throw new ConflictException(
+        `Batch ${batch.batchNumber} cannot be packed on ${toIsoDate(packedOn)}: it was made on ` +
+          `${toIsoDate(batch.manufacturedOn)}.`,
+      );
+    }
+
+    const tenantId = this.tenantContext.requireTenantId();
+
+    await this.prisma.transaction(async (tx) => {
+      await tx.jobWorkBatch.update({
+        where: { id },
+        data: {
+          // PARTIAL, as a PATCH is. Every field below is written only when the
+          // caller sent it: a save that amends the yield alone used to blank
+          // the packed quantity, the variant and the packing date on its way
+          // past, which is a record being destroyed by an unrelated edit.
+          ...(dto.packedQuantity !== undefined ? { packedQuantity: packed, packedOn } : {}),
+          ...(dto.rejectedQuantity !== undefined ? { rejectedQuantity: rejected } : {}),
+          ...(dto.packVariant !== undefined
+            ? { packVariant: dto.packVariant?.trim() || null }
+            : {}),
+          ...(dto.packedOn !== undefined ? { packedOn } : {}),
+          ...(dto.actualQuantity ? { actualQuantity: new Prisma.Decimal(dto.actualQuantity) } : {}),
+          ...(dto.notes !== undefined ? { notes: dto.notes?.trim() || null } : {}),
+        },
+      });
+
+      // What the pack actually consumed, component by component — the same
+      // record the internal batch keeps, in job work's own table.
+      //
+      // REPLACES the set rather than merging: re-recording packing restates
+      // what was used, and a merge would make removing a component
+      // impossible. An ABSENT array leaves what is there alone; an empty one
+      // clears it.
+      if (dto.consumptions !== undefined) {
+        await tx.jobWorkBatchPackagingConsumption.deleteMany({ where: { jobWorkBatchId: id } });
+
+        if (dto.consumptions.length > 0) {
+          await tx.jobWorkBatchPackagingConsumption.createMany({
+            data: dto.consumptions.map((consumption) => ({
+              tenantId,
+              jobWorkBatchId: id,
+              itemId: consumption.itemId,
+              quantityConsumed: new Prisma.Decimal(consumption.quantityConsumed),
+              lotId: consumption.lotId ?? null,
+              notes: consumption.notes?.trim() || null,
+            })),
+          });
+        }
+      }
     });
 
     return this.findBatch(id);
@@ -844,6 +900,9 @@ const ISSUE_INCLUDE = {
 
 const BATCH_INCLUDE = {
   productionOrder: ORDER_SUMMARY,
+  // The consumption rows come WITH the batch: the packing form seeds its
+  // component boxes from them on a correction rather than asking again.
+  packagingConsumptions: { select: { itemId: true, quantityConsumed: true } },
   recordedBy: { select: { fullName: true } },
   releaseDecidedBy: { select: { fullName: true } },
 } satisfies Prisma.JobWorkBatchInclude;
@@ -915,6 +974,10 @@ function toBatchView(batch: BatchWithRelations): JobWorkBatchView {
     rejectedQuantity: batch.rejectedQuantity.toString(),
     packVariant: batch.packVariant,
     packedOn: batch.packedOn ? toIsoDate(batch.packedOn) : null,
+    packagingConsumed: batch.packagingConsumptions.map((consumption) => ({
+      itemId: consumption.itemId,
+      quantityConsumed: consumption.quantityConsumed.toString(),
+    })),
 
     releaseStatus: batch.releaseStatus as BatchReleaseStatus,
     releaseDecidedAt: batch.releaseDecidedAt?.toISOString() ?? null,

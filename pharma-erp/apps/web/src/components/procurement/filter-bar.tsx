@@ -31,6 +31,7 @@ const FILTER_KEYS = [
   // Job Work: whose work a record is, and on what terms.
   'principalId',
   'billingModel',
+  'role',
   'dateFrom',
   'dateTo',
 ] as const;
@@ -246,6 +247,7 @@ export function FilterPanel({
   requisitions,
   principals,
   billingModels,
+  roles,
   showDates = true,
   searchableLookups = true,
 }: {
@@ -259,6 +261,8 @@ export function FilterPanel({
   principals?: readonly FilterOption[];
   /** Job Work: pure conversion or own procurement. */
   billingModels?: readonly FilterOption[];
+  /** User settings: the role a person was assigned. */
+  roles?: readonly FilterOption[];
   showDates?: boolean;
   /** Renders the record lookups — vendor, item, requisition — as typeable. */
   /**
@@ -493,6 +497,16 @@ export function FilterPanel({
               options={billingModels}
               allLabel="Any model"
               onChange={(value) => set('billingModel', value)}
+            />
+          )}
+
+          {roles && roles.length > 0 && (
+            <Select
+              label="Role"
+              value={draft.role ?? ''}
+              options={roles}
+              allLabel="Any role"
+              onChange={(value) => set('role', value)}
             />
           )}
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type {
   JobWorkBatchView,
   JobWorkIssuableMaterial,
@@ -20,6 +20,8 @@ import {
 
 import { MasterDataDrawer } from '@/components/master-data-drawer';
 import {
+  createdFilters,
+  matchesCreated,
   RegisterPager,
   RegisterToolbar,
   useRegisterView,
@@ -591,6 +593,15 @@ export function JobWorkReceivedMaterialTable({
  * The same master/detail arrangement `BatchRecords` uses, for the same reason —
  * a page of expanded batches is a page nobody can scan.
  */
+/**
+ * The filter value for the derived "Packaging due" state.
+ *
+ * Prefixed so it cannot collide with a real `BatchReleaseStatus`, now or when
+ * one is added: this travels through the same filter field as the stored
+ * values, and a clash would silently match the wrong rows.
+ */
+const PACKAGING_DUE = '__packagingDue';
+
 export function JobWorkBatchRecords({
   batches,
   packingFormFor,
@@ -618,12 +629,68 @@ export function JobWorkBatchRecords({
     [],
   );
 
-  const matchesFilter = useCallback(
-    (batch: JobWorkBatchView, value: string) => batch.releaseStatus === value,
+  const matchesFilter = useCallback((batch: JobWorkBatchView, value: string) => {
+    // The derived state, which is not a stored `releaseStatus` — see
+    // ReleaseBadge for why.
+    if (value === PACKAGING_DUE) {
+      return batch.releaseStatus === 'PENDING' && batch.packedOn === null;
+    }
+
+    // "Pending" means awaiting a DECISION, so a batch still waiting on its
+    // packing belongs under the option above rather than in both.
+    if (value === 'PENDING') {
+      return batch.releaseStatus === 'PENDING' && batch.packedOn !== null;
+    }
+
+    return batch.releaseStatus === value;
+  }, []);
+
+  // MANUFACTURED ON, not a creation timestamp. A batch is looked up by the day
+  // it was made — the date that goes on the carton — and filtering by the
+  // row's insert time would answer a question nobody asks.
+  const matchesField = useCallback(
+    (batch: JobWorkBatchView, name: string, value: string) =>
+      matchesCreated(batch.manufacturedOn, null, name, value),
     [],
   );
 
-  const view = useRegisterView({ rows: batches, searchText, matchesFilter });
+  const view = useRegisterView({ rows: batches, searchText, matchesFilter, matchesField });
+
+  /**
+   * Opens a batch that was not in the register a moment ago.
+   *
+   * Recording one and being left looking at the batch that was already open is
+   * what this fixes: the list refreshes, the new batch appears, and the pane
+   * beside it carried on showing the previous selection — so the record just
+   * saved was the one thing not on screen.
+   *
+   * KEYED ON ARRIVAL, not on the list simply changing: this list re-renders
+   * whenever a batch is packed or released too, and neither of those should
+   * pull the reader somewhere else. It also clears the search and filters,
+   * because a new batch is PENDING and a register left filtered to "released"
+   * would not have it among the visible rows at all.
+   */
+  const seen = useRef<Set<string> | null>(null);
+  const reveal = useRef(view.reset);
+  reveal.current = view.reset;
+
+  useEffect(() => {
+    // First render: everything present counts as already seen, so an existing
+    // register does not open its newest row as though it had just been made.
+    if (seen.current === null) {
+      seen.current = new Set(batches.map((batch) => batch.id));
+      return;
+    }
+
+    const arrived = batches.find((batch) => !seen.current?.has(batch.id));
+
+    seen.current = new Set(batches.map((batch) => batch.id));
+
+    if (!arrived) return;
+
+    setOpenId(arrived.id);
+    reveal.current();
+  }, [batches]);
 
   // Derived, not stored: filtering or paging can hide whatever was open, and a
   // detail pane showing a batch that is not in the list beside it reads as a bug.
@@ -640,10 +707,21 @@ export function JobWorkBatchRecords({
           noun="batches"
           filter={view.filter}
           onFilter={view.setFilter}
-          filterOptions={BATCH_RELEASE_STATUSES.map((status) => ({
-            value: status,
-            label: BATCH_RELEASE_STATUS_LABELS[status],
-          }))}
+          // PENDING SPLIT IN TWO, to match what the badges actually say. An
+          // unpacked batch reads "Packaging due" and a packed one "Pending",
+          // and a filter naming a state nobody can see on a row is one that
+          // looks broken when it returns rows all saying something else.
+          filterOptions={[
+            { value: PACKAGING_DUE, label: 'Packaging due' },
+            ...BATCH_RELEASE_STATUSES.map((status) => ({
+              value: status,
+              label: BATCH_RELEASE_STATUS_LABELS[status],
+            })),
+          ]}
+          fields={createdFilters([], 'Manufactured')}
+          fieldValues={view.fieldValues}
+          onField={view.setField}
+          onClearFields={view.clearFields}
           shown={view.filtered.length}
           total={view.total}
         >
@@ -669,6 +747,12 @@ export function JobWorkBatchRecords({
                     type="button"
                     onClick={() => setOpenId(batch.id)}
                     aria-current={isOpen ? 'true' : undefined}
+                    // THE ONE PLACE THIS REGISTER DOES NOT COPY THE REFERENCE.
+                    // The internal list outlines its open row in near-black
+                    // with a ring on top of it — a 2px dark box — and that was
+                    // reported here as a border that looked too heavy. A tinted
+                    // fill says "open" just as clearly without drawing a frame
+                    // around every row the eye passes.
                     className={`w-full rounded-lg border px-3 py-2.5 text-left transition ${
                       isOpen
                         ? 'border-slate-300 bg-slate-50 shadow-sm'
@@ -679,7 +763,12 @@ export function JobWorkBatchRecords({
                       <span className="font-mono text-xs font-semibold text-slate-900">
                         {batch.batchNumber}
                       </span>
-                      <ReleaseBadge status={batch.releaseStatus} />
+                      {/* `packedOn` is what separates "Packaging due" from
+                          "Pending": a batch is pending from the moment it is
+                          opened, and the badge saying so on a batch nobody has
+                          finished making is the reason the filter above splits
+                          the two. */}
+                      <ReleaseBadge status={batch.releaseStatus} packedOn={batch.packedOn} />
                     </div>
                     <p className="mt-1 truncate text-sm text-slate-700">{batch.product.name}</p>
                     <p className="mt-0.5 truncate text-[11px] text-slate-600">
@@ -1095,7 +1184,7 @@ export function JobWorkReleasedTable({ batches }: { batches: JobWorkBatchView[] 
   return (
     <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
       <RegisterToolbar
-        title="Released — ready to return"
+        title="Released Stock"
         query={view.query}
         onQuery={view.setQuery}
         placeholder="Search batch, product or principal…"
@@ -1192,7 +1281,7 @@ export function JobWorkDecidedTable({ batches }: { batches: JobWorkBatchView[] }
   return (
     <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
       <RegisterToolbar
-        title="Decided"
+        title="Released"
         query={view.query}
         onQuery={view.setQuery}
         placeholder="Search batch, decider or reason…"

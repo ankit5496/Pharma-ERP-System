@@ -3,14 +3,17 @@
 import { useState, useTransition } from 'react';
 import { USER_ROLES, USER_ROLE_LABELS, type UserListItem, type UserRole } from '@pharma-erp/types';
 
-import { deleteUserAction, resetPasswordAction, updateUserAction } from './actions';
+import { RowActionMenu, type RowAction } from '@/components/row-action-menu';
+
+import { resetPasswordAction, updateUserAction } from './actions';
 
 /**
- * Per-row controls: change role, enable/disable, reset password, remove.
+ * Per-row controls: the role picker, and an Actions menu holding reset
+ * password and enable/disable.
  *
  * Every one of these is also enforced on the API (`@Roles('ADMIN')`, plus
  * last-admin and self-modification guards). This component's job is to make the
- * outcome visible, not to be the check — a disabled button is a hint, not a
+ * outcome visible, not to be the check — a disabled control is a hint, not a
  * boundary.
  */
 export function UserRowActions({ user, isSelf }: { user: UserListItem; isSelf: boolean }) {
@@ -26,6 +29,35 @@ export function UserRowActions({ user, isSelf }: { user: UserListItem; isSelf: b
     });
   }
 
+  const isDisabled = user.status === 'DISABLED';
+
+  // A disabled account can only be brought back; everything else waits until
+  // it is enabled again.
+  const actions: RowAction[] = isDisabled
+    ? [
+        {
+          label: 'Enable',
+          onSelect: () => run(() => updateUserAction(user.id, { status: 'ACTIVE' })),
+        },
+      ]
+    : [
+        {
+          label: 'Reset password',
+          onSelect: () =>
+            run(async () => {
+              const result = await resetPasswordAction(user.id);
+              if (result.ok && result.temporaryPassword) setNewPassword(result.temporaryPassword);
+              return result;
+            }),
+        },
+        {
+          label: 'Disable',
+          tone: 'danger',
+          disabledReason: isSelf ? 'You cannot disable your own account.' : null,
+          onSelect: () => run(() => updateUserAction(user.id, { status: 'DISABLED' })),
+        },
+      ];
+
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap items-center gap-2">
@@ -34,7 +66,8 @@ export function UserRowActions({ user, isSelf }: { user: UserListItem; isSelf: b
           value={user.role}
           // An Admin changing their own role can lock the company out of user
           // management entirely, so the API refuses it and so does this.
-          disabled={isPending || isSelf}
+          disabled={isPending || isSelf || isDisabled}
+          title={isDisabled ? 'Enable this user to change their role.' : undefined}
           onChange={(event) => {
             const role = event.target.value as UserRole;
             run(() => updateUserAction(user.id, { role }));
@@ -48,58 +81,7 @@ export function UserRowActions({ user, isSelf }: { user: UserListItem; isSelf: b
           ))}
         </select>
 
-        <button
-          type="button"
-          disabled={isPending}
-          onClick={() =>
-            run(async () => {
-              const result = await resetPasswordAction(user.id);
-              if (result.ok && result.temporaryPassword) {
-                setNewPassword(result.temporaryPassword);
-              }
-              return result;
-            })
-          }
-          className="rounded border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-        >
-          Reset password
-        </button>
-
-        {user.status === 'DISABLED' ? (
-          <button
-            type="button"
-            disabled={isPending}
-            onClick={() => run(() => updateUserAction(user.id, { status: 'ACTIVE' }))}
-            className="rounded border border-green-300 px-2 py-1 text-xs font-medium text-green-800 hover:bg-green-50 disabled:opacity-50"
-          >
-            Enable
-          </button>
-        ) : (
-          <button
-            type="button"
-            disabled={isPending || isSelf}
-            onClick={() => run(() => updateUserAction(user.id, { status: 'DISABLED' }))}
-            className="rounded border border-amber-300 px-2 py-1 text-xs font-medium text-amber-800 hover:bg-amber-50 disabled:opacity-50"
-          >
-            Disable
-          </button>
-        )}
-
-        <button
-          type="button"
-          disabled={isPending || isSelf}
-          onClick={() => {
-            // A soft delete keeps the row and its audit history, but the person
-            // loses access — worth one confirmation.
-            if (!window.confirm(`Remove ${user.fullName}? They will lose access immediately.`)) {
-              return;
-            }
-            run(() => deleteUserAction(user.id));
-          }}
-          className="rounded border border-red-300 px-2 py-1 text-xs font-medium text-red-800 hover:bg-red-50 disabled:opacity-50"
-        >
-          Remove
-        </button>
+        <RowActionMenu label={user.fullName} actions={actions} busy={isPending} />
       </div>
 
       {newPassword && (

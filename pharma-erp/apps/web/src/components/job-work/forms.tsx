@@ -2,6 +2,7 @@
 
 import {
   BILLING_MODEL_LABELS,
+  CONVERSION_RATE_BASIS_LABELS,
   INVOICE_BASIS_FOR_BILLING_MODEL,
   JOB_WORK_INVOICE_BASIS_LABELS,
   STOCK_BUCKET_FOR_BILLING_MODEL,
@@ -11,6 +12,7 @@ import {
   JOB_WORK_RECEIPT_STATUS_LABELS,
   STOCK_OWNERSHIP_LABELS,
   type JobWorkDispatchableBatch,
+  type JobWorkInvoiceView,
   type JobWorkMaterialReadiness,
   type JobWorkMaterialReceiptView,
   type JobWorkOrderablePrincipal,
@@ -122,131 +124,207 @@ export function CreateJobWorkOrderButton({
     [principals, principalId],
   );
 
+  const today = new Date().toISOString().slice(0, 10);
+
+  /**
+   * What the agreement fixes, once a principal is chosen.
+   *
+   * Null before then — and the three boxes below still render, saying what
+   * will fill them. THE WHOLE FORM IS ON SCREEN FROM THE MOMENT IT OPENS: it
+   * used to draw two lookups and hide everything else until a principal was
+   * picked, which left most of the dialog empty and gave no way to see what
+   * the form was going to ask for.
+   */
+  const terms = principal
+    ? {
+        billingModel: BILLING_MODEL_LABELS[principal.billingModel],
+        stockBucket: STOCK_OWNERSHIP_LABELS[STOCK_BUCKET_FOR_BILLING_MODEL[principal.billingModel]],
+        invoiceBasis:
+          JOB_WORK_INVOICE_BASIS_LABELS[INVOICE_BASIS_FOR_BILLING_MODEL[principal.billingModel]],
+      }
+    : null;
+
   return (
     <Disclosure
-      label="Create job-work order"
-      title="New job-work order"
+      // THE BUTTON SAYS WHAT THE DIALOG IS CALLED. It read "Create job-work
+      // order" while the dialog it opened was headed "New Job Work Order" —
+      // two names for one thing, and neither matching the register beside it,
+      // where the production-order trigger already reads "New Job Work
+      // Production Order".
+      label="New Job Work Order"
+      title="New Job Work Order"
       subtitle="Raised against a principal's agreement. The billing model comes from that agreement and cannot be changed here."
       closeWhen={state.status === 'success'}
+      // NO `minHeight`. One was set to give the lookups room to drop their
+      // lists, and with most of the form hidden it simply became white space
+      // under four controls. The form now fills the dialog on its own, which
+      // is the requisition form's arrangement too.
       width="44rem"
     >
       {(close) => (
-        <form action={formAction} className="grid gap-4 sm:grid-cols-2">
-          {principals.length === 0 ? (
+        // The requisition form's shape, field for field: one column of
+        // sections, `space-y-4` between them, `field-sm` controls three
+        // across, and the footer at the foot.
+        <form action={formAction} className="w-full space-y-4">
+          {principals.length === 0 && (
             // CONTROL 1, stated where it can be acted on. An empty select with
             // no explanation reads as a loading failure.
-            <p className="sm:col-span-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
               No principal currently holds an agreement that is in force, so no job-work order can
               be raised. Record or renew an agreement under Master Data first.
             </p>
-          ) : (
-            <>
-              <Field label="Principal" htmlFor="jw-principalId">
-                <SearchableSelect
-                  id="jw-principalId"
-                  name="principalId"
-                  required
-                  options={principals.map((entry) => ({
-                    value: entry.principalId,
-                    label: entry.principalName,
-                    hint: entry.principalCode,
-                  }))}
-                  value={principalId}
-                  onChange={(next) => {
-                    setPrincipalId(next);
-                    // The old product belongs to the old agreement.
-                    setMappingId('');
-                  }}
-                  emptyLabel="Select principal"
-                  className="field h-10"
-                />
-              </Field>
-
-              <Field label="Product and brand" htmlFor="jw-mappingId">
-                <SearchableSelect
-                  id="jw-mappingId"
-                  name="mappingId"
-                  required
-                  disabled={!principal}
-                  options={(principal?.products ?? []).map((product) => ({
-                    value: product.mappingId,
-                    label: product.principalBrandName,
-                    hint: `${product.productName} (${product.productCode})`,
-                  }))}
-                  value={mappingId}
-                  onChange={setMappingId}
-                  emptyLabel={principal ? 'Select product' : 'Select a principal first'}
-                  className="field h-10"
-                />
-              </Field>
-
-              {principal && (
-                <>
-                  <Derived
-                    label="Billing model"
-                    value={BILLING_MODEL_LABELS[principal.billingModel]}
-                  />
-
-                  <Derived
-                    label="Stock bucket production will use"
-                    value={
-                      STOCK_OWNERSHIP_LABELS[
-                        STOCK_BUCKET_FOR_BILLING_MODEL[principal.billingModel]
-                      ]
-                    }
-                  />
-
-                  <div className="sm:col-span-2">
-                    <Derived
-                      label="Invoice basis"
-                      value={
-                        JOB_WORK_INVOICE_BASIS_LABELS[
-                          INVOICE_BASIS_FOR_BILLING_MODEL[principal.billingModel]
-                        ]
-                      }
-                    />
-                  </div>
-
-                  <Field label="Quantity" htmlFor="jw-quantity">
-                    <input
-                      id="jw-quantity"
-                  name="quantity"
-                      type="text"
-                      inputMode="decimal"
-                      required
-                      placeholder="0.000"
-                      className="field h-10"
-                    />
-                  </Field>
-
-                  <Field label="Delivery date" htmlFor="jw-deliveryDate">
-                    <input id="jw-deliveryDate"
-                  name="deliveryDate" type="date" required className="field h-10" />
-                  </Field>
-
-                  <div className="sm:col-span-2">
-                    <Field label="Notes" htmlFor="jw-notes">
-                      <textarea id="jw-notes"
-                  name="notes" rows={2} className="field" />
-                    </Field>
-                  </div>
-
-                </>
-              )}
-            </>
           )}
+
+          {/* What the system fills in. Stated once, plainly. */}
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-md border border-slate-200 bg-white p-3 text-xs sm:grid-cols-4">
+            <SystemField label="Order no." value="Generated on save" />
+            <SystemField label="Date" value={today} />
+            <SystemField label="Principal code" value={principal?.principalCode ?? '—'} />
+            <SystemField label="Status" value="Placed" />
+          </dl>
+
+          <Section title="Who it is for">
+            <Field label="Principal" htmlFor="jw-principalId" required hint="Agreements in force.">
+              <SearchableSelect
+                id="jw-principalId"
+                name="principalId"
+                required
+                options={principals.map((entry) => ({
+                  value: entry.principalId,
+                  label: entry.principalName,
+                  hint: entry.principalCode,
+                }))}
+                value={principalId}
+                onChange={(next) => {
+                  setPrincipalId(next);
+                  // The old product belongs to the old agreement.
+                  setMappingId('');
+                }}
+                emptyLabel="Select principal"
+              />
+            </Field>
+
+            <Field
+              label="Product and brand"
+              htmlFor="jw-mappingId"
+              required
+              hint="From the principal's agreement."
+            >
+              <SearchableSelect
+                id="jw-mappingId"
+                name="mappingId"
+                required
+                disabled={!principal}
+                options={(principal?.products ?? []).map((product) => ({
+                  value: product.mappingId,
+                  label: product.principalBrandName,
+                  hint: `${product.productName} (${product.productCode})`,
+                }))}
+                value={mappingId}
+                onChange={setMappingId}
+                emptyLabel={principal ? 'Select product' : 'Select a principal first'}
+              />
+            </Field>
+
+            <Field label="Product code" htmlFor="jw-productCode">
+              <input
+                id="jw-productCode"
+                value={
+                  principal?.products.find((product) => product.mappingId === mappingId)
+                    ?.productCode ?? ''
+                }
+                readOnly
+                disabled
+                placeholder="Follows the product"
+                className="field-sm w-full bg-slate-100 text-slate-600"
+              />
+            </Field>
+          </Section>
+
+          {/* THE AGREEMENT'S TERMS, shown from the start rather than appearing
+              once a principal is picked. Three boxes that say what will fill
+              them beat three boxes that are not there: the form no longer
+              changes height under the hand that is filling it in, and what the
+              order will inherit is readable before anything is chosen. */}
+          <Section title="From the agreement">
+            <Derived
+              label="Billing model"
+              value={terms?.billingModel ?? 'Set by the principal'}
+              hint="Read-only. It comes from the agreement in force."
+            />
+
+            <Derived
+              label="Stock bucket production will use"
+              value={terms?.stockBucket ?? 'Follows the billing model'}
+            />
+
+            <Derived
+              label="Invoice basis"
+              value={terms?.invoiceBasis ?? 'Follows the billing model'}
+            />
+          </Section>
+
+          <Section title="What to make">
+            <Field label="Quantity" htmlFor="jw-quantity" required hint="Up to 3 decimal places.">
+              <input
+                id="jw-quantity"
+                name="quantity"
+                type="text"
+                inputMode="decimal"
+                required
+                placeholder="0.000"
+                className="field-sm w-full"
+              />
+            </Field>
+
+            <Field label="Delivery date" htmlFor="jw-deliveryDate" required>
+              <input
+                id="jw-deliveryDate"
+                name="deliveryDate"
+                type="date"
+                required
+                className="field-sm w-full"
+              />
+            </Field>
+
+            <Field label="Notes" htmlFor="jw-notes" hint="Optional.">
+              <input id="jw-notes" name="notes" maxLength={1000} className="field-sm w-full" />
+            </Field>
+          </Section>
 
           {/* OUTSIDE the branch above: a form with nothing to fill in still
               needs a way out that is not the X. Only the submit depends on
               there being something to submit. */}
-          <FormFooter onCancel={close} className="sm:col-span-2">
+          <FormFooter onCancel={close}>
             {principals.length > 0 && (
-              <SubmitButton pendingLabel="Creating…">Create job-work order</SubmitButton>
+              <SubmitButton pendingLabel="Creating…">Create job work order</SubmitButton>
             )}
           </FormFooter>
         </form>
       )}
     </Disclosure>
+  );
+}
+
+/** One system-filled value in the summary strip. Matches the requisition form. */
+function SystemField({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="font-medium uppercase tracking-wide text-slate-500">{label}</dt>
+      <dd className="mt-0.5 text-slate-800">{value}</dd>
+    </div>
+  );
+}
+
+/** A titled group of fields, three across. Matches the requisition form. */
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <fieldset>
+      <legend className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+        {title}
+      </legend>
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">{children}</div>
+    </fieldset>
   );
 }
 
@@ -485,13 +563,20 @@ export function ViewJobWorkReceiptButton({
  */
 export function SendForApprovalButton({
   receipt,
+  isOpen,
+  onOpenChange,
 }: {
   receipt: JobWorkMaterialReceiptView;
+  /** Passed by a row's Actions menu, which is then the trigger. */
+  isOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const [state, formAction] = useAction(submitJobWorkReceiptAction);
 
   return (
     <Disclosure
+      isOpen={isOpen}
+      onOpenChange={onOpenChange}
       label="Send for approval"
       title={`Send ${receipt.receiptNumber} for approval`}
       subtitle="The quality decision is taken separately, on Quality check."
@@ -522,6 +607,65 @@ export function SendForApprovalButton({
         </form>
       )}
     </Disclosure>
+  );
+}
+
+/**
+ * The actions on one row of the Inward materials register, behind one trigger.
+ *
+ * ONE MENU, NOT TWO BUTTONS. The cell used to render View and Send for
+ * approval side by side, so the column's width — and whether a row had one
+ * control or two — changed with the status of each receipt. Every other
+ * register on these screens puts its row actions behind a single Actions
+ * button, and Quality check next door already does exactly this.
+ *
+ * SEND FOR APPROVAL STAYS VISIBLE once it no longer applies, with the reason
+ * on it. An entry that disappears leaves somebody wondering whether they
+ * misremembered it; an entry that says "already with Quality check" answers the
+ * question it raises.
+ */
+export function JobWorkInwardRowActions({
+  receipt,
+}: {
+  receipt: JobWorkMaterialReceiptView;
+}) {
+  const [viewing, setViewing] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const isDraft = receipt.status === 'DRAFT';
+
+  return (
+    <>
+      <RowActionMenu
+        label={`${receipt.receiptNumber} from ${receipt.principalName}`}
+        actions={[
+          { label: 'View', onSelect: () => setViewing(true) },
+          {
+            label: 'Send for approval',
+            onSelect: () => setSubmitting(true),
+            // Only a draft can be sent. A receipt already with the quality user
+            // is theirs to decide, and one already decided is finished.
+            disabledReason: isDraft
+              ? null
+              : `This consignment is already ${JOB_WORK_RECEIPT_STATUS_LABELS[
+                  receipt.status
+                ].toLowerCase()}, so it cannot be sent again.`,
+          },
+        ]}
+      />
+
+      <ViewJobWorkReceiptButton receipt={receipt} isOpen={viewing} onOpenChange={setViewing} />
+
+      {/* Mounted only while open, so the dialog starts fresh each time rather
+          than holding the previous row's state. */}
+      {submitting && (
+        <SendForApprovalButton
+          receipt={receipt}
+          isOpen={submitting}
+          onOpenChange={setSubmitting}
+        />
+      )}
+    </>
   );
 }
 
@@ -1931,7 +2075,13 @@ export function CreateJobWorkDispatchButton({
         <form action={formAction} className="grid gap-4 sm:grid-cols-2">
           <input type="hidden" name="jobWorkOrderId" value={order.id} />
 
-          {batches.length === 0 ? (
+          {/* NOT WHILE A SAVE IS BEING CONFIRMED. Dispatching the last
+              available batch empties this list, and the dialog stays up for the
+              moment it takes the confirmation to be read — so without the
+              second half of this test, the form someone just submitted would be
+              replaced in front of them by "no batch is released with stock
+              remaining", which reads as the dispatch having failed. */}
+          {batches.length === 0 && state.status !== 'success' ? (
             // CONTROL 6, said where it helps. "No batches" with no reason reads
             // as a bug; naming the gate tells them who to chase.
             <p className="sm:col-span-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
@@ -2021,6 +2171,174 @@ export function CreateJobWorkDispatchButton({
             )}
           </FormFooter>
         </form>
+      )}
+    </Disclosure>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// US-JW-05 — the invoice, read back
+// ---------------------------------------------------------------------------
+
+/**
+ * One job-work invoice in full, read-only.
+ *
+ * WHY IT EXISTS. The billing register is a wide table of figures and it still
+ * could not answer "what is this invoice actually for" — the product is not on
+ * it, the batch is a code, and the conversion basis that decided the rate was
+ * a phrase in a narrow column. Every other register on these screens opens its
+ * record; this one had nothing to open.
+ *
+ * THE SAME DIALOG THE RECEIPT VIEW USES — `Disclosure`, `Derived` boxes three
+ * across, a section per part of the record — so a billing record reads the way
+ * a consignment does rather than inventing a second way of showing a record.
+ *
+ * THE ORDER IS PASSED IN rather than fetched here: the product, the ordered
+ * quantity and the delivery date live on the job-work order, and the panel has
+ * that list already. It is optional, so an invoice whose order has since been
+ * filtered out still opens — with those three boxes saying so instead of the
+ * dialog failing.
+ */
+export function ViewJobWorkInvoiceButton({
+  invoice,
+  order,
+  isOpen,
+  onOpenChange,
+}: {
+  invoice: JobWorkInvoiceView;
+  /** The order this invoice is against, where the panel has it. */
+  order?: JobWorkOrderSummary;
+  isOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}) {
+  const money = (amount: string) =>
+    new Intl.NumberFormat('en-IN', {
+      style: 'currency',
+      currency: 'INR',
+      minimumFractionDigits: 2,
+    }).format(Number(amount));
+
+  return (
+    <Disclosure
+      isOpen={isOpen}
+      onOpenChange={onOpenChange}
+      label="View"
+      title={`Invoice ${invoice.invoiceNumber}`}
+      subtitle={`${invoice.principalName} · ${invoice.jobWorkOrderNumber}`}
+      width="60rem"
+    >
+      {(close) => (
+        <div className="flex grow flex-col gap-5">
+          <section>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              What was billed
+            </h3>
+
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <Derived label="Invoice no." value={invoice.invoiceNumber} />
+              <Derived label="Job work order" value={invoice.jobWorkOrderNumber} />
+              <Derived label="Principal" value={invoice.principalName} />
+
+              <Derived
+                label="Product"
+                value={
+                  order
+                    ? `${order.product.productName} (${order.product.productCode})`
+                    : 'Not on the current list'
+                }
+                hint={order ? `Sold as ${order.product.principalBrandName}` : undefined}
+              />
+
+              <Derived label="Batch" value={invoice.batchNumber} />
+
+              <Derived
+                label="Ordered quantity"
+                value={order ? order.quantity : '—'}
+                hint={order ? `Delivery ${order.deliveryDate}` : undefined}
+              />
+            </div>
+          </section>
+
+          <section>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              How it was charged
+            </h3>
+
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <Derived
+                label="Billing model"
+                value={BILLING_MODEL_LABELS[invoice.billingModel]}
+              />
+
+              <Derived
+                label="Invoice basis"
+                value={JOB_WORK_INVOICE_BASIS_LABELS[invoice.invoiceBasis]}
+                hint={
+                  invoice.invoiceBasis === 'CONVERSION_CHARGE_ONLY'
+                    ? 'Raw-material value is not invoiced — the principal supplied it.'
+                    : undefined
+                }
+              />
+
+              <Derived
+                label="Conversion basis"
+                value={
+                  invoice.rateBasis
+                    ? CONVERSION_RATE_BASIS_LABELS[invoice.rateBasis]
+                    : 'Full finished-goods value'
+                }
+                hint="Snapshotted at dispatch, so a later change to the agreement cannot move this invoice."
+              />
+
+              <Derived label="Quantity dispatched" value={invoice.dispatchedQuantity} />
+              <Derived label="Rate applied" value={money(invoice.rateApplied)} />
+              <Derived label="Dispatch date" value={invoice.dispatchDate} />
+            </div>
+          </section>
+
+          <section>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Amounts
+            </h3>
+
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              <Derived label="Taxable value" value={money(invoice.taxableValue)} />
+              <Derived
+                label="GST"
+                value={money(invoice.gstAmount)}
+                hint={`At ${invoice.gstRatePercent}%`}
+              />
+              <Derived label="Total value" value={money(invoice.totalValue)} />
+            </div>
+          </section>
+
+          <section>
+            <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Record
+            </h3>
+
+            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {/* NOT A STORED FIELD. A job-work invoice has no lifecycle of its
+                  own — it is raised by the dispatch that returns the batch and
+                  is never amended — so the status is stated as what it is
+                  rather than left off the dialog for somebody to wonder about. */}
+              <Derived
+                label="Billing status"
+                value="Raised"
+                hint="Raised by the dispatch that returned this batch."
+              />
+
+              <Derived label="Created" value={invoice.createdAt.slice(0, 10)} />
+              <Derived label="Created by" value={invoice.createdBy ?? '—'} />
+
+              <div className="sm:col-span-2 lg:col-span-3">
+                <Derived label="Notes" value={invoice.notes ?? '—'} />
+              </div>
+            </div>
+          </section>
+
+          <FormFooter onCancel={close} />
+        </div>
       )}
     </Disclosure>
   );

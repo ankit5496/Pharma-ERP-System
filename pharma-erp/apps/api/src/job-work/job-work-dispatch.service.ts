@@ -75,7 +75,36 @@ export class JobWorkDispatchService {
 
     // Job Work's own batches first: on a pure-conversion order they are what
     // this screen is now for, and the internal ones are the legacy route.
-    return [...own, ...internal];
+    return [...own, ...internal].map((row) => row.batch);
+  }
+
+  /**
+   * The same answer for EVERY order, in two queries rather than two per order.
+   *
+   * WHY IT EXISTS. The Outward dispatch screen lists every job-work order and
+   * asks what each one has ready to send, so it was calling `dispatchable`
+   * once per order — eighty requests to draw one page on the current data,
+   * each opening its own tenant-scoped transaction, and the page waiting on
+   * the slowest of them. It is the same fan-out that tripped the thirty-second
+   * timeout on production orders, and the same remedy: ask once.
+   *
+   * KEYED BY ORDER ID, and an order with nothing ready is simply absent —
+   * which is what the screen already checks for.
+   */
+  async dispatchableByOrder(): Promise<Record<string, JobWorkDispatchableBatch[]>> {
+    const [own, internal] = await Promise.all([
+      this.dispatchableJobWorkBatches(),
+      this.dispatchableInternalBatches(),
+    ]);
+
+    const byOrder: Record<string, JobWorkDispatchableBatch[]> = {};
+
+    // Job Work's own batches first, for the reason `dispatchable` gives.
+    for (const { jobWorkOrderId, batch } of [...own, ...internal]) {
+      (byOrder[jobWorkOrderId] ??= []).push(batch);
+    }
+
+    return byOrder;
   }
 
   /**
@@ -85,20 +114,30 @@ export class JobWorkDispatchService {
    * is no finished-goods lot to read, because these goods were never ours to
    * sell. They are the principal's throughout, which is the whole point of pure
    * conversion, and they leave on a challan rather than out of stock.
+   *
+   * WITHOUT AN ORDER it answers for every order at once, which is what
+   * `dispatchableByOrder` above is built on. The filter is the only difference
+   * between the two calls, so there is one query here rather than two spellings
+   * of it that can drift apart.
    */
   private async dispatchableJobWorkBatches(
-    jobWorkOrderId: string,
-  ): Promise<JobWorkDispatchableBatch[]> {
+    jobWorkOrderId?: string,
+  ): Promise<{ jobWorkOrderId: string; batch: JobWorkDispatchableBatch }[]> {
     const batches = await this.prisma.scoped.jobWorkBatch.findMany({
       where: {
         deletedAt: null,
         releaseStatus: 'RELEASED',
-        productionOrder: { jobWorkOrderId, deletedAt: null },
+        productionOrder: {
+          ...(jobWorkOrderId ? { jobWorkOrderId } : {}),
+          deletedAt: null,
+          jobWorkOrder: { deletedAt: null },
+        },
       },
       include: {
         productionOrder: {
           select: {
             orderNumber: true,
+            jobWorkOrderId: true,
             jobWorkOrder: {
               select: { billingModel: true, mapping: { select: { bom: { select: { product: true } } } } },
             },
@@ -125,6 +164,8 @@ export class JobWorkDispatchService {
       })
       .filter(({ remaining }) => remaining.greaterThan(ZERO))
       .map(({ batch, remaining }) => ({
+        jobWorkOrderId: batch.productionOrder.jobWorkOrderId,
+        batch: {
         batchId: batch.id,
         batchNumber: batch.batchNumber,
         productionOrderNumber: batch.productionOrder.orderNumber,
@@ -136,25 +177,33 @@ export class JobWorkDispatchService {
           STOCK_BUCKET_FOR_BILLING_MODEL[
             batch.productionOrder.jobWorkOrder.billingModel as BillingModel
           ],
+        },
       }));
   }
 
   /** Released batches from the internal Production & Quality Gate workflow. */
   private async dispatchableInternalBatches(
-    jobWorkOrderId: string,
-  ): Promise<JobWorkDispatchableBatch[]> {
+    jobWorkOrderId?: string,
+  ): Promise<{ jobWorkOrderId: string; batch: JobWorkDispatchableBatch }[]> {
     const batches = await this.prisma.scoped.batch.findMany({
       where: {
         deletedAt: null,
         releaseStatus: 'RELEASED',
-        // Only batches made against THIS job-work order. A released batch of
-        // the same product made for our own brand is not the principal's to
-        // receive.
-        productionOrder: { jobWorkOrderId, deletedAt: null },
+        // Only batches made against a job-work order — and, when one is named,
+        // only that one. A released batch of the same product made for our own
+        // brand is not the principal's to receive.
+        productionOrder: jobWorkOrderId
+          ? { jobWorkOrderId, deletedAt: null }
+          : { jobWorkOrderId: { not: null }, deletedAt: null },
       },
       include: {
         productionOrder: {
-          select: { orderNumber: true, product: true, jobWorkBillingModel: true },
+          select: {
+            orderNumber: true,
+            jobWorkOrderId: true,
+            product: true,
+            jobWorkBillingModel: true,
+          },
         },
         finishedGoodsLot: { select: { quantityAvailable: true } },
       },
@@ -164,6 +213,10 @@ export class JobWorkDispatchService {
     return batches
       .filter((batch) => (batch.finishedGoodsLot?.quantityAvailable ?? ZERO).greaterThan(ZERO))
       .map((batch) => ({
+        // Non-null by the filter above: a batch with no job-work order behind
+        // it is not selected.
+        jobWorkOrderId: batch.productionOrder.jobWorkOrderId!,
+        batch: {
         batchId: batch.id,
         batchNumber: batch.batchNumber,
         productionOrderNumber: batch.productionOrder.orderNumber,
@@ -179,6 +232,7 @@ export class JobWorkDispatchService {
         stockOwnership: batch.productionOrder.jobWorkBillingModel
           ? STOCK_BUCKET_FOR_BILLING_MODEL[batch.productionOrder.jobWorkBillingModel]
           : 'COMPANY_OWNED',
+        },
       }));
   }
 
