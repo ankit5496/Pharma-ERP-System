@@ -160,9 +160,9 @@ model Tenant {
   customerDocuments CustomerDocument[]
 
   // Job-work: manufacturing under a principal's brand.
-  jobWorkAgreements       JobWorkAgreement[]
-  jobWorkProductMappings  JobWorkProductMapping[]
-  jobWorkOrders           JobWorkOrder[]
+  jobWorkAgreements           JobWorkAgreement[]
+  jobWorkProductMappings      JobWorkProductMapping[]
+  jobWorkOrders               JobWorkOrder[]
   jobWorkMaterialReceipts     JobWorkMaterialReceipt[]
   jobWorkMaterialReceiptLines JobWorkMaterialReceiptLine[]
   jobWorkProductionOrders     JobWorkProductionOrder[]
@@ -170,11 +170,12 @@ model Tenant {
   jobWorkMaterialIssueLines   JobWorkMaterialIssueLine[]
   jobWorkBatches              JobWorkBatch[]
   jobWorkBatchPackagingUse    JobWorkBatchPackagingConsumption[]
-  jobWorkInvoices         JobWorkInvoice[]
+  jobWorkInvoices             JobWorkInvoice[]
 
   // Packaging: what each pack presentation consumes.
   packagingRequirements     PackagingRequirement[]
   packagingRequirementLines PackagingRequirementLine[]
+  materialRequirements      MaterialRequirement[]
 
   // Procure-to-Pay. Every one of these tables carries `tenantId` with a real
   // foreign key, so a row cannot reference a company that does not exist. The
@@ -199,27 +200,27 @@ model Tenant {
   // Production & Quality Gate. `boms` and `bomLines` are not repeated here:
   // formulations are master data, shared with Procure-to-Pay, and declared
   // once in the block above.
-  productionOrders      ProductionOrder[]
-  materialIssues        MaterialIssue[]
-  materialIssueLines    MaterialIssueLine[]
-  batches               Batch[]
-  packingRecords        BatchPackingRecord[]
-  packagingConsumptions BatchPackagingConsumption[]
-  finishedGoodsLots     FinishedGoodsLot[]
-  customerLicences      CustomerLicence[]
+  productionOrders       ProductionOrder[]
+  materialIssues         MaterialIssue[]
+  materialIssueLines     MaterialIssueLine[]
+  batches                Batch[]
+  packingRecords         BatchPackingRecord[]
+  packagingConsumptions  BatchPackagingConsumption[]
+  finishedGoodsLots      FinishedGoodsLot[]
+  customerLicences       CustomerLicence[]
   partyDeliveryAddresses PartyDeliveryAddress[]
-  salesOrders           SalesOrder[]
-  salesOrderItems       SalesOrderItem[]
-  batchAllocations      BatchAllocation[]
-  dispatches            Dispatch[]
-  dispatchItems         DispatchItem[]
-  salesInvoices         SalesInvoice[]
-  salesInvoiceItems     SalesInvoiceItem[]
-  receipts              Receipt[]
-  salesReturns          SalesReturn[]
-  salesReturnItems      SalesReturnItem[]
-  receivableEntries     ReceivableLedgerEntry[]
-  notificationReads     NotificationRead[]
+  salesOrders            SalesOrder[]
+  salesOrderItems        SalesOrderItem[]
+  batchAllocations       BatchAllocation[]
+  dispatches             Dispatch[]
+  dispatchItems          DispatchItem[]
+  salesInvoices          SalesInvoice[]
+  salesInvoiceItems      SalesInvoiceItem[]
+  receipts               Receipt[]
+  salesReturns           SalesReturn[]
+  salesReturnItems       SalesReturnItem[]
+  receivableEntries      ReceivableLedgerEntry[]
+  notificationReads      NotificationRead[]
 
   @@index([deletedAt])
   @@map("tenants")
@@ -300,7 +301,7 @@ model User {
   batchReleaseDecisions   Batch[]              @relation("BatchReleaseDecidedBy")
 
   // Job work
-  jobWorkOrdersCreated   JobWorkOrder[]           @relation("JobWorkOrderCreatedBy")
+  jobWorkOrdersCreated     JobWorkOrder[]           @relation("JobWorkOrderCreatedBy")
   jobWorkReceiptsMade      JobWorkMaterialReceipt[] @relation("JobWorkReceiptReceivedBy")
   jobWorkReceiptsSubmitted JobWorkMaterialReceipt[] @relation("JobWorkReceiptSubmittedBy")
   jobWorkReceiptsDecided   JobWorkMaterialReceipt[] @relation("JobWorkReceiptDecidedBy")
@@ -308,15 +309,15 @@ model User {
   jobWorkIssuesMade        JobWorkMaterialIssue[]   @relation("JobWorkIssueIssuedBy")
   jobWorkBatchesRecorded   JobWorkBatch[]           @relation("JobWorkBatchRecordedBy")
   jobWorkBatchesReleased   JobWorkBatch[]           @relation("JobWorkBatchReleaseDecidedBy")
-  jobWorkInvoicesCreated JobWorkInvoice[]         @relation("JobWorkInvoiceCreatedBy")
-  salesOrdersCreated     SalesOrder[]
-  allocationsMade        BatchAllocation[]        @relation("AllocationAllocatedBy")
-  allocationChecksMade   BatchAllocation[]        @relation("AllocationComplianceCheckedBy")
-  dispatchesCreated      Dispatch[]               @relation("DispatchCreatedBy")
-  invoicesCreated        SalesInvoice[]           @relation("InvoiceCreatedBy")
-  receiptsCreated        Receipt[]                @relation("ReceiptCreatedBy")
-  salesReturnsCreated    SalesReturn[]            @relation("ReturnCreatedBy")
-  ledgerEntriesCreated   ReceivableLedgerEntry[]  @relation("LedgerCreatedBy")
+  jobWorkInvoicesCreated   JobWorkInvoice[]         @relation("JobWorkInvoiceCreatedBy")
+  salesOrdersCreated       SalesOrder[]
+  allocationsMade          BatchAllocation[]        @relation("AllocationAllocatedBy")
+  allocationChecksMade     BatchAllocation[]        @relation("AllocationComplianceCheckedBy")
+  dispatchesCreated        Dispatch[]               @relation("DispatchCreatedBy")
+  invoicesCreated          SalesInvoice[]           @relation("InvoiceCreatedBy")
+  receiptsCreated          Receipt[]                @relation("ReceiptCreatedBy")
+  salesReturnsCreated      SalesReturn[]            @relation("ReturnCreatedBy")
+  ledgerEntriesCreated     ReceivableLedgerEntry[]  @relation("LedgerCreatedBy")
 
   /// Retained alongside the global unique on `email` so a tenant's user list
   /// can be scanned by address without touching the global index.
@@ -1174,6 +1175,11 @@ enum PackagingLevel {
 enum RequisitionTriggerType {
   AUTO_REORDER
   MANUAL
+  /// US-MD-07. Raised by the Material Requirement Determination that runs when
+  /// a sales order is confirmed, against the shortfall it found. AUTO_REORDER
+  /// is a different question — a shared consumable below its safety level,
+  /// which no order asks for — and both remain live.
+  PRODUCTION_SHORTFALL
 }
 
 enum ProductionPlanStatus {
@@ -1294,10 +1300,10 @@ model Item {
   hsnCode String? @map("hsn_code") @db.VarChar(16)
 
   /// Who entered it. A UUID, not a relation — see the schema header.
-  createdById String? @map("created_by_id") @db.Uuid
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  createdById String?   @map("created_by_id") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
 
   // ---------------------------------------------------------------------------
   // Pharmaceutical and commercial attributes
@@ -1359,6 +1365,9 @@ model Item {
   packagingRequirementLines PackagingRequirementLine[]  @relation("PackagingRequirementComponent")
   packagingConsumptions     BatchPackagingConsumption[] @relation("BatchPackagingComponent")
 
+  /// As a material a confirmed order was determined to need — US-MD-07.
+  materialRequirements MaterialRequirement[] @relation("MaterialRequirementItem")
+
   requisitions                PurchaseRequisition[] @relation("RequisitionItem")
   requisitionsAsFinishedGood  PurchaseRequisition[] @relation("RequisitionFinishedProduct")
   requisitionsAsPackComponent PurchaseRequisition[] @relation("RequisitionPackagingComponent")
@@ -1371,15 +1380,15 @@ model Item {
 
   // Production & Quality Gate. Stock is `stockLots` in the block above: one
   // stock table, shared with Procure-to-Pay.
-  productionOrders  ProductionOrder[]
-  issueLines        MaterialIssueLine[]
-  jobWorkReceiptLines   JobWorkMaterialReceiptLine[]
-  jobWorkIssueLines     JobWorkMaterialIssueLine[]
-  jobWorkPackagingUse   JobWorkBatchPackagingConsumption[] @relation("JobWorkBatchPackagingComponent")
-  finishedGoodsLots FinishedGoodsLot[]
-  salesOrderItems   SalesOrderItem[]
-  salesInvoiceItems SalesInvoiceItem[]
-  salesReturnItems  SalesReturnItem[]
+  productionOrders    ProductionOrder[]
+  issueLines          MaterialIssueLine[]
+  jobWorkReceiptLines JobWorkMaterialReceiptLine[]
+  jobWorkIssueLines   JobWorkMaterialIssueLine[]
+  jobWorkPackagingUse JobWorkBatchPackagingConsumption[] @relation("JobWorkBatchPackagingComponent")
+  finishedGoodsLots   FinishedGoodsLot[]
+  salesOrderItems     SalesOrderItem[]
+  salesInvoiceItems   SalesInvoiceItem[]
+  salesReturnItems    SalesReturnItem[]
 
   @@unique([tenantId, code])
   @@index([tenantId, type, deletedAt])
@@ -1437,19 +1446,21 @@ model Bom {
   defaultOveragePercent Decimal @default(0) @map("default_overage_percent") @db.Decimal(5, 2)
 
   /// Who entered it. A UUID, not a relation — see the schema header.
-  createdById String? @map("created_by_id") @db.Uuid
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  createdById String?   @map("created_by_id") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
 
   tenant  Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   product Item   @relation(fields: [productId], references: [id], onDelete: Restrict)
 
-  lines            BomLine[]
-  productionPlans  ProductionPlan[]
-  productionOrders ProductionOrder[]
+  lines                BomLine[]
+  productionPlans      ProductionPlan[]
+  productionOrders     ProductionOrder[]
   /// The principals whose brands this formulation is made under.
-  jobWorkMappings  JobWorkProductMapping[]
+  jobWorkMappings      JobWorkProductMapping[]
+  /// The determinations whose figures were derived through this formulation.
+  materialRequirements MaterialRequirement[]
 
   @@unique([tenantId, productId, version])
   @@index([tenantId, deletedAt])
@@ -1554,10 +1565,10 @@ model Party {
   notes String? @db.VarChar(1000)
 
   /// Who entered it. A UUID, not a relation — see the schema header.
-  createdById String? @map("created_by_id") @db.Uuid
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
-  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  createdById String?   @map("created_by_id") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
 
@@ -1774,12 +1785,12 @@ model Licence {
   notes String? @db.VarChar(1000)
 
   /// Who entered it. A UUID, not a relation — see the schema header.
-  createdById String? @map("created_by_id") @db.Uuid
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdById String?   @map("created_by_id") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   /// Soft delete. A licence that covered a batch made last year is part of that
   /// batch's compliance record and survives being retired from the register.
-  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
 
@@ -1843,12 +1854,12 @@ model JobWorkAgreement {
   notes String? @db.VarChar(1000)
 
   /// Who entered it. A UUID, not a relation — see the schema header.
-  createdById String? @map("created_by_id") @db.Uuid
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdById String?   @map("created_by_id") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   /// Soft delete. An agreement that governed a batch made last year is part of
   /// that batch's commercial record.
-  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
 
   tenant    Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   principal Party  @relation(fields: [principalId], references: [id], onDelete: Restrict)
@@ -1965,7 +1976,7 @@ model JobWorkOrder {
   mapping   JobWorkProductMapping @relation(fields: [mappingId], references: [id], onDelete: Restrict)
   createdBy User?                 @relation("JobWorkOrderCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
 
-  materialReceipts JobWorkMaterialReceipt[]
+  materialReceipts        JobWorkMaterialReceipt[]
   /// The job-work production orders raised against this instruction.
   jobWorkProductionOrders JobWorkProductionOrder[]
 
@@ -2115,18 +2126,18 @@ model JobWorkProductionOrder {
 
   notes String? @db.VarChar(1000)
 
-  createdById String?  @map("created_by_id") @db.Uuid
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdById String?   @map("created_by_id") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
 
-  tenant          Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  jobWorkOrder    JobWorkOrder           @relation(fields: [jobWorkOrderId], references: [id], onDelete: Restrict)
+  tenant          Tenant                  @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  jobWorkOrder    JobWorkOrder            @relation(fields: [jobWorkOrderId], references: [id], onDelete: Restrict)
   materialReceipt JobWorkMaterialReceipt? @relation(fields: [materialReceiptId], references: [id], onDelete: Restrict)
 
   materialIssues JobWorkMaterialIssue[]
   batches        JobWorkBatch[]
-  createdBy       User?                  @relation("JobWorkProductionOrderCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdBy      User?                  @relation("JobWorkProductionOrderCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
 
   @@unique([tenantId, orderNumber])
   @@index([tenantId, jobWorkOrderId])
@@ -2161,9 +2172,9 @@ model JobWorkMaterialIssue {
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
 
-  tenant             Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  productionOrder    JobWorkProductionOrder @relation(fields: [jobWorkProductionOrderId], references: [id], onDelete: Restrict)
-  issuedBy           User?                  @relation("JobWorkIssueIssuedBy", fields: [issuedById], references: [id], onDelete: Restrict)
+  tenant          Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  productionOrder JobWorkProductionOrder @relation(fields: [jobWorkProductionOrderId], references: [id], onDelete: Restrict)
+  issuedBy        User?                  @relation("JobWorkIssueIssuedBy", fields: [issuedById], references: [id], onDelete: Restrict)
 
   lines JobWorkMaterialIssueLine[]
 
@@ -2291,16 +2302,16 @@ model JobWorkBatch {
   updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt    DateTime? @map("deleted_at") @db.Timestamptz(6)
 
-  tenant           Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  productionOrder  JobWorkProductionOrder @relation(fields: [jobWorkProductionOrderId], references: [id], onDelete: Restrict)
-  recordedBy       User?                  @relation("JobWorkBatchRecordedBy", fields: [recordedById], references: [id], onDelete: Restrict)
+  tenant          Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  productionOrder JobWorkProductionOrder @relation(fields: [jobWorkProductionOrderId], references: [id], onDelete: Restrict)
+  recordedBy      User?                  @relation("JobWorkBatchRecordedBy", fields: [recordedById], references: [id], onDelete: Restrict)
 
   /// What has been sent back to the principal out of this batch.
   invoices JobWorkInvoice[]
 
   /// Which packing components this batch actually used, and how much of each.
   packagingConsumptions JobWorkBatchPackagingConsumption[]
-  releaseDecidedBy User?                  @relation("JobWorkBatchReleaseDecidedBy", fields: [releaseDecidedById], references: [id], onDelete: Restrict)
+  releaseDecidedBy      User?                              @relation("JobWorkBatchReleaseDecidedBy", fields: [releaseDecidedById], references: [id], onDelete: Restrict)
 
   @@unique([tenantId, batchNumber])
   @@index([tenantId, jobWorkProductionOrderId])
@@ -2347,9 +2358,9 @@ model JobWorkMaterialReceiptLine {
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
 
-  tenant  Tenant                    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  receipt JobWorkMaterialReceipt    @relation(fields: [receiptId], references: [id], onDelete: Restrict)
-  item    Item                      @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  tenant  Tenant                 @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  receipt JobWorkMaterialReceipt @relation(fields: [receiptId], references: [id], onDelete: Restrict)
+  item    Item                   @relation(fields: [itemId], references: [id], onDelete: Restrict)
 
   /// The principal-owned lot this line created. Optional on this side only
   /// because Prisma models the unique FK from StockLot; the service always
@@ -2439,11 +2450,11 @@ model JobWorkInvoice {
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
 
-  tenant       Tenant       @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  jobWorkOrder JobWorkOrder @relation(fields: [jobWorkOrderId], references: [id], onDelete: Restrict)
+  tenant       Tenant        @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  jobWorkOrder JobWorkOrder  @relation(fields: [jobWorkOrderId], references: [id], onDelete: Restrict)
   batch        Batch?        @relation(fields: [batchId], references: [id], onDelete: Restrict)
   jobWorkBatch JobWorkBatch? @relation(fields: [jobWorkBatchId], references: [id], onDelete: Restrict)
-  createdBy    User?        @relation("JobWorkInvoiceCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
+  createdBy    User?         @relation("JobWorkInvoiceCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
 
   @@unique([tenantId, invoiceNumber])
   @@index([tenantId, jobWorkOrderId, deletedAt])
@@ -2503,12 +2514,12 @@ model PackagingRequirement {
   notes String? @db.VarChar(1000)
 
   /// Who entered it. A UUID, not a relation — see the schema header.
-  createdById String? @map("created_by_id") @db.Uuid
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
-  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  createdById String?   @map("created_by_id") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   /// Soft delete. The specification a batch was packed to is part of that
   /// batch's record.
-  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  deletedAt   DateTime? @map("deleted_at") @db.Timestamptz(6)
 
   tenant  Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   product Item   @relation("PackagingRequirementProduct", fields: [productId], references: [id], onDelete: Restrict)
@@ -2686,6 +2697,9 @@ model PurchaseRequisition {
 
   purchaseOrderLines PurchaseOrderLine[]
 
+  /// The shortfalls this requisition was raised to cover — US-MD-07.
+  materialRequirements MaterialRequirement[]
+
   @@unique([tenantId, number])
   @@index([tenantId, status, deletedAt])
   @@index([tenantId, itemId])
@@ -2693,6 +2707,66 @@ model PurchaseRequisition {
   @@index([tenantId, finishedProductId])
   @@index([tenantId, packagingComponentId])
   @@map("purchase_requisitions")
+}
+
+/// What a confirmed sales order needs, what existed, and what must be bought —
+/// US-MD-07, the Material Requirement Determination.
+///
+/// PERSISTED rather than computed, which is what `materialShortages()` already
+/// does transiently. A figure thrown away cannot be compared against later (the
+/// US-PROD-06 readiness gate asks "has the shortfall been satisfied yet"),
+/// cannot justify the requisition it caused, and cannot answer an auditor
+/// asking what was known when the order was taken.
+model MaterialRequirement {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  /// The order whose confirmation caused this run.
+  salesOrderId String @map("sales_order_id") @db.Uuid
+
+  /// The material, and the formulation the figure came through. A requirement
+  /// of 200kg is only explicable alongside the recipe that produced it, and
+  /// formulations are superseded.
+  itemId String  @map("item_id") @db.Uuid
+  bomId  String? @map("bom_id") @db.Uuid
+
+  /// Overage-adjusted per US-MD-03 — what the issue will actually consume,
+  /// not the bare BOM quantity. Procuring against the smaller figure buys short.
+  quantityRequired Decimal @map("quantity_required") @db.Decimal(14, 3)
+
+  /// Usable stock as at the run. A SNAPSHOT: what was known when the decision
+  /// was taken, not a live figure.
+  quantityAvailable Decimal @map("quantity_available") @db.Decimal(14, 3)
+
+  /// required - available, floored at zero. Stored so the shortfall that
+  /// justified a requisition cannot drift away from it.
+  quantityShort Decimal @map("quantity_short") @db.Decimal(14, 3)
+
+  /// The requisition covering this shortfall, once raised. Null both when
+  /// there was no shortfall and when one is not yet covered — `quantityShort`
+  /// tells the two apart.
+  requisitionId String? @map("requisition_id") @db.Uuid
+
+  determinedAt   DateTime @default(now()) @map("determined_at") @db.Timestamptz(6)
+  determinedById String?  @map("determined_by_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant      Tenant               @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  salesOrder  SalesOrder           @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  item        Item                 @relation("MaterialRequirementItem", fields: [itemId], references: [id], onDelete: Restrict)
+  bom         Bom?                 @relation(fields: [bomId], references: [id], onDelete: Restrict)
+  requisition PurchaseRequisition? @relation(fields: [requisitionId], references: [id], onDelete: SetNull)
+
+  /// One row per material per order. The same item twice is two answers to one
+  /// question.
+  @@unique([tenantId, salesOrderId, itemId])
+  /// The readiness question, per order: is anything still short?
+  @@index([tenantId, salesOrderId, quantityShort])
+  /// The reverse: which shortfalls is this requisition covering?
+  @@index([tenantId, requisitionId])
+  @@map("material_requirements")
 }
 
 // -----------------------------------------------------------------------------
@@ -2938,7 +3012,7 @@ model StockLot {
 
   qcResults             QcResult[]
   ledgerEntries         StockLedgerEntry[]
-  jobWorkIssueLines     JobWorkMaterialIssueLine[] @relation("JobWorkIssueLotLines")
+  jobWorkIssueLines     JobWorkMaterialIssueLine[]         @relation("JobWorkIssueLotLines")
   jobWorkPackagingUse   JobWorkBatchPackagingConsumption[] @relation("JobWorkBatchPackagingLot")
   /// Production consumes the same stock Procure-to-Pay received; see the note
   /// on MaterialIssueLine.lot.
@@ -3306,11 +3380,13 @@ model SalesOrder {
   customer  Party  @relation(fields: [customerId], references: [id], onDelete: Restrict)
   createdBy User?  @relation(fields: [createdById], references: [id], onDelete: Restrict)
 
-  items         SalesOrderItem[]
-  allocations   BatchAllocation[]
-  dispatches    Dispatch[]
-  salesInvoices SalesInvoice[]
-  salesReturns  SalesReturn[]
+  items                SalesOrderItem[]
+  allocations          BatchAllocation[]
+  /// What confirming this order was determined to require — US-MD-07.
+  materialRequirements MaterialRequirement[]
+  dispatches           Dispatch[]
+  salesInvoices        SalesInvoice[]
+  salesReturns         SalesReturn[]
 
   @@unique([tenantId, orderNumber])
   @@index([tenantId, status, deletedAt])

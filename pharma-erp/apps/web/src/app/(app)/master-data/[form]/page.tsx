@@ -7,6 +7,7 @@ import {
   type ItemSummary,
   type JobWorkAgreementSummary,
   type LicenceRegister,
+  type MaterialRequirementRegisterRow,
   type PackagingRequirementView,
   type PartySummary,
 } from '@pharma-erp/types';
@@ -67,7 +68,8 @@ export default async function MasterDataFormPage({ params }: PageProps) {
   // switching between them is client-side and must not touch the network.
   // In parallel, so the reads cost one round trip rather than four — against
   // a cross-region database that is the difference worth having.
-  const [items, boms, parties, licences, agreements, packaging] = await Promise.all([
+  const [items, boms, parties, licences, agreements, packaging, materialRequirements] =
+    await Promise.all([
     apiFetch<ItemSummary[]>('/api/v1/production/items', {
       authenticated: true,
       timeoutMs: 20_000,
@@ -87,6 +89,12 @@ export default async function MasterDataFormPage({ params }: PageProps) {
     // Also not role-gated: US-MD-06 states no visibility rule, and the packing
     // line and the buyer both need to know what a pack consumes.
     apiFetch<PackagingRequirementView[]>('/api/v1/packaging/requirements', {
+      authenticated: true,
+      timeoutMs: 20_000,
+    }),
+    // US-MD-07. Read-only: this endpoint lists what confirmation already
+    // determined and never re-runs it.
+    apiFetch<MaterialRequirementRegisterRow[]>('/api/v1/production/material-requirements', {
       authenticated: true,
       timeoutMs: 20_000,
     }),
@@ -120,6 +128,7 @@ export default async function MasterDataFormPage({ params }: PageProps) {
             licences={licences}
             agreements={agreements}
             packaging={packaging}
+            materialRequirements={materialRequirements}
           />
         </div>
       </main>

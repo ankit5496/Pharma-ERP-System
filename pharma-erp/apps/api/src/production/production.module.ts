@@ -6,6 +6,7 @@ import { NumberingService } from '../procurement/numbering.service';
 
 import { BatchService } from './batch.service';
 import { MaterialIssueService } from './material-issue.service';
+import { MaterialRequirementService } from './material-requirement.service';
 import { ProductionController } from './production.controller';
 import { ProductionService } from './production.service';
 
@@ -31,7 +32,17 @@ import { ProductionService } from './production.service';
   // NumberingService is stateless and takes the caller's transaction client, so
   // a second instance allocates from the same row-locked counter table. See the
   // note in JobWorkModule.
-  providers: [NumberingService, ProductionService, MaterialIssueService, BatchService],
-  exports: [ProductionService, BatchService],
+  providers: [
+    NumberingService,
+    ProductionService,
+    MaterialIssueService,
+    MaterialRequirementService,
+    BatchService,
+  ],
+  // MaterialRequirementService is exported for order-to-cash: US-MD-07 runs on
+  // sales-order confirmation, and that is the module holding the confirmation.
+  // The determination lives here because it is production arithmetic — BOM
+  // explosion and overage — not because of who calls it.
+  exports: [ProductionService, BatchService, MaterialRequirementService],
 })
 export class ProductionModule {}

@@ -9,6 +9,7 @@ import type {
   ItemPackagingSpec,
   DispatchDetail,
   ItemListItem,
+  MaterialRequirementSummary,
   PartySummary,
   PriceCeilingBreach,
   ReceiptListItem,
@@ -637,6 +638,24 @@ export async function customerDetailAction(
     await apiFetch<CustomerDetail>(`/api/v1/order-to-cash/customers/${customerId}`, {
       authenticated: true,
     }),
+  );
+}
+
+/**
+ * What confirming an order was determined to require — US-MD-07.
+ *
+ * A READ. The determination is written when the order is confirmed, never by
+ * opening this: a screen that raised requisitions by being looked at would
+ * raise them every time somebody scrolled past.
+ */
+export async function materialRequirementsAction(
+  salesOrderId: string,
+): Promise<ActionResult<MaterialRequirementSummary>> {
+  return toResult(
+    await apiFetch<MaterialRequirementSummary>(
+      `/api/v1/order-to-cash/sales-orders/${salesOrderId}/material-requirements`,
+      { authenticated: true },
+    ),
   );
 }
 
