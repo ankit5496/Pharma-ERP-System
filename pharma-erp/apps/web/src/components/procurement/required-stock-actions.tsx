@@ -106,10 +106,31 @@ export function ViewRequiredStockButton({
                   : 'From the product’s pack specification.'
               }
             />
+            {/* THE ARITHMETIC, IN THE ORDER IT IS DONE. Three fields rather
+                than one, because "why 21 and not 20?" is the question this
+                dialog exists to answer, and a single total cannot. */}
+            <Derived
+              label="Base required"
+              value={`${line.baseRequiredQuantity} ${line.material.uom}`}
+              hint="The formulation scaled to the quantity still owed."
+            />
+            <Derived
+              label="Overage %"
+              value={`${line.overagePercent}%`}
+              hint={
+                Number(line.overagePercent) > 0
+                  ? 'This material’s own allowance, from its line in the product’s formulation. It cannot be entered or overridden here.'
+                  : 'This material’s formulation line allows no overage.'
+              }
+            />
             <Derived
               label="Required"
               value={`${line.requiredQuantity} ${line.material.uom}`}
-              hint="The formulation scaled to the quantity still owed."
+              hint={
+                Number(line.overagePercent) > 0
+                  ? `${line.baseRequiredQuantity} plus ${line.overagePercent}% overage. This is what is bought.`
+                  : 'What is bought. The formulation asks for no overage.'
+              }
             />
             <Derived
               label="Free stock"
@@ -175,8 +196,8 @@ export function ViewRequiredStockButton({
               tell them. */}
           <p className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
             This line is worked out from the sales order, the product’s formulation and pack
-            specification, and current free stock. It is not stored and cannot be edited — change
-            one of those and this follows.
+            specification — including each material’s own Overage % — and current free stock. It is
+            not stored and cannot be edited: change one of those and this follows.
           </p>
         </div>
       )}

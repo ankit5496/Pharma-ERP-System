@@ -48,9 +48,26 @@ const WORKFLOWS_OWNING_THEIR_HEADING: ReadonlySet<string> = new Set([
  * mean in practice, otherwise every new step is a copy-pasted page that drifts.
  */
 
-/** Old path → where that step lives now. */
+/**
+ * Old path → where that step lives now.
+ *
+ * A RENAMED STEP LEAVES BOOKMARKS BEHIND, and without an entry here they land
+ * on the workflow shell with no panel under it — a page that looks broken
+ * rather than one that says the step has moved. `notFound()` would at least be
+ * honest, but the step has not gone anywhere; only its name has.
+ */
 const MOVED_STEPS = new Map<string, string>([
   ['order-to-cash/sales-orders', '/workflows/sales-order/sales-orders'],
+
+  // Low stock became Required Stock when the tab stopped comparing items
+  // against a reorder level and started working out what live sales orders
+  // need. Same screen, different question.
+  ['procure-to-pay/low-stock', '/workflows/procure-to-pay/required-stock'],
+
+  // Production and Batch release were merged into one step with four sub-tabs.
+  // Each old path lands on the stage it used to be.
+  ['job-work/production', '/workflows/job-work/production-to-batch-release?stage=production-orders'],
+  ['job-work/quality-release', '/workflows/job-work/production-to-batch-release?stage=batch-release'],
 ]);
 
 interface PageProps {

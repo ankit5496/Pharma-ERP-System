@@ -24,6 +24,7 @@ import {
   type JobWorkProductionStage,
   type JobWorkRegisterGroup,
   type PackagingRequirementView,
+  type ProductionStockLot,
 } from '@pharma-erp/types';
 
 import {
@@ -1310,7 +1311,7 @@ export async function JobWorkMaterialIssuePanel(query: StepQuery) {
  * principal's consignment, and the packing record.
  */
 export async function JobWorkBatchRecordPanel(query: StepQuery) {
-  const [batchesResult, ordersResult, packagingResult, people] = await Promise.all([
+  const [batchesResult, ordersResult, packagingResult, lotsResult, people] = await Promise.all([
     // FILTERED BY THE DATABASE, including "Packaging due" — which is not a
     // stored status but `PENDING with nothing packed yet`, and is now a value
     // the batch endpoint understands.
@@ -1325,6 +1326,13 @@ export async function JobWorkBatchRecordPanel(query: StepQuery) {
     // which leaflet it takes — and that does not change according to who owns
     // the goods. The consumption it drives is written to job work's own table.
     get<PackagingRequirementView[]>('/api/v1/packaging/requirements'),
+    // US-MD-06: the packing record names the LOT each component came from, so
+    // a carton lot can be traced to the batches it went into. THE SAME
+    // REGISTER the internal batch record reads — a lot is a lot whoever owns
+    // it, and the form filters to the right bucket. Fetched here because the
+    // form cannot ask for it: it is rendered by this server component, one per
+    // batch.
+    get<ProductionStockLot[]>('/api/v1/production/stock-lots'),
     peopleOptions(),
   ]);
 
@@ -1380,6 +1388,13 @@ export async function JobWorkBatchRecordPanel(query: StepQuery) {
   // The packing form per batch, built HERE because it carries the server action
   // binding and the product's pack specifications, neither of which the client
   // list carries.
+  // The billing model per production order, so each batch can be told whose
+  // packaging it draws on. One pass over the orders already fetched rather than
+  // a lookup per batch.
+  const billingModelByOrder = new Map(
+    (ordersResult.ok ? ordersResult.data : []).map((order) => [order.id, order.billingModel]),
+  );
+
   const packingForms: Record<string, React.ReactNode> = {};
 
   for (const batch of batches) {
@@ -1423,6 +1438,16 @@ export async function JobWorkBatchRecordPanel(query: StepQuery) {
         key={batch.id}
         batch={batch}
         packSpecifications={specificationsByProduct.get(batch.product.id) ?? []}
+        lots={lotsResult.ok ? lotsResult.data : []}
+        // WHOSE PACKAGING THIS BATCH MAY CONSUME, resolved from the job work
+        // order it was made against — the same rule the raw-material issue
+        // applies. A pure-conversion job draws the principal's own cartons;
+        // own procurement draws ours, because we bought them.
+        ownership={
+          billingModelByOrder.get(batch.productionOrderId) === 'OWN_PROCUREMENT'
+            ? 'COMPANY_OWNED'
+            : 'PRINCIPAL_OWNED'
+        }
       />
     );
   }

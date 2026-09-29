@@ -1016,7 +1016,7 @@ const BATCH_INCLUDE = {
   productionOrder: ORDER_SUMMARY,
   // The consumption rows come WITH the batch: the packing form seeds its
   // component boxes from them on a correction rather than asking again.
-  packagingConsumptions: { select: { itemId: true, quantityConsumed: true } },
+  packagingConsumptions: { select: { itemId: true, quantityConsumed: true, lotId: true } },
   recordedBy: { select: { fullName: true } },
   releaseDecidedBy: { select: { fullName: true } },
 } satisfies Prisma.JobWorkBatchInclude;
@@ -1091,6 +1091,11 @@ function toBatchView(batch: BatchWithRelations): JobWorkBatchView {
     packagingConsumed: batch.packagingConsumptions.map((consumption) => ({
       itemId: consumption.itemId,
       quantityConsumed: consumption.quantityConsumed.toString(),
+      // THE LOT, which the column has always held and the view never returned.
+      // Recording one and reopening the record showed an empty picker, and
+      // saving from there replaced the consumption rows with lot-less ones —
+      // the recall trail lost by an amendment that changed nothing else.
+      lotId: consumption.lotId,
     })),
 
     releaseStatus: batch.releaseStatus as BatchReleaseStatus,

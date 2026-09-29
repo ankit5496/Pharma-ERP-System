@@ -308,8 +308,20 @@ function MaterialTable({
                   </span>
                 </Td>
 
+                {/* WHAT TO BUY, AND WHAT IT WAS GROSSED UP FROM.
+                    A requisition for 21 kg against a formulation that says 20
+                    is a figure somebody queries, so the row answers it in
+                    place rather than making them open the record. */}
                 <Td align="right">
                   <Qty value={row.requiredQuantity} uom={row.material.uom} />
+                  {Number(row.overagePercent) > 0 && (
+                    <span
+                      className="mt-0.5 block text-[11px] text-slate-500"
+                      title={`${row.baseRequiredQuantity} ${row.material.uom} per the formulation, plus this material’s own ${row.overagePercent}% overage from the formulation.`}
+                    >
+                      {row.baseRequiredQuantity} + {row.overagePercent}%
+                    </span>
+                  )}
                 </Td>
 
                 <Td align="right">

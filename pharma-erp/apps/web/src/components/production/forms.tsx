@@ -27,6 +27,7 @@ import {
   releaseBatchAction,
   type ActionResult,
 } from '@/app/(app)/workflows/production-actions';
+import { FormFooter, SubmitButton } from '@/components/procurement/form-kit';
 import { useIsInsideRegister, useReportSaved } from '@/components/production/register';
 
 import { ExpiryHint, Quantity } from './shared';
@@ -1592,6 +1593,9 @@ export function RecordPackingForm({
 }) {
   const [state, action, pending] = useActionState(recordPackingAction, IDLE);
 
+  /** For Cancel on a first entry, which clears the boxes rather than closing. */
+  const formRef = useRef<HTMLFormElement>(null);
+
   // WHAT WAS RECORDED, or nothing chosen.
   //
   // It used to open on the first specification even for an unpacked batch,
@@ -1717,7 +1721,7 @@ export function RecordPackingForm({
           rather than a new one. See the note there. */}
       <Result state={state} pending={pending} />
 
-      <form action={action} className="space-y-3 rounded-md bg-slate-50 p-4">
+      <form ref={formRef} action={action} className="space-y-3 rounded-md bg-slate-50 p-4">
         <input type="hidden" name="batchId" value={batchId} />
 
         {/* Linked BMR, quantity and variant on one row — US-PROD-04 lists them
@@ -1927,24 +1931,32 @@ export function RecordPackingForm({
           {batchNumber} is released. Packed plus rejects cannot exceed what the batch made.
         </p>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <button type="submit" disabled={pending} className={BUTTON}>
-            {pending ? 'Saving…' : 'Save'}
-          </button>
+        {/* THE REQUISITION FORM'S FOOTER: a rule across the width, Cancel at
+            the left, Save at the right.
 
-          {/* Only when AMENDING. A first entry has nothing to go back to, so a
-            Cancel there would be a button that does nothing visible. */}
-          {recorded && (
-            <button
-              type="button"
-              onClick={() => setEditing(false)}
-              disabled={pending}
-              className="rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Cancel
-            </button>
-          )}
-        </div>
+            This used to be two buttons hard left with Save FIRST — the reverse
+            of every dialog in the product, on the one form that writes a GMP
+            record. Cancel sitting immediately after the primary action is also
+            the arrangement most likely to be hit by mistake.
+
+            CANCEL NOW ALWAYS SHOWS, and does the right thing in both states.
+            Amending, it abandons the correction and returns to the record. On a
+            first entry there is nothing to return to, so it clears what has been
+            typed — which is what somebody who has just realised they are on the
+            wrong batch actually wants, and better than the button not being
+            there at all. */}
+        <FormFooter
+          onCancel={() => {
+            if (recorded) {
+              setEditing(false);
+              return;
+            }
+
+            formRef.current?.reset();
+          }}
+        >
+          <SubmitButton pendingLabel="Saving…">Save</SubmitButton>
+        </FormFooter>
       </form>
     </>
   );

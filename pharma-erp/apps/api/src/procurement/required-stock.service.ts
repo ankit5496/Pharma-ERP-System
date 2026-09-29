@@ -250,7 +250,10 @@ export class RequiredStockService {
         if (outstanding.lessThanOrEqualTo(0)) continue;
 
         const recipe = recipes.get(orderLine.item.id);
-        const requirement = scaleRecipe(recipe, outstanding);
+        // OVERAGE ON, and this is the one caller that asks for it. What a
+        // buyer must order is what the process consumes, not what the
+        // formulation nominally calls for — see ScaleOptions.
+        const requirement = scaleRecipe(recipe, outstanding, { applyOverage: true });
 
         const shared = {
           salesOrderId: order.id,
@@ -276,6 +279,8 @@ export class RequiredStockService {
             id: `${orderLine.id}:none`,
             materialType: 'RAW',
             material: toItemSummary(orderLine.item),
+            baseRequiredQuantity: '0',
+            overagePercent: '0',
             requiredQuantity: '0',
             availableQuantity: '0',
             shortfallQuantity: '0',
@@ -321,6 +326,9 @@ export class RequiredStockService {
             id: `${orderLine.id}:${material.item.id}`,
             materialType: material.kind as RequiredMaterialKind,
             material: material.item,
+            baseRequiredQuantity: qty(material.baseQuantity),
+            // Two decimals: a percent, not a quantity. 5 reads as "5.00".
+            overagePercent: material.overagePercent.toFixed(2),
             requiredQuantity: qty(material.quantity),
             availableQuantity: qty(taken),
             shortfallQuantity: qty(shortfall),
@@ -441,11 +449,23 @@ export class RequiredStockService {
             // happened to open the tab would be a lie in the trail.
             requestedById: null,
             status: 'OPEN',
+            // THE WHOLE TRAIL IN ONE SENTENCE, on the document itself.
+            //
+            // Sales order, finished product, what the formulation called for,
+            // the overage it was grossed up by, and what was free. A
+            // requisition for 21 kg against a formulation that says 20 is a
+            // figure somebody will query months later, by which time the
+            // screen that worked it out has moved on — so the answer is
+            // written down where the question gets asked.
             notes:
               `Raised automatically: ${line.salesOrderNumber} needs ` +
               `${line.requiredQuantity} ${line.material.uom} of ${line.material.code} for ` +
-              `${line.productQuantity} of ${line.finishedProduct.code}, and only ` +
-              `${line.availableQuantity} is free.`,
+              `${line.productQuantity} of ${line.finishedProduct.code}` +
+              (new Prisma.Decimal(line.overagePercent).isZero()
+                ? ''
+                : ` (${line.baseRequiredQuantity} per the formulation, plus ` +
+                  `${line.overagePercent}% overage)`) +
+              `, and only ${line.availableQuantity} is free.`,
           },
           select: { id: true, number: true },
         });
