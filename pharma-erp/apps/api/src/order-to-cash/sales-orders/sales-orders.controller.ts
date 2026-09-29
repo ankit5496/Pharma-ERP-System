@@ -11,7 +11,7 @@ import {
   Query,
 } from '@nestjs/common';
 
-import type { SalesOrderDetail, SalesOrderListItem } from '@pharma-erp/types';
+import type { SalesOrderDetail, SalesOrderListItem, SalesOrderTrace } from '@pharma-erp/types';
 
 import { Roles } from '../../auth/auth.decorators';
 import { SkipAudit } from '../../common/audit/audit.decorators';
@@ -50,6 +50,19 @@ export class SalesOrdersController {
   @SkipAudit('Read-only.')
   async nextNumber(): Promise<{ number: string }> {
     return this.orders.nextNumberPreview();
+  }
+
+  /**
+   * The fulfilment trace — US-SAL-08. READ-ONLY: it writes nothing and there is
+   * no trace record; every figure is derived from existing rows.
+   *
+   * Open to every signed-in role, like the other reads on this controller: the
+   * question it answers is the one a customer asks on the phone.
+   */
+  @Get(':id/trace')
+  @SkipAudit('Read-only derived view.')
+  async trace(@Param('id', ParseUUIDPipe) id: string): Promise<SalesOrderTrace> {
+    return this.orders.trace(id);
   }
 
   @Get(':id')

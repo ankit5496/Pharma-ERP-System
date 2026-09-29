@@ -22,6 +22,7 @@ import {
 
 import { NewReturnForm, SalesReturnRowActions } from './return-actions';
 import {
+  Badge,
   Cell,
   col,
   EmptyState,
@@ -56,6 +57,10 @@ const COLUMNS = [
   'Invoice',
   'Date',
   col.right('Amount'),
+  // US-SAL-07: where the goods went. Worth a column of its own rather than a
+  // line in a dialog — whether returned stock is saleable again is the first
+  // thing asked of a return, and the Returns tab is where it is asked.
+  'Returned to stock',
   'Reason',
   'Status',
   'Actions',
@@ -224,6 +229,38 @@ function ReturnRow({ salesReturn }: { salesReturn: SalesReturnListItem }) {
         <p className="mt-0.5 text-[11px] text-slate-500">
           incl. <Money value={salesReturn.taxAmount} /> GST
         </p>
+      </Cell>
+
+      <Cell>
+        {/* US-SAL-07. What went back on the shelf, and on what terms. FREE /
+            UNRESERVED is the whole point: the units rejoin their original batch
+            without a reservation, so they are nobody's until somebody allocates
+            them — they are not handed to the next order automatically. */}
+        {salesReturn.restockedQuantity !== '0.000' ? (
+          <>
+            <p className="text-xs text-slate-800 tabular-nums">
+              {salesReturn.restockedQuantity}
+            </p>
+            <span className="mt-1 inline-block">
+              <Badge tone="green" title="Back on its original batch and not reserved for any order.">
+                Free / unreserved
+              </Badge>
+            </span>
+          </>
+        ) : salesReturn.quarantinedQuantity !== '0.000' ? (
+          <>
+            <p className="text-xs text-slate-500 tabular-nums">
+              {salesReturn.quarantinedQuantity}
+            </p>
+            <span className="mt-1 inline-block">
+              <Badge tone="amber" title="Held out of saleable stock.">
+                Not restocked
+              </Badge>
+            </span>
+          </>
+        ) : (
+          <p className="text-xs text-slate-400">&mdash;</p>
+        )}
       </Cell>
 
       <Cell>
