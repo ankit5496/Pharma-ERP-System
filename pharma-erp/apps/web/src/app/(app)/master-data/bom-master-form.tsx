@@ -223,20 +223,17 @@ export function BomMasterForm({
                 : 'Every quantity below is stated against this size.'
             }
           />
-          {/* US-MD-03. One figure for the whole formulation, which any line may
-              override. Blank stores 0 — no allowance — which is what every BOM
-              written before this field existed already had. */}
-          <TextField
-            name="defaultOveragePercent"
-            error={errorFor('defaultOveragePercent')}
-            label="Default Overage %"
-            type="number"
-            min="0"
-            step="0.01"
-            placeholder="0"
-            defaultValue={typed('defaultOveragePercent')}
-            hint="Applied to any raw material that does not set its own."
-          />
+          {/* NO OVERAGE FIELDS. US-MD-03 added a formulation default and a
+              per-line override; both are withdrawn at the product owner's
+              request, so a requirement is the bare BOM quantity scaled to the
+              batch.
+
+              The columns remain, at 0 and null — every BOM in the register was
+              already at zero, so nothing changed meaning, and the day overage
+              is wanted back it is two fields rather than a migration. The
+              arithmetic still runs through `requiredWithOverage`, which at zero
+              is the identity, so feasibility, the issue plan and the batch
+              variance all continue to agree with one another. */}
           {/* The change-control document this revision was raised under. FREE
               TEXT and unchecked: the reference belongs to whatever QMS the
               company keeps, which this system does not talk to. */}
@@ -278,7 +275,9 @@ export function BomMasterForm({
             <LineRow
               key={id}
               index={index}
-              columns={4}
+              // Material, quantity and overage. Stage is gone; the
+              // formulation-wide overage default is gone.
+              columns={3}
               canRemove={rawMaterials.ids.length > 1}
               onRemove={() => rawMaterials.remove(id)}
             >
@@ -307,15 +306,19 @@ export function BomMasterForm({
                 defaultValue={typed(`raw.${id}.quantityPer`)}
               />
               {/* US-MD-03. Wastage of 5–10% during manufacturing is normal and
-                  has to be built into what gets procured and issued — it used
-                  to be absorbed by a safety-stock buffer that no longer exists
-                  under the order-driven model.
+                  has to be built into what gets procured and issued.
 
-                  BLANK MEANS "use the formulation's default", which is not the
-                  same as 0. Zero says this material takes no overage whatever
-                  the default allows — an active dosed exactly, in a BOM that
-                  permits 5% on its excipients. The placeholder shows which
-                  figure a blank box will actually apply. */}
+                  PER MATERIAL, and only per material. The formulation-wide
+                  default was withdrawn, so there is nothing to inherit: blank
+                  means no allowance on this line, which is what every existing
+                  line already holds. An active dosed exactly and an excipient
+                  that always loses 5% sit on the same formulation, which is why
+                  the figure belongs on the line rather than above it.
+
+                  The same figure reaches the work-order feasibility check, the
+                  issue plan and the batch variance grid, through one shared
+                  helper — they disagreed once, and a batch showed a deviation
+                  equal to its own overage on every line. */}
               <TextField
                 name={`raw.${id}.overagePercent`}
                 label="Overage %"
@@ -323,21 +326,15 @@ export function BomMasterForm({
                 type="number"
                 min="0"
                 step="0.01"
-                placeholder={bom?.defaultOveragePercent ?? '0'}
+                placeholder="0"
                 defaultValue={typed(`raw.${id}.overagePercent`)}
-                hint="Blank uses the formulation default."
+                hint="Blank means no allowance."
               />
-              {/* Descriptive, and honest about it: nothing schedules by stage,
-                  but a formulation that names where each material goes in is
-                  worth more to whoever reads it than one that does not. */}
-              <TextField
-                name={`raw.${id}.manufacturingStage`}
-                label="Stage"
-                compact
-                maxLength={120}
-                placeholder="Granulation"
-                defaultValue={typed(`raw.${id}.manufacturingStage`)}
-              />
+
+              {/* NO STAGE. It described where a material goes in and nothing
+                  scheduled by it, so it was one more box on every line for a
+                  note nobody read back. The column remains and is empty across
+                  the register, so restoring it is a form change. */}
               {/* NO "MANDATORY" CHECKBOX. It shipped with US-MD-03 hinting
                   "Short stock blocks the issue", which no rule does: the
                   material issue treats every line alike and has never read the

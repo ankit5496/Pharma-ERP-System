@@ -585,13 +585,12 @@ export async function saveBomAction(
   // Line fields are named `raw.<row>.itemId` / `pack.<row>.itemId`, so the
   // rows are found by walking the names rather than by guessing how many
   // there are — rows can be added and removed in any order.
-  const lines: {
-    itemId: string;
-    quantityPer: string;
-    isMandatory?: boolean;
-    manufacturingStage?: string;
-    overagePercent?: string;
-  }[] = [];
+  // A material, a quantity and its wastage allowance. The API still accepts
+  // `isMandatory` and `manufacturingStage` on a line — the columns exist and
+  // other callers may set them — but this form asks for neither, so neither is
+  // declared here: a field in this shape that nothing assigns reads as an
+  // oversight rather than a decision.
+  const lines: { itemId: string; quantityPer: string; overagePercent?: string }[] = [];
 
   for (const [key, value] of formData.entries()) {
     const match = /^(raw|pack)\.(\d+)\.itemId$/.exec(key);
@@ -607,27 +606,27 @@ export async function saveBomAction(
       };
     }
 
-    const prefix = `${match[1]}.${match[2]}`;
-    const overagePercent = String(formData.get(`${prefix}.overagePercent`) ?? '').trim();
-    const manufacturingStage = String(formData.get(`${prefix}.manufacturingStage`) ?? '').trim();
+    const overagePercent = String(
+      formData.get(`${match[1]}.${match[2]}.overagePercent`) ?? '',
+    ).trim();
 
     lines.push({
       itemId: value,
       quantityPer,
-      // `isMandatory` IS NOT SENT. The form no longer asks — see the note in
-      // bom-master-form.tsx — so every line arrives undefined and the column
-      // keeps its DEFAULT TRUE, which is what every existing line already
-      // holds.
-      //
-      // Reading it from FormData here would be actively wrong now: an absent
-      // checkbox is indistinguishable from an unticked one, so the old
-      // expression would send false for every raw material on the form and
-      // rewrite the whole formulation on the first save.
-      ...(manufacturingStage ? { manufacturingStage } : {}),
-      // OMITTED WHEN BLANK, not sent as "0": blank means "use the
-      // formulation's default", and sending zero would store "no overage on
-      // this line" instead.
+      // OMITTED WHEN BLANK. There is no formulation-wide default any more, so
+      // blank and "0" mean the same thing — but sending "0" would write a
+      // figure onto every line nobody typed into, and the column's null is the
+      // honest record of a question not answered. Packing lines carry no
+      // overage box at all and so never reach this.
       ...(overagePercent ? { overagePercent } : {}),
+      // `isMandatory` and `manufacturingStage` are withdrawn from the form —
+      // see the notes in bom-master-form.tsx — so neither is read here and each
+      // column keeps its default.
+      //
+      // Reading a withdrawn field would be worse than pointless for the
+      // checkbox: an absent one is indistinguishable from an unticked one, so
+      // the old expression sent false for every raw material and would have
+      // rewritten the whole formulation on the first save.
     });
   }
 
@@ -657,7 +656,6 @@ export async function saveBomAction(
 
   const instructions = optional(formData, 'instructions');
   const changeControlId = optional(formData, 'changeControlId');
-  const defaultOveragePercent = optional(formData, 'defaultOveragePercent');
 
   const result = await apiFetch<BomView>(
     bomId ? `/api/v1/production/boms/${bomId}` : '/api/v1/production/boms',
@@ -672,14 +670,12 @@ export async function saveBomAction(
             // Sent as null when cleared, so an edit can remove a reference
             // that was entered by mistake.
             changeControlId: changeControlId ?? null,
-            ...(defaultOveragePercent ? { defaultOveragePercent } : {}),
           }
         : {
             productId,
             outputQuantity,
             lines,
             ...(changeControlId ? { changeControlId } : {}),
-            ...(defaultOveragePercent ? { defaultOveragePercent } : {}),
             // Absent from FormData when unticked, which is how a form spells
             // false.
             activate: formData.get('activate') !== null,

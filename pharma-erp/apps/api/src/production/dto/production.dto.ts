@@ -398,11 +398,47 @@ export class CreateProductionOrderDto {
   @IsOptional()
   @IsUUID()
   jobWorkOrderId?: string;
+
+  /**
+   * The sales order this batch is being made for — US-PROD-01.
+   *
+   * OPTIONAL HERE, and required by the service for an own-brand order: a
+   * job-work batch is made for a PRINCIPAL and has no sales order, so a
+   * mandatory field would refuse the job-work flow outright. The service knows
+   * which kind of order it is being asked for; this decorator does not.
+   */
+  @IsOptional()
+  @IsUUID()
+  salesOrderId?: string;
 }
 
 // ---------------------------------------------------------------------------
 // Batch record
 // ---------------------------------------------------------------------------
+
+/**
+ * What one raw material actually went into the batch — US-PROD-03.
+ *
+ * Shaped like {@link PackagingConsumptionDto}, which records the same thing on
+ * the packing side.
+ */
+export class MaterialConsumptionDto {
+  @IsUUID()
+  itemId!: string;
+
+  @Matches(QUANTITY, { message: `quantityConsumed ${QUANTITY_MESSAGE}` })
+  quantityConsumed!: string;
+
+  /** The lot it came out of, where the line recorded one. */
+  @IsOptional()
+  @IsUUID()
+  lotId?: string | null;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  notes?: string | null;
+}
 
 export class RecordBatchDto {
   @IsUUID()
@@ -414,6 +450,26 @@ export class RecordBatchDto {
 
   @Matches(QUANTITY, { message: `actualQuantity ${QUANTITY_MESSAGE}` })
   actualQuantity!: string;
+
+  /**
+   * What each material actually went in — US-PROD-03's "actual quantities
+   * consumed versus planned".
+   *
+   * OMITTED MEANS "as issued", not "nothing consumed". The service then seeds
+   * one row per material from the dispensing record, which is the figure that
+   * is right in the ordinary case: material goes to the floor and goes into the
+   * batch. A line is sent only where the two DIFFER — a return to store, a
+   * spillage, part of a drum left over.
+   *
+   * An empty array is therefore not the same as an absent field, and the
+   * distinction is deliberate: `[]` claims nothing was consumed at all.
+   */
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => MaterialConsumptionDto)
+  @ArrayMaxSize(100)
+  consumptions?: MaterialConsumptionDto[];
 }
 
 /**

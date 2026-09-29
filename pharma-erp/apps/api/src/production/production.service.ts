@@ -13,11 +13,18 @@ import type {
   ItemSummary,
   ItemType,
   ProductionOrderJobWorkTag,
+  ProductionOrderSalesOrderTag,
+  ProductionOrderStatus,
+  WorkOrderSalesOrderOption,
   ProductionStockLot,
   ProductionOrderSummary,
   WorkOrderFeasibility,
 } from '@pharma-erp/types';
-import { ITEM_CODE_DIGITS, ITEM_CODE_PREFIXES } from '@pharma-erp/types';
+import {
+  ITEM_CODE_DIGITS,
+  ITEM_CODE_PREFIXES,
+  REQUIRED_STOCK_SALES_ORDER_STATUSES,
+} from '@pharma-erp/types';
 
 import { withApprovedBy, withCreatedBy } from '../common/created-by';
 import { fieldBadRequest, fieldConflict } from '../common/field-error';
@@ -717,6 +724,31 @@ export class ProductionService {
     mapping: { select: { principalBrandName: true } },
   } as const;
 
+  /** Selected wherever a work order is read, matching JOB_WORK_TAG_SELECT. */
+  private static readonly SALES_ORDER_TAG_SELECT = {
+    id: true,
+    orderNumber: true,
+    customer: { select: { name: true } },
+  } as const;
+
+  /**
+   * The customer order this batch fills, or null — US-PROD-01.
+   *
+   * Null on job work, where the counterparty is a principal, and on every work
+   * order raised before the link existed.
+   */
+  private static salesOrderTag(
+    row: { id: string; orderNumber: string; customer: { name: string } } | null,
+  ): ProductionOrderSalesOrderTag | null {
+    if (!row) return null;
+
+    return {
+      salesOrderId: row.id,
+      orderNumber: row.orderNumber,
+      customerName: row.customer.name,
+    };
+  }
+
   /** The tag as the view carries it, or null for our own production. */
   private static jobWorkTag(
     row: {
@@ -750,6 +782,7 @@ export class ProductionService {
         bom: { select: { version: true } },
         createdBy: { select: { fullName: true } },
         jobWorkOrder: { select: ProductionService.JOB_WORK_TAG_SELECT },
+        salesOrder: { select: ProductionService.SALES_ORDER_TAG_SELECT },
         batches: {
           where: { deletedAt: null },
           select: { id: true, batchNumber: true, releaseStatus: true },
@@ -776,6 +809,7 @@ export class ProductionService {
         batchId: batch?.id ?? null,
         releaseStatus: batch?.releaseStatus ?? null,
         jobWork: ProductionService.jobWorkTag(order.jobWorkOrder),
+        salesOrder: ProductionService.salesOrderTag(order.salesOrder),
       };
     });
   }
@@ -938,6 +972,15 @@ export class ProductionService {
      * order that the material issue then refuses, which is the worst of both.
      */
     bucket: StockBucketRule = { ownership: 'COMPANY_OWNED', jobWorkOrderId: null },
+    /**
+     * The sales order this work order fills, when it fills one — US-PROD-02.
+     *
+     * Holds placed for THIS order still count as available to it; holds for any
+     * other order are subtracted. Null — job work, or an order with no customer
+     * behind it — subtracts every live hold, because none of them was placed
+     * for this work.
+     */
+    salesOrderId: string | null = null,
   ): Promise<
     {
       itemId: string;
@@ -983,12 +1026,41 @@ export class ProductionService {
       grouped.map((row) => [row.itemId, row._sum.quantityAvailable ?? new Prisma.Decimal(0)]),
     );
 
+    // WHAT SOMEBODY ELSE HAS A CLAIM ON — US-PROD-02, and the same rule the
+    // FEFO allocator applies lot by lot. Counting stock that incoming QC has
+    // held for a different sales order would pass a work order whose material
+    // issue then refuses it, which is precisely the mismatch the bucket filter
+    // above exists to avoid.
+    //
+    // A hold for THIS order is not subtracted: it was placed so this order
+    // could be made from it.
+    const heldByItem = new Map<string, Prisma.Decimal>();
+
+    const holds = await this.prisma.scoped.stockReservation.findMany({
+      where: {
+        releasedAt: null,
+        stockLot: { itemId: { in: itemIds }, ...issuableStockWhere() },
+        ...(salesOrderId ? { NOT: { salesOrderId } } : {}),
+      },
+      select: { quantity: true, stockLot: { select: { itemId: true } } },
+    });
+
+    for (const hold of holds) {
+      const itemId = hold.stockLot.itemId;
+
+      heldByItem.set(itemId, (heldByItem.get(itemId) ?? new Prisma.Decimal(0)).add(hold.quantity));
+    }
+
     const shortages = [];
 
     for (const line of bom.lines) {
       // OVERAGE-ADJUSTED per US-MD-03, not the bare BOM quantity.
       const required = requiredWithOverage(line.quantityPer, scale, effectiveOverage(line, bom));
-      const available = new Prisma.Decimal(availableById.get(line.itemId) ?? 0).toDecimalPlaces(3);
+      const held = heldByItem.get(line.itemId) ?? new Prisma.Decimal(0);
+      const available = Prisma.Decimal.max(
+        new Prisma.Decimal(availableById.get(line.itemId) ?? 0).sub(held),
+        0,
+      ).toDecimalPlaces(3);
 
       if (available.greaterThanOrEqualTo(required)) continue;
 
@@ -1041,6 +1113,35 @@ export class ProductionService {
       );
     }
 
+    // US-PROD-01: "Work Order is linked to the Sales Order that caused it and
+    // cannot be created independently of one, under this MVP's order-driven
+    // scope."
+    //
+    // ASKED OF AN OWN-BRAND ORDER ONLY. A job-work batch is made for a
+    // PRINCIPAL and has no customer order behind it — the counterparty is the
+    // job-work order resolved above — so requiring one would refuse the whole
+    // job-work flow. The database keeps the two mutually exclusive; this
+    // decides which of them a given order must have.
+    const salesOrder = dto.salesOrderId
+      ? await this.requireSalesOrderFor(dto.salesOrderId, dto.productId)
+      : null;
+
+    if (!jobWork && !salesOrder) {
+      throw fieldBadRequest(
+        'salesOrderId',
+        'Choose the sales order this batch is being made for. Production is order-driven: ' +
+          'a work order exists to fill a confirmed order, or it is job work for a principal.',
+      );
+    }
+
+    if (jobWork && salesOrder) {
+      throw fieldBadRequest(
+        'salesOrderId',
+        `${jobWork.orderNumber} is job work for a principal, so this batch is not being made ` +
+          'against a customer order. Leave the sales order blank.',
+      );
+    }
+
     const bom = await this.prisma.scoped.bom.findFirst({
       where: { productId: dto.productId, isActive: true, deletedAt: null },
       include: { product: true, lines: true },
@@ -1077,16 +1178,6 @@ export class ProductionService {
       );
     }
 
-    // US-PROD-01: "The system must block work-order confirmation if any
-    // required raw material is insufficient in stock."
-    //
-    // The same arithmetic the issue plan uses, asked one step earlier. A work
-    // order raised against stock that does not exist is a promise the store
-    // cannot keep: it sits in the queue looking schedulable until the day
-    // someone tries to dispense it.
-    //
-    // A CHECK, a preview and this all read the same numbers, so the answer
-    // cannot differ between the screen and the save.
     // CONTROLS 4 and 5, at the earliest point they can be asked. Under
     // PURE_CONVERSION this counts the principal's material and nothing else, so
     // a work order our own stock could cover is still refused when theirs
@@ -1096,8 +1187,36 @@ export class ProductionService {
       jobWorkBillingModel: jobWork?.billingModel ?? null,
     });
 
-    const shortages = await this.materialShortages(bom, dto.plannedQuantity, bucket);
+    // The order's own sales order counts its own holds as available — see
+    // US-PROD-02 on `materialShortages`.
+    const shortages = await this.materialShortages(
+      bom,
+      dto.plannedQuantity,
+      bucket,
+      salesOrder?.id ?? null,
+    );
 
+    /**
+     * A SHORTAGE REFUSES THE ORDER — by decision, and against the revised
+     * US-PROD-01's letter.
+     *
+     * The revision says a work order may be raised as a plan even when stock is
+     * short, and that the shortfall is what drives procurement. That was built
+     * and then withdrawn at the product owner's request: the register is a list
+     * of work the floor can actually pick up, and filling it with orders that
+     * cannot be started makes it something to filter rather than something to
+     * work from.
+     *
+     * SO THE MATERIAL HAS TO EXIST FIRST. The required-stock sweep in
+     * Procure-to-Pay already reads live sales orders, computes the same
+     * shortfall and raises the requisitions, so nothing is lost by refusing
+     * here — the demand signal comes from the sales order, and always did. What
+     * changes is only that the work order is raised after the goods land rather
+     * than before.
+     *
+     * The message names every short material and its figures, because "not
+     * enough stock" without them leaves somebody to work out which.
+     */
     if (shortages.length > 0) {
       const detail = shortages
         .map((line) => `${line.code} — short ${line.short} ${line.uom} of ${line.required}`)
@@ -1111,8 +1230,8 @@ export class ProductionService {
               `${jobWork?.orderNumber} counts — company-owned stock cannot be used. Record ` +
               "the principal's delivery challan, or reduce the batch size."
             : 'Only stock released by incoming QC counts — quarantined and rejected lots are ' +
-              'not available to production. Raise a purchase requisition, or reduce the ' +
-              'batch size.'),
+              'not available to production, and neither is stock held for another order. The ' +
+              'required-stock screen in Procure-to-Pay shows what is on order.'),
       );
     }
 
@@ -1132,6 +1251,19 @@ export class ProductionService {
           // trigger refuses to change either once the order leaves PLANNED.
           jobWorkOrderId: jobWork?.id ?? null,
           jobWorkBillingModel: jobWork?.billingModel ?? null,
+          // US-PROD-01. Null on a job-work order, and the CHECK constraint
+          // refuses a row carrying both.
+          salesOrderId: salesOrder?.id ?? null,
+          // US-PROD-06. Creation is refused above while anything is short, so
+          // an order that reaches this line has its material and is ready by
+          // definition.
+          //
+          // READY_TO_START IS STILL NOT A FORMALITY: `refreshReadiness` runs
+          // again when the issue is attempted, and sends the order back to
+          // PLANNED if another order has consumed the stock in between. The
+          // state means "ready as far as anyone last checked", not "ready
+          // forever".
+          status: 'READY_TO_START',
           createdById: userId,
         },
         include: {
@@ -1139,6 +1271,7 @@ export class ProductionService {
           bom: { select: { version: true } },
           createdBy: { select: { fullName: true } },
           jobWorkOrder: { select: ProductionService.JOB_WORK_TAG_SELECT },
+          salesOrder: { select: ProductionService.SALES_ORDER_TAG_SELECT },
         },
       });
 
@@ -1156,8 +1289,206 @@ export class ProductionService {
         batchId: null,
         releaseStatus: null,
         jobWork: ProductionService.jobWorkTag(order.jobWorkOrder),
+        salesOrder: ProductionService.salesOrderTag(order.salesOrder),
       };
     });
+  }
+
+  /**
+   * Re-evaluates the readiness gate on a work order — US-PROD-06.
+   *
+   * "A Work Order remains Planned until all of its required materials have
+   * actually been received and reserved, and only moves to Ready to Start once
+   * the full material requirement is satisfied."
+   *
+   * WHAT "SATISFIED" MEANS HERE: every material the order's own formulation
+   * calls for, at the overage-adjusted quantity, is issuable today — released
+   * by QC, in date, in the right ownership bucket, and not held for a different
+   * sales order. That is the same question `materialShortages` already answers
+   * for the work-order gate, asked of an order that already exists.
+   *
+   * NOT DRIVEN BY A SHORTFALL RECORD. The story describes waiting on a
+   * Material Requirement Determination and its purchase requisitions; the
+   * required-stock sweep in Procure-to-Pay now computes that from live orders
+   * rather than storing it, so there is no row to wait on. Asking the stock
+   * directly answers the same question — "is the physical material here" — and
+   * cannot fall out of step with a determination made yesterday.
+   *
+   * IT MOVES IN BOTH DIRECTIONS. Material can be consumed by another order
+   * between two calls, so an order that was ready can stop being ready; a gate
+   * that only ever opened would let a batch start against stock that has since
+   * gone. Only PLANNED and READY_TO_START are touched — once material has been
+   * issued the question is settled, and re-opening it would drag a batch in
+   * progress backwards.
+   */
+  async refreshReadiness(productionOrderId: string): Promise<ProductionOrderStatus> {
+    const order = await this.prisma.scoped.productionOrder.findFirst({
+      where: { id: productionOrderId, deletedAt: null },
+      include: { bom: { include: { lines: true } } },
+    });
+
+    if (!order) throw new NotFoundException('That work order does not exist.');
+
+    if (order.status !== 'PLANNED' && order.status !== 'READY_TO_START') {
+      return order.status;
+    }
+
+    const shortages = await this.materialShortages(
+      order.bom,
+      order.plannedQuantity.toString(),
+      stockBucketFor(order),
+      order.salesOrderId,
+    );
+
+    const ready = shortages.length === 0 ? 'READY_TO_START' : 'PLANNED';
+
+    // Written only on a CHANGE. An update per call would touch `updated_at` on
+    // every read of the register and make the audit trail a log of nothing
+    // happening.
+    if (ready !== order.status) {
+      await this.prisma.scoped.productionOrder.update({
+        where: { id: order.id },
+        data: { status: ready },
+      });
+    }
+
+    return ready;
+  }
+
+  /**
+   * Which sales orders a work order for this product could be raised against —
+   * US-PROD-01, for the picker on the form.
+   *
+   * LIVE ORDERS ONLY, through the same four statuses the required-stock sweep
+   * treats as real demand. A draft has not been committed to, and a despatched
+   * or cancelled order needs nothing made for it.
+   *
+   * THE OUTSTANDING QUANTITY IS WHAT THE FORM DEFAULTS FROM, not the ordered
+   * quantity. An order for 500,000 with a work order already covering 300,000
+   * needs 200,000, and defaulting to the full figure would quietly double the
+   * second batch. Work orders already raised are subtracted, except cancelled
+   * ones — those cover nothing.
+   *
+   * An order with nothing outstanding is dropped rather than offered at zero:
+   * it is fully covered, and a picker entry that produces a refused work order
+   * is worse than one that is absent.
+   */
+  async salesOrderOptionsFor(productId: string): Promise<WorkOrderSalesOrderOption[]> {
+    const lines = await this.prisma.scoped.salesOrderItem.findMany({
+      where: {
+        itemId: productId,
+        salesOrder: {
+          deletedAt: null,
+          status: { in: [...REQUIRED_STOCK_SALES_ORDER_STATUSES] },
+        },
+      },
+      select: {
+        quantityOrdered: true,
+        salesOrder: {
+          select: {
+            id: true,
+            orderNumber: true,
+            requestedDeliveryDate: true,
+            customer: { select: { name: true } },
+            productionOrders: {
+              where: { deletedAt: null, status: { not: 'CANCELLED' }, productId },
+              select: { plannedQuantity: true },
+            },
+          },
+        },
+      },
+      orderBy: [{ salesOrder: { orderDate: 'asc' } }],
+    });
+
+    const options: WorkOrderSalesOrderOption[] = [];
+
+    for (const line of lines) {
+      const covered = line.salesOrder.productionOrders.reduce(
+        (total, order) => total.add(order.plannedQuantity),
+        new Prisma.Decimal(0),
+      );
+
+      const outstanding = new Prisma.Decimal(line.quantityOrdered)
+        .sub(covered)
+        .toDecimalPlaces(3);
+
+      if (outstanding.lessThanOrEqualTo(0)) continue;
+
+      options.push({
+        salesOrderId: line.salesOrder.id,
+        orderNumber: line.salesOrder.orderNumber,
+        customerName: line.salesOrder.customer.name,
+        quantityOrdered: line.quantityOrdered.toString(),
+        quantityOutstanding: outstanding.toString(),
+        requestedDeliveryDate: line.salesOrder.requestedDeliveryDate
+          ? toIsoDate(line.salesOrder.requestedDeliveryDate)
+          : null,
+      });
+    }
+
+    return options;
+  }
+
+  /**
+   * The sales order a work order is being raised for — US-PROD-01.
+   *
+   * THREE THINGS ARE CHECKED, and each refuses a different mistake:
+   *
+   * IT EXISTS, and is not deleted. A work order citing an order that is not
+   * there would leave the batch with nothing to explain why it was made.
+   *
+   * IT IS STILL LIVE. A CANCELLED order is not something to manufacture
+   * against — the customer has withdrawn it — and a COMPLETED one has already
+   * been despatched and invoiced, so a batch raised for it now fills nothing.
+   * A DRAFT is refused too: it has not passed the licence and credit gates, and
+   * making stock for an order that may be blocked is exactly what the
+   * order-driven model exists to stop.
+   *
+   * THE PRODUCT IS ON IT. Making Novamox against an order for GastroEase is a
+   * batch nobody asked for, and the mistake is easy: both pickers are on the
+   * same form. This is the check that makes the link mean something rather
+   * than being a reference anybody can fill in with anything.
+   */
+  private async requireSalesOrderFor(salesOrderId: string, productId: string) {
+    const order = await this.prisma.scoped.salesOrder.findFirst({
+      where: { id: salesOrderId, deletedAt: null },
+      select: {
+        id: true,
+        orderNumber: true,
+        status: true,
+        items: { select: { itemId: true } },
+      },
+    });
+
+    if (!order) {
+      throw fieldBadRequest('salesOrderId', 'That sales order does not exist.');
+    }
+
+    if (order.status === 'CANCELLED' || order.status === 'COMPLETED') {
+      throw fieldBadRequest(
+        'salesOrderId',
+        `${order.orderNumber} is ${order.status.toLowerCase()}, so there is nothing left to ` +
+          'make for it.',
+      );
+    }
+
+    if (order.status === 'DRAFT') {
+      throw fieldBadRequest(
+        'salesOrderId',
+        `${order.orderNumber} has not been confirmed yet. Run its licence and credit check ` +
+          'before making stock against it.',
+      );
+    }
+
+    if (!order.items.some((line) => line.itemId === productId)) {
+      throw fieldBadRequest(
+        'productId',
+        `${order.orderNumber} does not have that product on it. Choose the product the order ` +
+          'actually asks for, or a different order.',
+      );
+    }
+
+    return order;
   }
 
   /**
