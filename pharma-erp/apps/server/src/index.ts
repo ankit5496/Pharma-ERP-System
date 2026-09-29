@@ -26,7 +26,10 @@ async function main(): Promise<void> {
   const apiHandler = apiApp.getHttpAdapter().getInstance();
 
   const server = http.createServer((req, res) => {
-    if (req.url?.startsWith('/api/') || req.url?.startsWith('/health')) {
+    // /api/v1/, not /api/: the API's global prefix is api/v1, and apps/web has
+    // its own Route Handlers under /api (e.g. /api/documents/...) that must
+    // still reach Next.js.
+    if (req.url?.startsWith('/api/v1/') || req.url?.startsWith('/health')) {
       apiHandler(req, res);
     } else {
       void nextHandler(req, res);

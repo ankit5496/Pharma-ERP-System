@@ -2,6 +2,8 @@ import { cookies } from 'next/headers';
 import { NextResponse, type NextRequest } from 'next/server';
 import { AUTH_ROUTES, SESSION_COOKIE_NAME } from '@pharma-erp/types';
 
+import { publicUrl } from '@/lib/public-url';
+
 /**
  * Clears the tenant session and returns to sign-in.
  *
@@ -21,7 +23,7 @@ export async function GET(request: NextRequest) {
   const store = await cookies();
   store.delete(SESSION_COOKIE_NAME);
 
-  const target = new URL(AUTH_ROUTES.login, request.url);
+  const target = publicUrl(AUTH_ROUTES.login, request);
 
   // Distinguishes "your session ended" from a fresh visit, so the login page can
   // say so rather than leaving the user wondering why they were signed out.

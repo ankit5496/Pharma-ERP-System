@@ -6,6 +6,8 @@ import {
   SESSION_COOKIE_NAME,
 } from '@pharma-erp/types';
 
+import { publicUrl } from '@/lib/public-url';
+
 /** Reachable without a session. Everything else requires one. */
 const PUBLIC_PATHS = new Set<string>([AUTH_ROUTES.login]);
 
@@ -47,26 +49,26 @@ export function middleware(request: NextRequest) {
 
     if (pathname === PLATFORM_ROUTES.login) {
       return hasPlatformSession
-        ? NextResponse.redirect(new URL(PLATFORM_ROUTES.dashboard, request.url))
+        ? NextResponse.redirect(publicUrl(PLATFORM_ROUTES.dashboard, request))
         : NextResponse.next();
     }
 
     return hasPlatformSession
       ? NextResponse.next()
-      : NextResponse.redirect(new URL(PLATFORM_ROUTES.login, request.url));
+      : NextResponse.redirect(publicUrl(PLATFORM_ROUTES.login, request));
   }
 
   const hasSession = Boolean(request.cookies.get(SESSION_COOKIE_NAME)?.value);
 
   if (PUBLIC_PATHS.has(pathname)) {
     if (hasSession) {
-      return NextResponse.redirect(new URL(AUTH_ROUTES.afterLogin, request.url));
+      return NextResponse.redirect(publicUrl(AUTH_ROUTES.afterLogin, request));
     }
     return NextResponse.next();
   }
 
   if (!hasSession) {
-    const target = new URL(AUTH_ROUTES.login, request.url);
+    const target = publicUrl(AUTH_ROUTES.login, request);
     // Preserved so a deep link survives sign-in. Only the path and query are
     // kept — taking the whole URL from the request would let an open-redirect
     // parameter ride along.
