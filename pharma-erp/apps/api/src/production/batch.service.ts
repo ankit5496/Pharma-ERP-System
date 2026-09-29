@@ -109,6 +109,71 @@ export class BatchService {
 
     const shelfLifeMonths = order.product.shelfLifeMonths ?? BatchService.DEFAULT_SHELF_LIFE_MONTHS;
 
+    /**
+     * What each material actually went in — US-PROD-03.
+     *
+     * SEEDED FROM WHAT WAS ISSUED, then overridden line by line. The story asks
+     * for "actual quantities consumed versus planned", and the sheet notes the
+     * trap in asking for it plainly: consumed and issued were two independently
+     * typed figures with nothing enforcing that they agree, so a batch record
+     * could claim material the store never dispensed.
+     *
+     * Issued is the right default because it is right nearly always — material
+     * goes to the floor and goes into the batch. A line is sent only where the
+     * two DIFFER: a return to store, a spillage, part of a drum left over. That
+     * makes the exception the thing somebody types, which is the only version
+     * of this anybody keeps up.
+     */
+    const issued = await this.prisma.scoped.materialIssueLine.groupBy({
+      by: ['itemId', 'lotId'],
+      where: { materialIssue: { productionOrderId: order.id } },
+      _sum: { quantityIssued: true },
+    });
+
+    const overrides = new Map(
+      (dto.consumptions ?? []).map((line) => [line.itemId, line] as const),
+    );
+
+    const consumptions = issued.map((row) => {
+      const override = overrides.get(row.itemId);
+
+      return {
+        itemId: row.itemId,
+        quantityConsumed: override
+          ? new Prisma.Decimal(override.quantityConsumed)
+          : (row._sum.quantityIssued ?? ZERO),
+        // The lot the issue drew from, unless the correction names another.
+        lotId: override?.lotId ?? row.lotId,
+        notes: override?.notes?.trim() || null,
+      };
+    });
+
+    // A material named in a correction that was never issued. Refused rather
+    // than silently added: it means the wrong item was picked, or material went
+    // in that the store has no record of releasing — and a batch record
+    // claiming stock nobody dispensed is exactly what this figure exists to
+    // prevent.
+    const unissued = [...overrides.keys()].filter(
+      (itemId) => !issued.some((row) => row.itemId === itemId),
+    );
+
+    if (unissued.length > 0) {
+      const names = await this.prisma.scoped.item.findMany({
+        where: { id: { in: unissued } },
+        select: { code: true, name: true },
+      });
+
+      const listed = names.length
+        ? names.map((item) => `${item.name} (${item.code})`).join(', ')
+        : unissued.join(', ');
+
+      throw new BadRequestException(
+        `${listed} ${names.length === 1 ? 'was' : 'were'} not issued against ` +
+          `${order.orderNumber}, so there is no consumption to record. Dispense the material ` +
+          'first, or correct the line.',
+      );
+    }
+
     const batchId = await this.prisma.transaction(async (tx) => {
       const batchNumber = await this.nextBatchNumber(tx, manufacturedOn);
 
@@ -124,6 +189,10 @@ export class BatchService {
           expiryDate: addMonths(manufacturedOn, shelfLifeMonths),
           plannedQuantity: order.plannedQuantity,
           actualQuantity: new Prisma.Decimal(dto.actualQuantity),
+          // One row per material per lot, written with the batch rather than
+          // after it: a batch record whose consumption failed to save would
+          // report a variance against nothing.
+          materialConsumptions: { create: consumptions.map((line) => ({ tenantId, ...line })) },
         },
       });
 
@@ -276,7 +345,12 @@ export class BatchService {
 
     const batch = await this.prisma.scoped.batch.findFirst({
       where: { id: batchId, deletedAt: null },
-      include: { packingRecord: true, productionOrder: { select: { productId: true } } },
+      include: {
+        packingRecord: true,
+        // `salesOrderId` for US-PROD-05: the released lot is tagged with the
+        // order the batch was made for, and the tag is read from here.
+        productionOrder: { select: { productId: true, salesOrderId: true } },
+      },
     });
 
     if (!batch) throw new NotFoundException('That batch does not exist.');
@@ -327,6 +401,16 @@ export class BatchService {
             quantityAvailable: batch.packingRecord.packedQuantity,
             // Copied so the FEFO index for despatch lives on this table alone.
             expiryDate: batch.expiryDate,
+            // US-PROD-05: "tagged Reserved to the Work Order's originating
+            // Sales Order at the moment of creation" — in the same transaction
+            // as the release, which is what "at the moment of creation" means.
+            //
+            // Copied rather than joined through the work order, for the same
+            // reason the expiry above is: this records what the stock was made
+            // for, and amending the work order later must not rewrite it.
+            //
+            // Null on job work, where the counterparty is a principal.
+            salesOrderId: batch.productionOrder.salesOrderId,
           },
         });
       }
@@ -505,6 +589,7 @@ export class BatchService {
    * batch, which is how a variance flag stops meaning anything.
    */
   private async materialVariances(batch: {
+    id: string;
     plannedQuantity: Prisma.Decimal;
     productionOrderId: string;
     productionOrder: {
@@ -519,15 +604,39 @@ export class BatchService {
       };
     };
   }): Promise<BatchMaterialVariance[]> {
-    const issued = await this.prisma.scoped.materialIssueLine.groupBy({
+    /**
+     * WHAT WENT IN, which is not what was dispensed — US-PROD-03.
+     *
+     * Read from the batch's own consumption rows, summed across lots: a
+     * material drawn from two drums is two rows and one figure here.
+     *
+     * FALLING BACK TO THE ISSUE for a batch recorded before those rows existed.
+     * Reporting zero consumed against a real planned figure would flag every
+     * historical batch as a total shortfall, which is a screen full of alarms
+     * about nothing — and issued was what this grid compared against for the
+     * whole of that period, so it is also the honest reading of those records.
+     */
+    const consumed = await this.prisma.scoped.batchMaterialConsumption.groupBy({
       by: ['itemId'],
-      where: { materialIssue: { productionOrderId: batch.productionOrderId } },
-      _sum: { quantityIssued: true },
+      where: { batchId: batch.id },
+      _sum: { quantityConsumed: true },
     });
 
-    const issuedByItem = new Map(
-      issued.map((row) => [row.itemId, row._sum.quantityIssued ?? ZERO]),
+    const consumedByItem = new Map(
+      consumed.map((row) => [row.itemId, row._sum.quantityConsumed ?? ZERO]),
     );
+
+    if (consumedByItem.size === 0) {
+      const issued = await this.prisma.scoped.materialIssueLine.groupBy({
+        by: ['itemId'],
+        where: { materialIssue: { productionOrderId: batch.productionOrderId } },
+        _sum: { quantityIssued: true },
+      });
+
+      for (const row of issued) {
+        consumedByItem.set(row.itemId, row._sum.quantityIssued ?? ZERO);
+      }
+    }
 
     const scale = new Prisma.Decimal(batch.productionOrder.plannedQuantity).div(
       batch.productionOrder.bom.outputQuantity,
@@ -539,7 +648,7 @@ export class BatchService {
         scale,
         effectiveOverage(line, batch.productionOrder.bom),
       );
-      const actual = new Prisma.Decimal(issuedByItem.get(line.itemId) ?? ZERO);
+      const actual = new Prisma.Decimal(consumedByItem.get(line.itemId) ?? ZERO);
 
       // Guard the divide: a planned quantity of zero cannot occur (the CHECK
       // constraint forbids it) but the arithmetic should not depend on that.
@@ -550,7 +659,7 @@ export class BatchService {
       return {
         item: toItemSummary(line.item),
         quantityPlanned: planned.toString(),
-        quantityIssued: actual.toString(),
+        quantityConsumed: actual.toString(),
         variancePercent: variance.toString(),
         flagged: variance.abs().greaterThan(BatchService.VARIANCE_THRESHOLD_PERCENT),
       };

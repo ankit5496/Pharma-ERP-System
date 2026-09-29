@@ -9,6 +9,7 @@ import type {
   ProductionOrderSummary,
   ProductionStockLot,
   WorkOrderFeasibility,
+  WorkOrderSalesOrderOption,
 } from '@pharma-erp/types';
 
 import { apiFetch } from '@/lib/api';
@@ -44,6 +45,7 @@ export async function createProductionOrderAction(
   const productId = String(formData.get('productId') ?? '');
   const plannedQuantity = String(formData.get('plannedQuantity') ?? '').trim();
   const plannedStartOn = String(formData.get('plannedStartOn') ?? '').trim();
+  const salesOrderId = String(formData.get('salesOrderId') ?? '').trim();
 
   if (!productId || !plannedQuantity) {
     return { ok: false, message: 'Choose a product and enter a quantity.' };
@@ -56,6 +58,11 @@ export async function createProductionOrderAction(
       productId,
       plannedQuantity,
       ...(plannedStartOn ? { plannedStartOn } : {}),
+      // US-PROD-01. OMITTED WHEN BLANK rather than sent as "": the DTO's
+      // @IsUUID would refuse an empty string, and the API's own rule — own-brand
+      // needs an order, job work must not have one — is the thing that should
+      // produce the message, not a format error about a field nobody filled in.
+      ...(salesOrderId ? { salesOrderId } : {}),
     },
     timeoutMs: 20_000,
   });
@@ -329,6 +336,30 @@ export async function checkWorkOrderFeasibilityAction(
   if (!result.ok) return { ok: false, message: result.error };
 
   return { ok: true, data: result.data };
+}
+
+/**
+ * Which sales orders a work order for this product could fill — US-PROD-01.
+ *
+ * Asked once a product is chosen rather than up front: the answer depends
+ * entirely on the product, and the list for "no product" is every order in the
+ * register, which is not a picklist anybody can use.
+ *
+ * Failure returns an EMPTY LIST rather than an error. The picker is one field
+ * on a form; a failed lookup should leave it empty and let the API refuse the
+ * save with a proper message, not block the form on a fetch nobody asked for.
+ */
+export async function workOrderSalesOrderOptionsAction(
+  productId: string,
+): Promise<WorkOrderSalesOrderOption[]> {
+  if (!productId) return [];
+
+  const result = await apiFetch<WorkOrderSalesOrderOption[]>(
+    `/api/v1/production/orders/sales-order-options?productId=${encodeURIComponent(productId)}`,
+    { authenticated: true, timeoutMs: 20_000 },
+  );
+
+  return result.ok ? result.data : [];
 }
 
 /**

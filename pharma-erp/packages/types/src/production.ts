@@ -28,6 +28,8 @@ import type { ItemSummary, ItemType, ScheduleClassification, StockLotStatus } fr
  */
 export const PRODUCTION_ORDER_STATUSES = [
   'PLANNED',
+  /** US-PROD-06: every required material is on hand and the batch may begin. */
+  'READY_TO_START',
   'MATERIAL_ISSUED',
   'IN_PROGRESS',
   'PACKED',
@@ -80,6 +82,7 @@ export const GST_RATES = ['0', '5', '12', '18', '28'] as const;
 
 export const PRODUCTION_ORDER_STATUS_LABELS: Record<ProductionOrderStatus, string> = {
   PLANNED: 'Planned',
+  READY_TO_START: 'Ready to start',
   MATERIAL_ISSUED: 'Material issued',
   IN_PROGRESS: 'In progress',
   PACKED: 'Packed',
@@ -343,6 +346,46 @@ export interface ProductionOrderSummary {
    * Null for the company's own production, which is most of it.
    */
   jobWork: ProductionOrderJobWorkTag | null;
+
+  /**
+   * The sales order this batch is being made for — US-PROD-01.
+   *
+   * MUTUALLY EXCLUSIVE WITH `jobWork`, and for the same reason it is carried
+   * here: a work order answers either a customer's order or a principal's
+   * instruction, and which one it is decides whose the finished goods are. A
+   * database CHECK keeps the pair exclusive.
+   *
+   * Null on a job-work order, and on every work order raised before the link
+   * existed.
+   */
+  salesOrder: ProductionOrderSalesOrderTag | null;
+}
+
+/** The customer order a work order was raised to fill — US-PROD-01. */
+export interface ProductionOrderSalesOrderTag {
+  salesOrderId: string;
+  /** SO-YYYY-NNNN. */
+  orderNumber: string;
+  customerName: string;
+}
+
+/**
+ * A sales order a work order could be raised against, for the picker —
+ * US-PROD-01.
+ *
+ * ONE ROW PER ORDER LINE, not per order, because the quantity is the point: the
+ * form defaults the batch size from what the order actually asks for, and an
+ * order with two lines of the same product is two different answers.
+ */
+export interface WorkOrderSalesOrderOption {
+  salesOrderId: string;
+  orderNumber: string;
+  customerName: string;
+  /** What the order asks for, before anything already made against it. */
+  quantityOrdered: string;
+  /** Still to be made: ordered less what other work orders already cover. */
+  quantityOutstanding: string;
+  requestedDeliveryDate: string | null;
 }
 
 /** Who a job-work production order belongs to, and on what terms. */
@@ -541,7 +584,19 @@ export interface MaterialIssueView {
 export interface BatchMaterialVariance {
   item: ItemSummary;
   quantityPlanned: string;
-  quantityIssued: string;
+  /**
+   * What actually went into the batch — US-PROD-03, summed across lots.
+   *
+   * NOT WHAT WAS DISPENSED, which is the figure this used to carry. Material is
+   * returned to store, spilt, or a drum is opened and only part of it used, and
+   * "what we gave the floor" is a different claim from "what went in" — the
+   * second is the one a yield investigation asks about.
+   *
+   * Falls back to the issued figure for a batch recorded before consumption
+   * was captured, so historical records read as they always did rather than
+   * reporting a total shortfall.
+   */
+  quantityConsumed: string;
   variancePercent: string;
   /** True when |variancePercent| exceeds the review threshold. */
   flagged: boolean;
