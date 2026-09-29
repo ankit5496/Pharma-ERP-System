@@ -10,6 +10,7 @@ import { AuditModule } from './common/audit/audit.module';
 import { validateEnv } from './config/env.validation';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { HealthModule } from './health/health.module';
+import { InventoryModule } from './inventory/inventory.module';
 import { JobWorkModule } from './job-work/job-work.module';
 import { LicencesModule } from './licences/licences.module';
 import { MastersModule } from './masters/masters.module';
@@ -48,6 +49,7 @@ import { UsersModule } from './users/users.module';
     PartiesModule,
     LicencesModule,
     NotificationsModule,
+    InventoryModule,
     JobWorkModule,
     PackagingModule,
     ProductionModule,

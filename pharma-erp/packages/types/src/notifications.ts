@@ -13,6 +13,8 @@
  * been read.
  */
 
+import { masterDataHref } from './master-data';
+
 export const NOTIFICATION_KINDS = ['LICENCE_EXPIRY'] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
 
@@ -45,5 +47,9 @@ export interface MarkNotificationsRequest {
   read: boolean;
 }
 
-/** Where a licence notification sends you: the alert on the dashboard. */
-export const LICENCE_ALERT_HREF = '/dashboard#licence-alert';
+/**
+ * Where a licence notification sends you: the licence register itself, where
+ * renewing means editing the expiry date. Same target as the dashboard's
+ * "Open the register" button.
+ */
+export const LICENCE_REGISTER_HREF = masterDataHref('licence-compliance');
