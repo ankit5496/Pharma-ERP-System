@@ -11,10 +11,15 @@
  * Held as data for the same reason WORKFLOWS is: adding a third section is a
  * few lines here rather than another branch in a component.
  *
- * NO ROLE GATING, matching WORKFLOWS. Worth restating so it is not mistaken for
- * an oversight: hiding a menu entry has never been the security boundary.
- * RolesGuard and row-level security are, and neither is affected by this file.
+ * ROLE GATING IS OPT-IN, per section: one with a `module` is offered only to
+ * roles that can open it (Dashboard & Reports); the rest are offered to every
+ * role, matching WORKFLOWS. Hiding a menu entry has never been the security
+ * boundary — RolesGuard and row-level security are, and neither is affected
+ * by this file. It only spares a role a link that would refuse it.
  */
+
+import { canAccessModule, type AppModule } from './auth';
+import type { UserRole } from './roles';
 
 /** Stable key for each section. Also the URL segment where there is one. */
 export type SectionKey = 'master-data' | 'inventory' | 'erp-data';
@@ -32,6 +37,12 @@ export interface AppSection {
    * points at, and a plain equality check would leave it looking unselected.
    */
   owns: readonly string[];
+  /**
+   * The module a role needs for the menu to offer this section. Omitted means
+   * every role. A courtesy, like the rest of this file: the API refuses the
+   * data either way.
+   */
+  module?: AppModule;
 }
 
 export const APP_SECTIONS: readonly AppSection[] = [
@@ -46,11 +57,14 @@ export const APP_SECTIONS: readonly AppSection[] = [
     owns: ['/master-data'],
   },
   {
+    // Keyed and routed as `inventory` — the screens here are stock reports —
+    // but labelled for what the section is: where the reports live.
     key: 'inventory',
-    label: 'Inventory',
-    purpose: 'Stock on hand, batch by batch, with expiry and reservation.',
+    label: 'Dashboard & Reports',
+    purpose: 'Stock and near-expiry at a glance, and the reports behind them.',
     href: '/inventory',
     owns: ['/inventory'],
+    module: 'inventory',
   },
   {
     key: 'erp-data',
@@ -60,6 +74,11 @@ export const APP_SECTIONS: readonly AppSection[] = [
     owns: ['/data'],
   },
 ];
+
+/** The sections the menu offers this role. */
+export function sectionsForRole(role: UserRole): AppSection[] {
+  return APP_SECTIONS.filter((section) => !section.module || canAccessModule(role, section.module));
+}
 
 /**
  * The section a path belongs to, or undefined when it belongs to neither.

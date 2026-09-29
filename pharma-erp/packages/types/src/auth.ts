@@ -148,7 +148,10 @@ export const ROLE_MODULES: Record<UserRole, readonly AppModule[]> = {
   MANAGEMENT: [...APP_MODULES],
   PURCHASE_MANAGER: ['dashboard', 'masters', 'purchase'],
   STORE_OFFICER: ['dashboard', 'masters', 'inventory'],
-  PRODUCTION_OFFICER: ['dashboard', 'production', 'inventory'],
+  // No 'inventory': the stock and near-expiry reports are for Store and
+  // Management (US-INV-01, US-INV-03). Production issues material through its
+  // own screens, which show the stock they need.
+  PRODUCTION_OFFICER: ['dashboard', 'production'],
   QUALITY_OFFICER: ['dashboard', 'quality', 'production'],
   SALES_MANAGER: ['dashboard', 'masters', 'sales'],
   ACCOUNTANT: ['dashboard', 'accounts', 'purchase', 'sales'],
@@ -159,6 +162,16 @@ export const USER_MANAGEMENT_ROLES: readonly UserRole[] = ['ADMIN'];
 
 export function canAccessModule(role: UserRole, appModule: AppModule): boolean {
   return ROLE_MODULES[role].includes(appModule);
+}
+
+/**
+ * The roles that may open a module, for an API `@Roles(...)` — so the guard
+ * reads this table rather than restating it.
+ */
+export function rolesWithModule(appModule: AppModule): UserRole[] {
+  return (Object.keys(ROLE_MODULES) as UserRole[]).filter((role) =>
+    canAccessModule(role, appModule),
+  );
 }
 
 export function canManageUsers(role: UserRole): boolean {

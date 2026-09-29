@@ -1,5 +1,6 @@
 /**
- * Wire types for the Stock enquiry screen — US-INV-01.
+ * Wire types for the Stock enquiry screen — US-INV-01 — and the near-expiry
+ * report built on it — US-INV-03.
  *
  * One screen for everything physically held: raw and packing material
  * (`StockLot`) and released finished goods (`FinishedGoodsLot`), grouped by
@@ -119,6 +120,92 @@ export interface StockMovement {
   quantity: string;
   bucket: StockMovementBucket;
   notes: string | null;
+}
+
+// -----------------------------------------------------------------------------
+// Near-expiry report — US-INV-03
+// -----------------------------------------------------------------------------
+
+/** The windows a company starts with, in days. Configurable per company. */
+export const DEFAULT_EXPIRY_ALERT_DAYS = [90, 60, 30] as const;
+
+/** Mirrors `tenants_expiry_alert_days_sane`, so the API refuses in words first. */
+export const MAX_EXPIRY_ALERT_WINDOWS = 5;
+export const MIN_EXPIRY_ALERT_DAYS = 1;
+export const MAX_EXPIRY_ALERT_DAYS = 730;
+
+/** `EXPIRED`, or `WITHIN_<n>` for the window ending at n days. */
+export type ExpiryBucketKey = 'EXPIRED' | `WITHIN_${number}`;
+
+export interface ExpiryBucket {
+  key: ExpiryBucketKey;
+  /** e.g. "Expired", "0–30 days", "31–60 days". */
+  label: string;
+  /** Inclusive day range; both null for EXPIRED (below zero). */
+  fromDays: number | null;
+  toDays: number | null;
+  /** Batches in this bucket after the item and batch filters, before the bucket filter. */
+  batchCount: number;
+}
+
+/** A batch the report flags: a stock row plus the item and the bucket it falls in. */
+export interface NearExpiryRow extends StockBatchRow {
+  item: StockItemGroup['item'];
+  bucket: ExpiryBucketKey;
+}
+
+export interface NearExpiryReport {
+  /** The company's windows, smallest first. */
+  alertDays: number[];
+  /** Expired first, then each window in order. */
+  buckets: ExpiryBucket[];
+  /** Soonest expiry first. */
+  rows: NearExpiryRow[];
+}
+
+/** Filters the API accepts on `GET /inventory/near-expiry`. All optional. */
+export interface NearExpiryQuery {
+  itemId?: string;
+  /** A batch number (own or supplier's), or an item name or code. */
+  search?: string;
+  bucket?: string;
+}
+
+/**
+ * The buckets a set of windows makes, expired first.
+ *
+ * [90, 60, 30] gives Expired, 0–30, 31–60, 61–90. Shared so the API, the
+ * dashboard and the page all cut the same lines.
+ */
+export function expiryBuckets(alertDays: readonly number[]): Omit<ExpiryBucket, 'batchCount'>[] {
+  const windows = [...new Set(alertDays)].sort((a, b) => a - b);
+  const buckets: Omit<ExpiryBucket, 'batchCount'>[] = [
+    { key: 'EXPIRED', label: 'Expired', fromDays: null, toDays: null },
+  ];
+
+  windows.forEach((days, index) => {
+    const from = index === 0 ? 0 : windows[index - 1]! + 1;
+    buckets.push({
+      key: `WITHIN_${days}`,
+      label: `${from}–${days} days`,
+      fromDays: from,
+      toDays: days,
+    });
+  });
+
+  return buckets;
+}
+
+/** The bucket a batch with this many days left falls in, or null beyond the widest window. */
+export function expiryBucketFor(
+  daysToExpiry: number,
+  alertDays: readonly number[],
+): ExpiryBucketKey | null {
+  if (daysToExpiry < 0) return 'EXPIRED';
+
+  const window = [...alertDays].sort((a, b) => a - b).find((days) => daysToExpiry <= days);
+
+  return window === undefined ? null : `WITHIN_${window}`;
 }
 
 /** Filters the API accepts on `GET /inventory/stock`. All optional. */

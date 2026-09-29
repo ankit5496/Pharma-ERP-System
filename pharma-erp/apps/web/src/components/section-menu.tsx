@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
-import { APP_SECTIONS, findSectionForPath } from '@pharma-erp/types';
+import { findSectionForPath, sectionsForRole, type UserRole } from '@pharma-erp/types';
 
 /**
  * The header's hamburger: the top-level section switcher.
@@ -18,7 +18,7 @@ import { APP_SECTIONS, findSectionForPath } from '@pharma-erp/types';
  * Client-side only for the open/closed state and dismissal. The navigations
  * themselves are ordinary <Link> ones.
  */
-export function SectionMenu() {
+export function SectionMenu({ role }: { role: UserRole }) {
   const pathname = usePathname();
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -94,7 +94,7 @@ export function SectionMenu() {
           className="absolute left-0 top-full z-20 mt-2 w-72 rounded-lg border border-slate-200 bg-white p-1.5 shadow-lg"
         >
           <ul>
-            {APP_SECTIONS.map((section) => {
+            {sectionsForRole(role).map((section) => {
               const isCurrent = section.key === current?.key;
 
               return (

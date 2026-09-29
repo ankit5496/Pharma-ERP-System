@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { WORKFLOWS, findSectionForPath, workflowHref } from '@pharma-erp/types';
 
+import { SECTION_TABS } from './inventory/inventory-tabs';
+
 /**
  * The header's tab row: the four workflows, plus User settings for
  * administrators.
@@ -32,7 +34,41 @@ import { WORKFLOWS, findSectionForPath, workflowHref } from '@pharma-erp/types';
 export function PrimaryNav({ canManageUsers = false }: { canManageUsers?: boolean }) {
   const pathname = usePathname();
 
-  if (findSectionForPath(pathname)?.key === 'master-data') return null;
+  const section = findSectionForPath(pathname);
+
+  if (section?.key === 'master-data') return null;
+
+  // Dashboard & Reports shows its own two tabs in place of the workflows, for
+  // the same reason Master Data hides them: none of them would be current
+  // here. The Reports screens are pill sub-tabs under the page heading.
+  if (section?.key === 'inventory') {
+    return (
+      <nav aria-label={section.label} className="mx-auto max-w-7xl px-4 sm:px-6">
+        <ul className="-mb-px flex gap-1 overflow-x-auto">
+          {SECTION_TABS.map((tab) => {
+            const isActive = tab.isActive(pathname);
+
+            return (
+              <li key={tab.label}>
+                <Link
+                  href={tab.href}
+                  aria-current={isActive ? 'page' : undefined}
+                  title={tab.purpose}
+                  className={`inline-block whitespace-nowrap border-b-2 px-3 py-2.5 text-sm font-medium transition ${
+                    isActive
+                      ? 'border-slate-900 text-slate-900'
+                      : 'border-transparent text-slate-600 hover:border-slate-300 hover:text-slate-900'
+                  }`}
+                >
+                  {tab.label}
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      </nav>
+    );
+  }
 
   return (
     <nav aria-label="Workflows" className="mx-auto max-w-7xl px-4 sm:px-6">
