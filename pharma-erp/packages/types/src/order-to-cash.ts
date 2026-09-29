@@ -392,6 +392,24 @@ export interface SalesOrderListItem {
   totalQuantity: string;
   /** Goods value: the lines, net of their discounts, before tax. */
   subtotal: string;
+
+  /** The products on the order, for the list: the first, then "+2" for the rest. */
+  productSummary: string;
+
+  /**
+   * The tax split, derived the way the INVOICE derives it — seller state
+   * against the customer's — so the list and the eventual invoice agree.
+   *
+   * Indicative until the invoice is raised: the place of supply is settled
+   * then, and the order records no invoice yet. The total tax is not
+   * indicative; only which heads it falls under.
+   */
+  cgstAmount: string;
+  sgstAmount: string;
+  igstAmount: string;
+
+  /** Rounding to the rupee. Derived for display; not stored on the order. */
+  roundOff: string;
   /**
    * Charged on the order and taxed with the goods.
    *
@@ -405,6 +423,9 @@ export interface SalesOrderListItem {
   creditCheck: CheckResult;
   checkFailureReason: string | null;
   itemCount: number;
+  /** The order's own remarks. On the list item so a row can be edited without
+   *  a second fetch for one field. */
+  notes: string | null;
   createdByName: string | null;
   createdAt: string;
 }

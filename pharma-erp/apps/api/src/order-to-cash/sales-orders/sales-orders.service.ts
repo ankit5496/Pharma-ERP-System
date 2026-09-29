@@ -64,11 +64,29 @@ export class SalesOrdersService {
             }
           : {}),
       },
-      include: { customer: true, createdBy: true, items: true },
+      include: { customer: true, createdBy: true, items: { include: { item: true } } },
       orderBy: [{ orderDate: 'desc' }, { orderNumber: 'desc' }],
     });
 
-    return orders.map(toListItem);
+    const sellerStateCode = await this.sellerStateCode();
+
+    return orders.map((order) => toListItem(order, sellerStateCode));
+  }
+
+  /**
+   * The tenant's own state, from its GSTIN.
+   *
+   * Read once per listing rather than per row: it is the same answer for every
+   * order, and the register is read over a period.
+   */
+  private async sellerStateCode(): Promise<string | null> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const tenant = await this.prisma.scoped.tenant.findFirst({
+      where: { id: tenantId },
+      select: { gstin: true },
+    });
+
+    return tenant?.gstin?.slice(0, 2) ?? null;
   }
 
   async get(id: string): Promise<SalesOrderDetail> {
@@ -83,7 +101,7 @@ export class SalesOrdersService {
 
     if (!order) throw new NotFoundException('Sales order not found.');
 
-    return toDetail(order);
+    return toDetail(order, await this.sellerStateCode());
   }
 
   async create(dto: CreateSalesOrderDto): Promise<SalesOrderDetail> {
@@ -624,14 +642,44 @@ export class SalesOrdersService {
 // ---------------------------------------------------------------------------
 
 type OrderRow = Prisma.SalesOrderGetPayload<{
-  include: { customer: true; createdBy: true; items: true };
+  include: { customer: true; createdBy: true; items: { include: { item: true } } };
 }>;
 
 type OrderDetailRow = Prisma.SalesOrderGetPayload<{
   include: { customer: true; createdBy: true; items: { include: { item: true } } };
 }>;
 
-function toListItem(order: OrderRow): SalesOrderListItem {
+/**
+ * @param sellerStateCode The tenant's own state, from its GSTIN. Null when the
+ * tenant has no GSTIN recorded, which is treated as intra-state — the same
+ * fallback the invoice applies.
+ */
+function toListItem(order: OrderRow, sellerStateCode: string | null): SalesOrderListItem {
+  // Place of supply: the customer's state, falling back to their GSTIN's first
+  // two digits. Unknown on either side is intra-state, as at invoicing.
+  const placeOfSupply = order.customer.stateCode ?? order.customer.gstin?.slice(0, 2) ?? null;
+  const isInterState =
+    sellerStateCode !== null && placeOfSupply !== null && sellerStateCode !== placeOfSupply;
+
+  // Split, not recomputed: halving the already-rounded total keeps CGST and
+  // SGST summing exactly to it, which is what the invoice does too.
+  const cgst = isInterState ? new Prisma.Decimal(0) : order.taxAmount.div(2).toDecimalPlaces(2);
+  const sgst = isInterState ? new Prisma.Decimal(0) : order.taxAmount.sub(cgst);
+  const igst = isInterState ? order.taxAmount : new Prisma.Decimal(0);
+
+  // Rounding to the rupee, for display. Not stored: the order's grandTotal is
+  // the figure of record and is left exactly as it was computed.
+  const rounded = order.grandTotal.toDecimalPlaces(0);
+  const roundOff = rounded.sub(order.grandTotal);
+
+  const products = order.items.map((line) => line.item.name);
+  const productSummary =
+    products.length === 0
+      ? ''
+      : products.length === 1
+        ? products[0]!
+        : `${products[0]} +${products.length - 1}`;
+
   return {
     id: order.id,
     orderNumber: order.orderNumber,
@@ -649,6 +697,11 @@ function toListItem(order: OrderRow): SalesOrderListItem {
     status: order.status as SalesOrderStatus,
     totalQuantity: order.totalQuantity.toFixed(3),
     subtotal: order.subtotal.toFixed(2),
+    productSummary,
+    cgstAmount: cgst.toFixed(2),
+    sgstAmount: sgst.toFixed(2),
+    igstAmount: igst.toFixed(2),
+    roundOff: roundOff.toFixed(2),
     processingCharges: order.processingCharges.toFixed(2),
     taxAmount: order.taxAmount.toFixed(2),
     grandTotal: order.grandTotal.toFixed(2),
@@ -656,16 +709,17 @@ function toListItem(order: OrderRow): SalesOrderListItem {
     creditCheck: order.creditCheck as CheckResult,
     checkFailureReason: order.checkFailureReason,
     itemCount: order.items.length,
+    notes: order.notes,
     createdByName: order.createdBy?.fullName ?? null,
     createdAt: order.createdAt.toISOString(),
   };
 }
 
-function toDetail(order: OrderDetailRow): SalesOrderDetail {
+function toDetail(order: OrderDetailRow, sellerStateCode: string | null): SalesOrderDetail {
   const items = order.items.map(toItemView);
 
   return {
-    ...toListItem(order as unknown as OrderRow),
+    ...toListItem(order as unknown as OrderRow, sellerStateCode),
     notes: order.notes,
     items,
     check: toCheckResult(order),
