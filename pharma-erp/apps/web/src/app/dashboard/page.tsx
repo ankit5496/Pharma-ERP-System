@@ -486,12 +486,23 @@ function Widget({ widget }: { widget: StatWidget }) {
     );
   }
 
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4">
+  const body = (
+    <>
       <p className="text-xs uppercase tracking-wide text-slate-500">{widget.label}</p>
       <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">{widget.value}</p>
       {widget.detail && <p className="mt-1 text-xs text-slate-500">{widget.detail}</p>}
-    </div>
+    </>
+  );
+
+  return widget.href ? (
+    <Link
+      href={widget.href}
+      className="block rounded-lg border border-slate-200 bg-white p-4 transition hover:border-slate-300 hover:shadow-sm"
+    >
+      {body}
+    </Link>
+  ) : (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">{body}</div>
   );
 }
 

@@ -31,6 +31,8 @@ export interface StatWidget {
   detail?: string;
   /** Which module this belongs to, so the UI can group and link. */
   module: string;
+  /** Where the figure is broken down, when there is a page for it. */
+  href?: string;
 }
 
 export interface ActivityItem {

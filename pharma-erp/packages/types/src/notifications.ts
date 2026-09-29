@@ -15,7 +15,7 @@
 
 import { masterDataHref } from './master-data';
 
-export const NOTIFICATION_KINDS = ['LICENCE_EXPIRY'] as const;
+export const NOTIFICATION_KINDS = ['LICENCE_EXPIRY', 'NEAR_EXPIRY'] as const;
 export type NotificationKind = (typeof NOTIFICATION_KINDS)[number];
 
 /** `critical` needs action now (red); `warning` needs action soon (amber). */
@@ -53,3 +53,11 @@ export interface MarkNotificationsRequest {
  * "Open the register" button.
  */
 export const LICENCE_REGISTER_HREF = masterDataHref('licence-compliance');
+
+/**
+ * Where a near-expiry notification sends you: the near-expiry report, searched
+ * for the batch, so the row it is about is the row you land on (US-INV-03).
+ */
+export function nearExpiryBatchHref(batchNumber: string): string {
+  return `/inventory/near-expiry?search=${encodeURIComponent(batchNumber)}`;
+}

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 
+import { InventoryModule } from '../inventory/inventory.module';
 import { LicencesModule } from '../licences/licences.module';
 import { PackagingModule } from '../packaging/packaging.module';
 
@@ -13,10 +14,11 @@ import { DashboardService } from './dashboard.service';
  * reads LicencesService so that the alert and the register cannot disagree
  * about which licences count as expiring. PackagingModule is imported for the
  * same reason: the shortage panel and the packaging register must agree on
- * what counts as short.
+ * what counts as short. InventoryModule likewise, so the near-expiry widgets
+ * and the near-expiry report count the same batches.
  */
 @Module({
-  imports: [LicencesModule, PackagingModule],
+  imports: [LicencesModule, PackagingModule, InventoryModule],
   controllers: [DashboardController],
   providers: [DashboardService],
 })

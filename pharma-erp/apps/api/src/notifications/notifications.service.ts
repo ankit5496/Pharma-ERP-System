@@ -4,12 +4,16 @@ import {
   LICENCE_REGISTER_HREF,
   LICENCE_TYPE_LABELS,
   LICENCE_VISIBLE_TO,
+  ROLE_MODULES,
+  nearExpiryBatchHref,
   type LicenceSummary,
+  type NearExpiryRow,
   type NotificationFeed,
   type NotificationItem,
   type UserRole,
 } from '@pharma-erp/types';
 
+import { ExpiryService } from '../inventory/expiry.service';
 import { LicencesService } from '../licences/licences.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
@@ -34,6 +38,7 @@ export class NotificationsService {
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
     private readonly licences: LicencesService,
+    private readonly expiry: ExpiryService,
   ) {}
 
   async feed(): Promise<NotificationFeed> {
@@ -84,9 +89,28 @@ export class NotificationsService {
   private async current(): Promise<Notification[]> {
     const role = this.tenantContext.get()?.role ?? null;
 
-    const sources = await Promise.all([this.licenceExpiry(role)]);
+    const sources = await Promise.all([this.licenceExpiry(role), this.nearExpiry(role)]);
 
     return sources.flat();
+  }
+
+  /**
+   * Batches expired, or inside the tightest near-expiry window — US-INV-03.
+   *
+   * For whoever can open Inventory, read from the same ROLE_MODULES table the
+   * dashboard's Inventory section uses. Only the tightest window: the wider
+   * ones are planning figures the report and dashboard already carry, and a
+   * bell that rings for every batch within 90 days stops being read.
+   */
+  private async nearExpiry(role: UserRole | null): Promise<Notification[]> {
+    if (!role || !ROLE_MODULES[role].includes('inventory')) return [];
+
+    const report = await this.expiry.report({});
+    const tightest = report.buckets[1]?.key;
+
+    return report.rows
+      .filter((row) => row.bucket === 'EXPIRED' || row.bucket === tightest)
+      .map((row) => toNearExpiryNotification(row, report.alertDays[0]!));
   }
 
   /** Admin and Quality Officer only — the same rule as the licence register. */
@@ -159,5 +183,32 @@ function toLicenceNotification(licence: LicenceSummary): Notification {
     title: expired ? `${label} has expired` : `${label} expires soon`,
     message,
     href: LICENCE_REGISTER_HREF,
+  };
+}
+
+/**
+ * The key carries the bucket and the expiry date, so a batch stepping from
+ * "expires soon" to "has expired" arrives unread again even if the first
+ * warning was read.
+ */
+function toNearExpiryNotification(row: NearExpiryRow, windowDays: number): Notification {
+  const expired = row.bucket === 'EXPIRED';
+  const days = Math.abs(row.daysToExpiry ?? 0);
+  const batch = `${row.batchNumber} · ${row.item.name}`;
+  const held = `${row.quantityAvailable} ${row.item.uom}`;
+
+  const message = expired
+    ? `${batch} expired on ${row.expiryDate}, ${plural(days, 'day')} ago, with ${held} still in stock.`
+    : days === 0
+      ? `${batch} expires today (${row.expiryDate}). ${held} in stock.`
+      : `${batch} expires on ${row.expiryDate}, in ${plural(days, 'day')}. ${held} in stock.`;
+
+  return {
+    key: `near-expiry:${row.source}:${row.id}:${row.expiryDate}:${row.bucket}`,
+    kind: 'NEAR_EXPIRY',
+    severity: expired ? 'critical' : 'warning',
+    title: expired ? 'Batch expired, still in stock' : `Batch expires within ${windowDays} days`,
+    message,
+    href: nearExpiryBatchHref(row.batchNumber),
   };
 }

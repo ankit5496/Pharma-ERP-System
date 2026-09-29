@@ -75,7 +75,7 @@ export function AppShell({
               looked for. It is the layer ABOVE the workflow tabs: the tabs are
               processes, the menu is places. */}
             <div className="flex min-w-0 items-center gap-3">
-              <SectionMenu />
+              <SectionMenu role={user.role} />
 
               <div className="min-w-0">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-400">

@@ -26,21 +26,21 @@ import { fetchBatchMovementsAction } from './actions';
 
 const PAGE_SIZES = [10, 25, 50, 100] as const;
 
-const STATUS_TONE: Record<StockBatchStatus, Tone> = {
+export const STATUS_TONE: Record<StockBatchStatus, Tone> = {
   USABLE: 'ok',
   RELEASED: 'ok',
   QUARANTINE: 'warn',
   ON_HOLD: 'warn',
 };
 
-const RESERVATION_TONE: Record<ReservationState, Tone> = {
+export const RESERVATION_TONE: Record<ReservationState, Tone> = {
   RESERVED: 'info',
   PARTIALLY_RESERVED: 'warn',
   FREE: 'neutral',
 };
 
 /** The same category colours as the Master Data item register. */
-const TYPE_TONE: Record<string, string> = {
+export const TYPE_TONE: Record<string, string> = {
   RAW_MATERIAL: 'bg-emerald-50 text-emerald-800 ring-emerald-200',
   PACKING_MATERIAL: 'bg-violet-50 text-violet-800 ring-violet-200',
   SEMI_FINISHED: 'bg-amber-50 text-amber-800 ring-amber-200',
@@ -59,10 +59,11 @@ const COLUMNS = [
   { label: 'Next Expiry' },
 ] as const;
 
-const HEAD = 'whitespace-nowrap px-4 py-2.5 text-xs font-semibold tracking-wide text-slate-500';
+export const HEAD =
+  'whitespace-nowrap px-4 py-2.5 text-xs font-semibold tracking-wide text-slate-500';
 
 /** Where a reservation links: the order's own list, searched for it. */
-const orderHref = (reservation: StockReservation) =>
+export const orderHref = (reservation: StockReservation) =>
   `${
     reservation.kind === 'SALES_ORDER'
       ? '/workflows/order-to-cash/sales-orders'
@@ -464,7 +465,7 @@ function BatchHistory({ batch, uom }: { batch: StockBatchRow; uom: string }) {
   );
 }
 
-function ExpiryNote({ days }: { days: number | null }) {
+export function ExpiryNote({ days }: { days: number | null }) {
   if (days === null) return null;
 
   const plural = (n: number) => `${n} day${n === 1 ? '' : 's'}`;
