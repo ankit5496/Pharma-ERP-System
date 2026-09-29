@@ -24,7 +24,7 @@ import {
   Name,
   Code,
 } from '@/components/procurement/ui';
-import { fetchItems, fetchQcQueue, fetchVendors, toListQuery, toOptions } from '@/lib/procurement';
+import { fetchItems, fetchQcQueue, fetchVendors, toListQuery, toOptions , fetchPeopleOptions} from '@/lib/procurement';
 export const metadata: Metadata = { title: 'Incoming QC' };
 export const dynamic = 'force-dynamic';
 /**
@@ -42,10 +42,12 @@ export default async function IncomingQcPage({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const query = toListQuery(await searchParams);
-  const [queue, vendors, items] = await Promise.all([
+  const [queue, vendors, items, people] = await Promise.all([
     fetchQcQueue(query),
     fetchVendors(),
     fetchItems(),
+    // Colleagues, for the Created By filter. One lookup, shared with Job Work.
+    fetchPeopleOptions(),
   ]);
   const isFiltered = Object.values(query).some(Boolean);
   const pending = queue.ok ? queue.data.rows.filter((row) => row.lot.status === 'QUARANTINE') : [];
@@ -71,6 +73,7 @@ export default async function IncomingQcPage({
           value: status,
           label: STOCK_LOT_STATUS_LABELS[status],
         }))}
+        raisedBy={people}
         vendors={vendors.ok ? toOptions(vendors.data) : []}
         items={items.ok ? toOptions(items.data) : []}
       />

@@ -122,24 +122,28 @@ export const PARTY_CODE_DIGITS = 5;
 export const REQUISITION_STATUSES = ['OPEN', 'APPROVED', 'CONVERTED_TO_PO', 'CANCELLED'] as const;
 export type RequisitionStatus = (typeof REQUISITION_STATUSES)[number];
 
-/** Why a requisition exists: raised by the reorder check, or by a person. */
+/** Why a requisition exists: raised by the Auto process, or by a person. */
 export const REQUISITION_TRIGGER_TYPES = ['AUTO_REORDER', 'MANUAL'] as const;
 export type RequisitionTriggerType = (typeof REQUISITION_TRIGGER_TYPES)[number];
 
 export const REQUISITION_TRIGGER_LABELS: Record<RequisitionTriggerType, string> = {
-  AUTO_REORDER: 'Auto Create',
+  AUTO_REORDER: 'Auto',
   MANUAL: 'Manual',
 };
 
 /**
  * What each trigger means, shown on hover.
  *
- * The stored value stays `AUTO_REORDER`: renaming a database enum to change a
- * word on screen would rewrite history on every requisition ever raised, and
- * the label is a presentation concern.
+ * THE STORED VALUE STAYS `AUTO_REORDER` THOUGH IT NO LONGER MEANS REORDER.
+ * It now means "raised automatically because a sales order's material
+ * requirement was short". Renaming a database enum to change a word on screen
+ * would rewrite the trigger recorded on every requisition ever raised — the
+ * label and this sentence are presentation, and they are where the meaning is
+ * stated.
  */
 export const REQUISITION_TRIGGER_HINTS: Record<RequisitionTriggerType, string> = {
-  AUTO_REORDER: 'Low stock is reported but raises nothing. Create requisitions on the form.',
+  AUTO_REORDER:
+    'Raised automatically because a sales order needs more of this material than is free.',
   MANUAL: 'Raised by a person on the requisition form.',
 };
 
@@ -377,18 +381,57 @@ export interface PartySummary {
 }
 
 /**
- * An item whose usable stock has fallen below its reorder level.
+ * One material a live sales order needs, and whether we have it.
  *
- * `availableStock` counts USABLE lots only. Material sitting in quarantine or
- * rejected is deliberately excluded: it cannot be used in production, so
- * counting it would suppress a requisition that genuinely needs raising.
+ * ONE LINE PER (SALES ORDER LINE x MATERIAL). An order for two products
+ * produces a line for every raw material and every packing component of both,
+ * because each is bought separately and each can be short on its own.
+ *
+ * WHERE THE NUMBERS COME FROM. `requiredQuantity` is the product's active
+ * formulation and pack specification scaled to what the order still owes —
+ * ordered less dispatched — and nothing else. There is no reorder level and no
+ * reorder quantity anywhere in it.
+ *
+ * `availableQuantity` counts USABLE lots only. Material in quarantine or
+ * rejected is deliberately excluded: it cannot be dispensed, so counting it
+ * would suppress a requisition that genuinely needs raising.
+ *
+ * AND IT IS SHARED OUT, not repeated. Two orders needing the same material do
+ * not each see the whole shelf: the earlier delivery date takes what it needs
+ * first and the later one sees what is left. Without that, fifty kilos on the
+ * shelf would satisfy five orders of fifty on paper and none of them in fact.
  */
-export interface LowStockItem {
-  item: ItemSummary;
-  availableStock: string;
-  quarantineStock: string;
-  shortfall: string;
-  /** True when a requisition for this item is already open, to avoid duplicates. */
+export interface RequiredStockLine {
+  /** Stable across reloads: the sales order line and the material. */
+  id: string;
+
+  salesOrderId: string;
+  salesOrderNumber: string;
+  salesOrderItemId: string;
+  customerName: string;
+  /** What the order asked for, so a reader can see where the figure came from. */
+  orderDate: string;
+  requestedDeliveryDate: string | null;
+  salesOrderStatus: SalesOrderStatusValue;
+
+  /** The finished product on the order line, and how much of it is still owed. */
+  finishedProduct: ItemSummary;
+  productQuantity: string;
+  /** From the product's active pack specification. Null where it has none. */
+  packVariant: string | null;
+
+  /** RAW or PACKING — the two groups the tab shows separately. */
+  materialType: RequiredMaterialKind;
+  material: ItemSummary;
+
+  requiredQuantity: string;
+  availableQuantity: string;
+  shortfallQuantity: string;
+
+  /** Set when the formulation could not be read, and the row explains itself. */
+  blockedReason: string | null;
+
+  /** True when a requisition for this shortage is already open, to avoid duplicates. */
   hasOpenRequisition: boolean;
   /**
    * True when material is already on order and has not arrived.
@@ -399,6 +442,64 @@ export interface LowStockItem {
    * as unattended for the whole of the vendor's lead time.
    */
   hasOpenPurchaseOrder: boolean;
+
+  /** The requisition Auto raised for this shortage, once it has. */
+  requisitionNumber: string | null;
+
+  /**
+   * How the requisition covering this shortage came to exist — Auto or Manual.
+   *
+   * NULL UNTIL THERE IS ONE, and that is the honest answer rather than a
+   * placeholder. A required-stock row is always derived from a sales order, so
+   * the row itself has no trigger to report; what a buyer wants to know is
+   * whether the document dealing with it was raised by the system or by a
+   * person. Until something has been raised there is nothing to report, and
+   * guessing "Auto" would claim a requisition that does not exist.
+   *
+   * READ FROM THE REQUISITION, never recomputed. The stored trigger is the
+   * record of what actually happened; deciding it again from the Auto switch
+   * would misreport every row raised by hand while the switch was on.
+   */
+  triggerType: RequisitionTriggerType | null;
+}
+
+/** The two groups the Required stock tab shows separately. */
+export const REQUIRED_MATERIAL_KINDS = ['RAW', 'PACKING'] as const;
+export type RequiredMaterialKind = (typeof REQUIRED_MATERIAL_KINDS)[number];
+
+export const REQUIRED_MATERIAL_KIND_LABELS: Record<RequiredMaterialKind, string> = {
+  RAW: 'Raw material',
+  PACKING: 'Packing material',
+};
+
+/**
+ * The sales-order statuses whose material requirements are worth buying for.
+ *
+ * APPROVED ONWARDS. A DRAFT or PENDING_CHECK order is not yet a commitment —
+ * raising a purchase requisition off one would buy material for an order that
+ * may never be placed. DISPATCHED, COMPLETED and CANCELLED are past needing
+ * anything. BLOCKED is included deliberately: the goods are still owed, the
+ * block is a credit or licence matter, and the material has the same lead time
+ * either way.
+ */
+export const REQUIRED_STOCK_SALES_ORDER_STATUSES = [
+  'APPROVED',
+  'BLOCKED',
+  'PARTIALLY_ALLOCATED',
+  'ALLOCATED',
+] as const;
+
+/** Narrower than the full enum, and only the four above ever appear. */
+export type SalesOrderStatusValue = (typeof REQUIRED_STOCK_SALES_ORDER_STATUSES)[number];
+
+/** What one pass of the Auto process did. */
+export interface AutoRequisitionOutcome {
+  /** Requisition numbers raised by this pass. */
+  created: string[];
+  /** Shortages it deliberately left alone, and why. */
+  skipped: { material: string; reason: string }[];
+  /** False when the company has Auto creation switched off. */
+  autoCreationEnabled: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -409,10 +510,14 @@ export interface RequisitionListItem {
   id: string;
   number: string;
   item: ItemSummary;
+  /** Free stock when it was raised. The figure the shortfall was measured from. */
   stockAtRequest: string;
-  reorderLevelAtRequest: string;
-  /** `reorderLevelAtRequest - stockAtRequest`, floored at zero. */
-  shortfallAtRequest: string;
+  /**
+   * The reorder level the shortage was measured against — on OLD requisitions
+   * only, and null on everything raised since requirements began coming from
+   * sales orders. See PurchaseRequisition.reorderLevelAtRequest.
+   */
+  reorderLevelAtRequest: string | null;
   requiredQuantity: string;
   triggerType: RequisitionTriggerType;
   /** The run the material is for, when one was cited. */
@@ -420,20 +525,30 @@ export interface RequisitionListItem {
   preferredVendor: { id: string; name: string } | null;
 
   /**
-   * What the material is for, and where it sits in the pack.
+   * THE DEMAND THIS REQUISITION SERVES.
    *
-   * All optional. A requisition for a bulk raw material answers none of these;
-   * one for a carton answers all of them. The two item references are the
-   * item master itself, not copies of it.
+   * Present on everything Auto raised, and the reason the trail reads end to
+   * end: sales order -> finished product -> formulation -> shortfall -> this.
+   * Null on a requisition raised by hand for a material that serves no single
+   * order.
+   */
+  salesOrder: { id: string; number: string; customerName: string } | null;
+
+  /**
+   * THE FINISHED PRODUCT THE MATERIAL IS FOR, read back through the sales
+   * order line rather than stored on the requisition.
+   *
+   * The six packaging fields that used to sit here — finished product, pack
+   * variant, packaging component, packaging level, quantity per unit and a
+   * mandatory flag — described a PRODUCT's packaging on a document that
+   * requests one material. They belong to the Packaging Requirement master.
+   *
+   * This one survives because it is not a copy: it is derived from
+   * `salesOrderItem.item`, so it cannot drift from the order it came from, and
+   * it is null on a requisition raised by hand against no particular order.
    */
   finishedProduct: ItemSummary | null;
-  packVariant: string | null;
-  packagingComponent: ItemSummary | null;
-  packagingLevel: PackagingLevel | null;
-  /** Per unit or batch of the finished product — the rate, not the buy figure. */
-  quantityPerUnit: string | null;
-  isMandatory: boolean;
-  /** Null when the system raised it — an auto-reorder has no author. */
+  /** Null when the system raised it — an Auto requisition has no author. */
   requestedBy: string | null;
   /** The same person as `requestedBy`, by id, so a filter can name them. */
   requestedById: string | null;
@@ -450,30 +565,27 @@ export interface RequisitionListItem {
 /**
  * The manual requisition form's payload.
  *
- * `itemId` is the only required field. Everything else is either defaulted
- * from the item master or genuinely optional — and every id here is resolved
- * against existing master data by the API, which creates none of it.
+ * WHAT TO BUY AND HOW MUCH, and nothing about how the product is packed.
  *
- * Note what is ABSENT: no `number`, no `status`, no `triggerType`, no
- * `requestedById`, no stock figures. Those are the system's to set, and
- * accepting them from a client would let a requisition claim a shortage that
- * never existed or claim the system raised it.
+ * Six packaging fields used to live here — finished product, pack variant,
+ * packaging component, packaging level, quantity per unit and a mandatory flag
+ * — describing a PRODUCT's packaging on a document that requests one material.
+ * They belong to the Packaging Requirement master, which is where the Required
+ * stock calculation reads them from.
+ *
+ * Note what is ALSO absent: no `number`, no `status`, no `triggerType`, no
+ * `requestedById`, no stock figures, no sales order. Those are the system's to
+ * set, and accepting them from a client would let a requisition claim a
+ * shortage that never existed or claim the system raised it.
  */
 export interface CreateRequisitionRequest {
   itemId: string;
-  /** Defaults to the item's reorder quantity when omitted. */
-  requiredQuantity?: string;
+  /** Required. There is no reorder quantity left to default from. */
+  requiredQuantity: string;
   productionPlanId?: string;
   preferredVendorId?: string;
   requiredByDate?: string;
   notes?: string;
-
-  finishedProductId?: string;
-  packVariant?: string;
-  packagingComponentId?: string;
-  packagingLevel?: PackagingLevel;
-  quantityPerUnit?: string;
-  isMandatory?: boolean;
 }
 
 /**
@@ -563,6 +675,20 @@ export interface PurchaseOrderLineItem {
   id: string;
   item: ItemSummary;
   requisition: { id: string; number: string } | null;
+
+  /**
+   * THE SALES ORDER THIS LINE ULTIMATELY SERVES, read through the requisition.
+   *
+   * Completes the chain a buyer, an auditor and a recall all walk:
+   * customer -> sales order -> material requirement -> requisition -> this
+   * line. Null on a line whose requisition was raised by hand against no
+   * particular order.
+   *
+   * DERIVED, NOT STORED. The purchase order has no sales-order column and
+   * should not: the requisition already points at the order, and a second copy
+   * here would be free to disagree with it.
+   */
+  salesOrder: { id: string; number: string; customerName: string } | null;
   quantity: string;
   rate: string;
   taxRatePercent: string;
@@ -808,6 +934,8 @@ export interface QcQueueItem {
 }
 
 export interface RecordQcDecisionRequest {
+  /** Where the material is being put. Defaulted from the verdict when absent. */
+  storageLocation?: string;
   decision: QcDecision;
   testReference?: string;
   remarks?: string;
@@ -818,15 +946,54 @@ export interface RecordQcDecisionRequest {
 // ---------------------------------------------------------------------------
 
 /** Usable stock of one item, broken down by lot in FEFO order. */
+/**
+ * One item's stock, in the six figures that are genuinely different.
+ *
+ * THEY ARE NOT INTERCHANGEABLE, and conflating any two of them is how material
+ * gets promised twice or quietly written off:
+ *
+ *   total      — every lot, whatever its state. What is physically in the
+ *                building, which is what a stock count reconciles against.
+ *   usable     — QC accepted it. What MAY be dispensed.
+ *   reserved   — usable, but spoken for by the sales order it was bought to
+ *                serve. Still ours, not available to anything else.
+ *   free       — usable LESS reserved. THE FIGURE PROCUREMENT DECISIONS ARE
+ *                MADE ON: what a new order could actually draw on.
+ *   quarantine — awaiting a QC decision. Present, countable, unusable.
+ *   rejected   — QC refused it. Present and countable because it still has to
+ *                be returned, debited and audited; never usable.
+ */
 export interface ItemStockPosition {
   item: ItemSummary;
+  totalStock: string;
+  /** QC-accepted stock, reserved or not. */
   availableStock: string;
+  /** Usable stock held for a sales order. Not free for anything else. */
+  reservedStock: string;
+  /** `availableStock` less `reservedStock`. What procurement may count on. */
+  freeStock: string;
   quarantineStock: string;
   rejectedStock: string;
   onHoldStock: string;
-  belowReorderLevel: boolean;
   /** USABLE lots, earliest expiry first — the order production must pick in. */
   fefoLots: StockLotSummary[];
+}
+
+/** One hold on a lot, for the sales order it was bought to serve. */
+export interface StockReservationSummary {
+  id: string;
+  lotNumber: string;
+  item: ItemSummary;
+  quantity: string;
+  salesOrderId: string;
+  salesOrderNumber: string;
+  customerName: string;
+  /** The finished product the material is for, from the order line. */
+  finishedProduct: ItemSummary;
+  reference: string | null;
+  createdAt: string;
+  releasedAt: string | null;
+  releasedReason: string | null;
 }
 
 export interface StockLedgerRow {
@@ -857,6 +1024,31 @@ export interface StockLedgerRow {
    * production.
    */
   affectsUsableStock: boolean;
+
+  /**
+   * WHICH BUCKET this movement put the material in, or took it out of.
+   *
+   * `affectsUsableStock` cannot tell quarantine from rejected from held — three
+   * places with three different consequences — so a rejection and a hold used
+   * to read identically on the ledger. Null on movements that are not about a
+   * QC bucket, such as an adjustment.
+   */
+  resultingStatus: StockLotStatus | null;
+
+  /** Where the material sat after this movement. Null where nobody recorded it. */
+  storageLocation: string | null;
+
+  /**
+   * THE QC DECISION THAT CAUSED IT, where one did — the verdict, who made it
+   * and when, read back through the decision record rather than copied.
+   */
+  qcDecision: {
+    decision: QcDecision;
+    testReference: string | null;
+    inspectedBy: string | null;
+    inspectedAt: string;
+  } | null;
+
   reference: string | null;
   notes: string | null;
   createdBy: string | null;
@@ -1112,7 +1304,7 @@ export interface Paginated<T> {
 
 /** Routes for the Procure-to-Pay sub-tabs, shared so links cannot drift. */
 export const PROCUREMENT_ROUTES = {
-  lowStock: '/workflows/procure-to-pay/low-stock',
+  requiredStock: '/workflows/procure-to-pay/required-stock',
   requisitions: '/workflows/procure-to-pay/requisitions',
   purchaseOrders: '/workflows/procure-to-pay/purchase-orders',
   goodsReceipts: '/workflows/procure-to-pay/goods-receipts',

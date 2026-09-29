@@ -32,10 +32,10 @@ import {
   fetchInvoices,
   fetchVendors,
   toListQuery,
-  toOptions,
+  toOptions,  fetchPeopleOptions,
 } from '@/lib/procurement';
 
-export const metadata: Metadata = { title: 'Purchase invoices' };
+export const metadata: Metadata = { title: 'Purchase Invoices' };
 export const dynamic = 'force-dynamic';
 
 /**
@@ -54,10 +54,12 @@ export default async function InvoicesPage({
 }) {
   const query = toListQuery(await searchParams);
 
-  const [invoices, invoiceable, vendors] = await Promise.all([
+  const [invoices, invoiceable, vendors, people] = await Promise.all([
     fetchInvoices(query),
     fetchInvoiceableOrders(),
     fetchVendors(),
+    // Colleagues, for the Created By filter. One lookup, shared with Job Work.
+    fetchPeopleOptions(),
   ]);
 
   const isFiltered = Object.values(query).some(Boolean);
@@ -92,7 +94,7 @@ export default async function InvoicesPage({
   return (
     <div className="space-y-6">
       <Panel
-        title="Purchase invoices"
+        title="Purchase Invoices"
         subtitle={
           invoices.ok
             ? `${invoices.data.total} invoice${invoices.data.total === 1 ? '' : 's'}`
@@ -118,6 +120,7 @@ export default async function InvoicesPage({
       >
         <FilterPanel
           statuses={statusOptions}
+          raisedBy={people}
           vendors={vendors.ok ? toOptions(vendors.data) : []}
         />
 

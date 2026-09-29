@@ -6,6 +6,7 @@ import type {
   JobWorkOrderMaterial,
   JobWorkReceiptStatus,
 } from '@pharma-erp/types';
+import { JOB_WORK_RECEIPT_STATUS_LABELS, JOB_WORK_RECEIPT_STATUSES } from '@pharma-erp/types';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { NumberingService } from '../procurement/numbering.service';
@@ -17,6 +18,7 @@ import type {
   DecideJobWorkReceiptDto,
   JobWorkMaterialReceiptLineDto,
 } from './dto/job-work-receipt.dto';
+import { jobWorkListWhere, statusIn, type JobWorkListQueryDto } from './job-work-list-query';
 import { JobWorkOrdersService, parseQuantity } from './job-work-orders.service';
 
 const ZERO = new Prisma.Decimal(0);
@@ -74,9 +76,45 @@ export class JobWorkReceiptsService {
     private readonly orders: JobWorkOrdersService,
   ) {}
 
-  async list(jobWorkOrderId?: string): Promise<JobWorkMaterialReceiptView[]> {
+  /** The register, filtered in the database. See `jobWorkListWhere`. */
+  async list(
+    jobWorkOrderId?: string,
+    query: JobWorkListQueryDto = {},
+  ): Promise<JobWorkMaterialReceiptView[]> {
+    const search = query.search?.trim();
+
+    // THE RECEIPT'S OWN CREATOR COLUMN. A consignment is received rather than
+    // created, and the column says so; the filter means the same thing.
+    const status = statusIn(query.status, JOB_WORK_RECEIPT_STATUSES);
+
     const receipts = await this.prisma.scoped.jobWorkMaterialReceipt.findMany({
-      where: { deletedAt: null, ...(jobWorkOrderId ? { jobWorkOrderId } : {}) },
+      where: {
+        deletedAt: null,
+        ...(jobWorkOrderId ? { jobWorkOrderId } : {}),
+        ...jobWorkListWhere(query, 'receivedById'),
+        ...(status ? { status } : {}),
+        ...(query.principalId ? { jobWorkOrder: { principalId: query.principalId } } : {}),
+        ...(query.billingModel
+          ? { jobWorkOrder: { billingModel: query.billingModel } }
+          : {}),
+        ...(search
+          ? {
+              OR: [
+                { receiptNumber: { contains: search, mode: 'insensitive' } },
+                { jobWorkOrder: { orderNumber: { contains: search, mode: 'insensitive' } } },
+                {
+                  jobWorkOrder: {
+                    principal: { name: { contains: search, mode: 'insensitive' } },
+                  },
+                },
+                { lines: { some: { deliveryChallanNumber: { contains: search, mode: 'insensitive' } } } },
+                { lines: { some: { batchNumber: { contains: search, mode: 'insensitive' } } } },
+                { lines: { some: { item: { code: { contains: search, mode: 'insensitive' } } } } },
+                { lines: { some: { item: { name: { contains: search, mode: 'insensitive' } } } } },
+              ],
+            }
+          : {}),
+      },
       include: RECEIPT_INCLUDE,
       orderBy: { receivedAt: 'desc' },
     });
@@ -368,6 +406,189 @@ export class JobWorkReceiptsService {
    * Quality Check screen. Keeping the two apart is the point of the stage —
    * one action would let whoever booked the material also clear it.
    */
+
+  /**
+   * Corrects a receipt that is still a DRAFT.
+   *
+   * WHY ONLY A DRAFT, and why that is not a limitation. A draft is a delivery
+   * somebody is still writing down: nothing has been approved, every lot it
+   * created is quarantined, and no production order can have drawn on it. The
+   * moment it is sent for approval it becomes a document a quality officer is
+   * being asked to judge, and changing it underneath them is the one thing a
+   * consignment record must never do. So this refuses anything else, and the
+   * screen offers Edit on drafts and View on the rest for the same reason.
+   *
+   * REPLACES THE WHOLE SET rather than patching lines one by one. A correction
+   * to a challan is a restatement — this drum, not that one, and 40 kg rather
+   * than 400 — and matching old lines to new ones by position or by batch
+   * number invents an identity the paperwork does not have. Replacing is also
+   * the only version of this that is obviously correct at a glance.
+   *
+   * THE LINES ARE SOFT-DELETED, NOT REMOVED. `job_work_material_receipt_lines`
+   * carries a no-hard-delete trigger, and rightly: a line that was recorded and
+   * then corrected is part of what happened. Its lot is emptied and closed, and
+   * the ledger gets a reversing entry rather than losing the original — the
+   * ledger is append-only for the same reason.
+   */
+  async update(
+    id: string,
+    dto: CreateJobWorkMaterialReceiptDto,
+  ): Promise<JobWorkMaterialReceiptView> {
+    const tenantId = this.tenantContext.requireTenantId();
+    const userId = this.tenantContext.getUserId();
+
+    const existing = await this.requireReceipt(id);
+
+    if (existing.status !== 'DRAFT') {
+      throw new ConflictException(
+        `${existing.receiptNumber} is ${JOB_WORK_RECEIPT_STATUS_LABELS[
+          existing.status
+        ].toLowerCase()}, so it can no longer be changed. A consignment already with the quality ` +
+          'user is theirs to decide on; material that arrives now opens a fresh receipt.',
+      );
+    }
+
+    const order = await this.orders.requireOrder(existing.jobWorkOrderId);
+
+    // THE SAME CHECKS THE FIRST ENTRY PASSED. A correction is not a lesser
+    // document, and an edit that skipped the material and date rules would be
+    // the way round them.
+    const expected = await this.materialsFor(order.id);
+    const expectedById = new Map(expected.map((material) => [material.item.id, material.item]));
+
+    const prepared = dto.lines.map((line) =>
+      this.prepareLine(line, order.orderNumber, expectedById),
+    );
+
+    const duplicated = prepared
+      .map((line) => line.item)
+      .filter((item, index, all) => all.findIndex((other) => other.id === item.id) !== index);
+
+    if (duplicated[0]) {
+      throw new BadRequestException(
+        `${duplicated[0].code} is on this challan twice. Record the whole quantity of a material ` +
+          'on one line, or enter the second delivery on its own challan.',
+      );
+    }
+
+    const challan = dto.deliveryChallanNumber.trim();
+
+    await this.prisma.transaction(async (tx) => {
+      const current = await tx.jobWorkMaterialReceiptLine.findMany({
+        where: { receiptId: existing.id, deletedAt: null },
+        include: { stockLot: true, issueLines: { take: 1 } },
+      });
+
+      // BELT AND BRACES. A draft's material cannot have been issued — issuing
+      // requires an approved receipt — so this is unreachable rather than
+      // defensive. Stated as a refusal anyway, because the cost of being wrong
+      // is stock that was dispensed and then unrecorded.
+      const issued = current.find((line) => line.issueLines.length > 0);
+
+      if (issued) {
+        throw new ConflictException(
+          `Material on ${existing.receiptNumber} has already been issued to production, so the ` +
+            'receipt can no longer be corrected.',
+        );
+      }
+
+      const now = new Date();
+
+      for (const line of current) {
+        await tx.jobWorkMaterialReceiptLine.update({
+          where: { id: line.id },
+          data: { deletedAt: now },
+        });
+
+        if (!line.stockLot) continue;
+
+        // The drum this line put on the shelf, emptied and closed. CONSUMED
+        // rather than deleted: the lot number was allocated and reports have
+        // seen it, and a number that vanishes is worse than one that ends.
+        await tx.stockLot.update({
+          where: { id: line.stockLot.id },
+          data: { quantityAvailable: ZERO, status: 'CONSUMED' },
+        });
+
+        await tx.stockLedgerEntry.create({
+          data: {
+            tenantId,
+            itemId: line.itemId,
+            stockLotId: line.stockLot.id,
+            entryType: 'ADJUSTMENT',
+            quantityDelta: line.stockLot.quantityAvailable.negated(),
+            affectsUsableStock: false,
+            resultingStatus: 'CONSUMED',
+            reference: existing.receiptNumber,
+            notes: `Reversed: ${existing.receiptNumber} was corrected before approval.`,
+            createdById: userId,
+          },
+        });
+      }
+
+      await tx.jobWorkMaterialReceipt.update({
+        where: { id: existing.id },
+        data: {
+          receiptDate: fromIsoDate(dto.receiptDate),
+          notes: dto.notes?.trim() || null,
+        },
+      });
+
+      // And the new set, written exactly as a first entry writes it.
+      for (const line of prepared) {
+        const lotNumber = await this.numbering.next(tx, tenantId, 'LOT');
+
+        const created = await tx.jobWorkMaterialReceiptLine.create({
+          data: {
+            tenantId,
+            receiptId: existing.id,
+            itemId: line.item.id,
+            deliveryChallanNumber: challan,
+            batchNumber: line.batchNumber,
+            receivedQuantity: line.quantity,
+            manufacturingDate: line.manufacturingDate,
+            expiryDate: line.expiryDate,
+            notes: line.notes,
+          },
+        });
+
+        const lot = await tx.stockLot.create({
+          data: {
+            tenantId,
+            lotNumber,
+            itemId: line.item.id,
+            ownership: 'PRINCIPAL_OWNED',
+            jobWorkMaterialReceiptLineId: created.id,
+            goodsReceiptLineId: null,
+            vendorBatchNumber: line.batchNumber,
+            manufacturingDate: line.manufacturingDate,
+            expiryDate: line.expiryDate,
+            quantityReceived: line.quantity,
+            quantityAvailable: line.quantity,
+            status: 'QUARANTINE',
+          },
+        });
+
+        await tx.stockLedgerEntry.create({
+          data: {
+            tenantId,
+            itemId: line.item.id,
+            stockLotId: lot.id,
+            entryType: 'GRN_QUARANTINE',
+            quantityDelta: line.quantity,
+            affectsUsableStock: false,
+            resultingStatus: 'QUARANTINE',
+            reference: existing.receiptNumber,
+            notes: `Recorded on challan ${challan} (corrected).`,
+            createdById: userId,
+          },
+        });
+      }
+    });
+
+    return this.findOne(existing.id);
+  }
+
   async submit(id: string): Promise<JobWorkMaterialReceiptView> {
     const receipt = await this.requireReceipt(id);
 
@@ -691,14 +912,60 @@ export function toReceiptView(receipt: ReceiptWithRelations): JobWorkMaterialRec
   };
 }
 
+/**
+ * The two dates on one received material, checked against each other and
+ * against today.
+ *
+ * THE FORM ALREADY GREYS THESE OUT, and that is not the same as enforcing
+ * them. A date typed into an API request never passed through a picker, and
+ * the expiry on a drum is what decides whether production may dispense it — so
+ * the rule lives here, where nothing can go round it.
+ *
+ * STRING COMPARISON IS CORRECT for YYYY-MM-DD: it is lexicographic and
+ * chronological at once, and it cannot be moved by a timezone the way parsing
+ * to Date and back can.
+ *
+ * ONE MATERIAL NAMED PER FAILURE. A challan carries several, and "the two
+ * dates" is not enough to find the one that is wrong.
+ */
 function assertDatesOrdered(
   itemCode: string,
   manufacturingDate: string | null,
   expiryDate: string | null,
 ): void {
-  if (manufacturingDate && expiryDate && expiryDate <= manufacturingDate) {
-    // Named, because a challan carries several materials and "the two dates"
-    // is not enough to find the one that is wrong.
+  const today = new Date().toISOString().slice(0, 10);
+
+  // A DRUM CANNOT HAVE BEEN MADE TOMORROW. The commonest cause is a mistyped
+  // year, which otherwise sits in the record unnoticed until somebody works
+  // out a shelf life from it.
+  if (manufacturingDate && manufacturingDate > today) {
+    throw new BadRequestException(
+      `The manufacturing date for ${itemCode} is in the future (${manufacturingDate}). Material ` +
+        'cannot be made after the day it arrived — check the date on the challan.',
+    );
+  }
+
+  // AN EXPIRY IS REQUIRED. A drum with no expiry on the challan is one nobody
+  // can decide about later: FEFO cannot order it, the quality gate cannot
+  // judge it, and the first person to notice is whoever goes to dispense it.
+  if (!expiryDate) {
+    throw new BadRequestException(
+      `The expiry date for ${itemCode} is missing. Every drum received has to carry one — it is ` +
+        'what decides whether the material may still be used.',
+    );
+  }
+
+  // AND IT CANNOT ALREADY HAVE PASSED. Material that expired before it arrived
+  // cannot lawfully be taken into stock; booking it in would put unusable
+  // material on the shelf for production to draw on.
+  if (expiryDate < today) {
+    throw new BadRequestException(
+      `The expiry date for ${itemCode} has already passed (${expiryDate}). Expired material ` +
+        'cannot be received into stock — refuse the delivery or raise it with the principal.',
+    );
+  }
+
+  if (manufacturingDate && expiryDate <= manufacturingDate) {
     throw new BadRequestException(
       `The expiry date for ${itemCode} has to be after its manufacturing date. Check the two ` +
         'dates on the challan.',

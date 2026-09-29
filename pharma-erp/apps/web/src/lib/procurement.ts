@@ -5,7 +5,7 @@ import type {
   ProductionPlanSummary,
   ItemStockPosition,
   ItemSummary,
-  LowStockItem,
+  RequiredStockLine,
   PartySummary,
   Paginated,
   ProcurementListQuery,
@@ -90,8 +90,20 @@ export async function fetchProcurementSettings(): Promise<ApiResult<ProcurementS
   return apiFetch<ProcurementSettings>(`${BASE}/settings`, { authenticated: true });
 }
 
-export async function fetchLowStock(): Promise<ApiResult<LowStockItem[]>> {
-  return apiFetch<LowStockItem[]>(`${BASE}/low-stock`, { authenticated: true });
+/**
+ * What live sales orders need, against what is free.
+ *
+ * The endpoint runs the Auto pass before answering, so opening the tab both
+ * reports the shortages and raises the requisitions for them where Auto is on.
+ */
+export async function fetchRequiredStock(): Promise<ApiResult<RequiredStockLine[]>> {
+  return apiFetch<RequiredStockLine[]>(`${BASE}/required-stock`, {
+    authenticated: true,
+    // A requirement is a formulation scaled across every live order, and the
+    // pass that raises requisitions runs first. The default is too short for
+    // that against this database.
+    timeoutMs: 60_000,
+  });
 }
 
 export async function fetchStockPositions(): Promise<ApiResult<ItemStockPosition[]>> {
@@ -202,4 +214,22 @@ export function toOptions(
     value: row.id,
     label: row.code ? `${row.code} — ${row.name}` : row.name,
   }));
+}
+
+/**
+ * Colleagues, for the Created By filter.
+ *
+ * ONE LOOKUP FOR BOTH MODULES. Procure-to-Pay and Job Work ask the same
+ * question of the same table and share the filter control, so a second source
+ * would be a second answer free to disagree with this one.
+ *
+ * Returned as filter options rather than raw rows, because that is the only
+ * shape any caller wants.
+ */
+export async function fetchPeopleOptions(): Promise<{ value: string; label: string }[]> {
+  const people = await apiFetch<{ id: string; name: string }[]>(`${BASE}/people`, {
+    authenticated: true,
+  });
+
+  return people.ok ? people.data.map((person) => ({ value: person.id, label: person.name })) : [];
 }

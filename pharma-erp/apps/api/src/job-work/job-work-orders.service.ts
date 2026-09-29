@@ -21,6 +21,8 @@ import { fromIsoDate, toIsoDate } from '../production/production.mappers';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
 import type { CreateJobWorkOrderDto, UpdateJobWorkOrderDto } from './dto/job-work-order.dto';
+import { jobWorkOrderWhere, type JobWorkListQueryDto } from './job-work-list-query';
+
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -118,9 +120,17 @@ export class JobWorkOrdersService {
       }));
   }
 
-  async list(): Promise<JobWorkOrderSummary[]> {
+  /**
+   * The register, filtered IN THE DATABASE.
+   *
+   * Search, principal, billing model, created-between and created-by all
+   * narrow the query rather than the array it returns. The screen used to
+   * fetch every order and filter what it had been handed, which makes a pager
+   * that pages the wrong set and a request that carries rows nobody sees.
+   */
+  async list(query: JobWorkListQueryDto = {}): Promise<JobWorkOrderSummary[]> {
     const orders = await this.prisma.scoped.jobWorkOrder.findMany({
-      where: { deletedAt: null },
+      where: { deletedAt: null, ...jobWorkOrderWhere(query) },
       include: ORDER_INCLUDE,
       orderBy: { createdAt: 'desc' },
     });

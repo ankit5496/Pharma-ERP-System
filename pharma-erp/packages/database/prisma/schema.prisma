@@ -189,6 +189,7 @@ model Tenant {
   stockLots            StockLot[]
   qcResults            QcResult[]
   stockLedgerEntries   StockLedgerEntry[]
+  stockReservations    StockReservation[]
   purchaseInvoices     PurchaseInvoice[]
   purchaseInvoiceLines PurchaseInvoiceLine[]
   vendorPayments       VendorPayment[]
@@ -2620,14 +2621,36 @@ model PurchaseRequisition {
 
   itemId String @map("item_id") @db.Uuid
 
-  /// Stock and reorder level AS THEY WERE when the requisition was raised.
+  /// Free stock AS IT WAS when the requisition was raised.
   ///
-  /// Snapshots, not live reads, because the requisition has to justify itself
-  /// later: "raised when stock was 20 against a reorder level of 50" is the
+  /// A snapshot, not a live read, because the requisition has to justify itself
+  /// later: "raised when 40 kg was free against a requirement of 100" is the
   /// record. Live values move, and a document that silently rewrites its own
   /// reason is not a document.
-  stockAtRequest        Decimal @map("stock_at_request") @db.Decimal(18, 4)
-  reorderLevelAtRequest Decimal @map("reorder_level_at_request") @db.Decimal(18, 4)
+  stockAtRequest Decimal @map("stock_at_request") @db.Decimal(18, 4)
+
+  /// NULLABLE, and null on everything raised from a sales order.
+  ///
+  /// It held the reorder level the shortage was measured against, back when a
+  /// requisition was triggered by stock falling below a level on the item
+  /// master. Requirements now come from the sales order's formulation, which
+  /// has no such level, so there is nothing honest to put here. KEPT rather
+  /// than dropped: requisitions raised under the old rule still carry the
+  /// figure that justified them, and erasing it would rewrite their reason.
+  reorderLevelAtRequest Decimal? @map("reorder_level_at_request") @db.Decimal(18, 4)
+
+  /// THE DEMAND THIS REQUISITION SERVES — the sales order and the line on it.
+  ///
+  /// The trail the whole flow turns on: sales order -> finished product ->
+  /// formulation -> required material -> shortfall -> this document. Both
+  /// optional, because a requisition raised by hand for a material that serves
+  /// no single order answers neither.
+  ///
+  /// POINTING AT the sales order rather than copying its product and quantity:
+  /// the order is the source of truth for both, and a copy here would be a
+  /// second version of the same fact, free to drift.
+  salesOrderId     String? @map("sales_order_id") @db.Uuid
+  salesOrderItemId String? @map("sales_order_item_id") @db.Uuid
 
   requiredQuantity Decimal @map("required_quantity") @db.Decimal(18, 4)
 
@@ -2697,6 +2720,9 @@ model PurchaseRequisition {
   finishedProduct    Item? @relation("RequisitionFinishedProduct", fields: [finishedProductId], references: [id], onDelete: Restrict)
   packagingComponent Item? @relation("RequisitionPackagingComponent", fields: [packagingComponentId], references: [id], onDelete: Restrict)
 
+  salesOrder     SalesOrder?     @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
+  salesOrderItem SalesOrderItem? @relation(fields: [salesOrderItemId], references: [id], onDelete: Restrict)
+
   purchaseOrderLines PurchaseOrderLine[]
 
   @@unique([tenantId, number])
@@ -2705,6 +2731,9 @@ model PurchaseRequisition {
   @@index([tenantId, triggerType, status])
   @@index([tenantId, finishedProductId])
   @@index([tenantId, packagingComponentId])
+  /// The duplicate guard reads by (sales order line, item): one requisition per
+  /// shortage, however many times the Required stock tab is opened.
+  @@index([tenantId, salesOrderItemId, itemId])
   @@map("purchase_requisitions")
 }
 
@@ -2940,6 +2969,18 @@ model StockLot {
   /// material usable, incoming QC does.
   status StockLotStatus @default(QUARANTINE)
 
+  /// WHERE THE MATERIAL PHYSICALLY IS, in the store's own words.
+  ///
+  /// A separate fact from `status`, though the two move together: a rejected
+  /// drum is under lock in the rejected area precisely BECAUSE it is rejected.
+  /// Recorded rather than derived because the words are the site's, an
+  /// inspector asks to be taken to the place, and a company that renames its
+  /// quarantine area should not have to change code.
+  ///
+  /// Free text, and nullable. There is no location master to point at, and
+  /// inventing one to hold three strings would be a register nobody maintains.
+  storageLocation String? @map("storage_location") @db.VarChar(120)
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
@@ -2951,6 +2992,7 @@ model StockLot {
 
   qcResults             QcResult[]
   ledgerEntries         StockLedgerEntry[]
+  reservations          StockReservation[]
   jobWorkIssueLines     JobWorkMaterialIssueLine[] @relation("JobWorkIssueLotLines")
   jobWorkPackagingUse   JobWorkBatchPackagingConsumption[] @relation("JobWorkBatchPackagingLot")
   /// Production consumes the same stock Procure-to-Pay received; see the note
@@ -2997,6 +3039,9 @@ model QcResult {
   tenant   Tenant   @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   stockLot StockLot @relation(fields: [stockLotId], references: [id], onDelete: Restrict)
 
+  /// The movements this decision caused. See StockLedgerEntry.qcResultId.
+  ledgerEntries StockLedgerEntry[]
+
   @@index([tenantId, stockLotId, createdAt])
   @@map("qc_results")
 }
@@ -3006,6 +3051,68 @@ model QcResult {
 /// Append-only for the same reason AuditLog is -- a ledger whose rows can be
 /// edited is not evidence of anything. A mistake is corrected by posting the
 /// opposite entry, which is also how the correction becomes visible.
+/// Usable material spoken for by the sales order it was bought to serve.
+///
+/// WHY IT EXISTS. Material bought against a sales order's requirement is not
+/// free the moment QC accepts it — it is that order's. Without this, the
+/// Required stock tab would see it as available, report the next order as
+/// covered, and the same drum would be promised twice. "Free stock" is usable
+/// stock LESS what is reserved here, and that is the figure procurement
+/// decisions are made on.
+///
+/// AGAINST A LOT, NOT AN ITEM. A reservation has to survive the lot being
+/// rejected later or expiring, and a recall asks which drum went to which
+/// customer. An item-level reservation could answer neither.
+///
+/// NOT THE SAME AS BatchAllocation, which reserves FINISHED goods against a
+/// sales order for dispatch. This reserves the RAW and PACKING material bought
+/// to make them. One is the output, the other the input; merging them would
+/// mean a table whose rows mean two different things.
+model StockReservation {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  stockLotId String @map("stock_lot_id") @db.Uuid
+
+  /// The demand it is held for. Both, because the order is what a person reads
+  /// and the line is what the requirement was calculated from.
+  salesOrderId     String @map("sales_order_id") @db.Uuid
+  salesOrderItemId String @map("sales_order_item_id") @db.Uuid
+
+  /// The finished product the material is for, carried from the order line so
+  /// a recall can be run without walking back through it.
+  quantity Decimal @db.Decimal(18, 4)
+
+  /// What raised it, e.g. "GRN-2026-0003" or the QC decision reference.
+  reference String? @db.VarChar(64)
+  notes     String? @db.VarChar(500)
+
+  /// SET RATHER THAN DELETED when the hold ends — consumed into production,
+  /// released because the order was cancelled, or freed when the lot was
+  /// rejected after acceptance. A reservation that vanishes takes its own
+  /// history with it, and "who held this drum in March" is an audit question.
+  releasedAt     DateTime? @map("released_at") @db.Timestamptz(6)
+  releasedReason String?   @map("released_reason") @db.VarChar(255)
+
+  createdById String?  @map("created_by_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant         Tenant         @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  stockLot       StockLot       @relation(fields: [stockLotId], references: [id], onDelete: Restrict)
+  salesOrder     SalesOrder     @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
+  salesOrderItem SalesOrderItem @relation(fields: [salesOrderItemId], references: [id], onDelete: Restrict)
+
+  /// One live hold per (lot, order line): accepting the same lot twice must
+  /// top up the hold rather than add a second one. Enforced in the service,
+  /// because a partial unique index on `released_at IS NULL` is not something
+  /// Prisma can express.
+  @@index([tenantId, stockLotId, releasedAt])
+  @@index([tenantId, salesOrderId, releasedAt])
+  @@index([tenantId, salesOrderItemId, releasedAt])
+  @@map("stock_reservations")
+}
+
 model StockLedgerEntry {
   id       BigInt @id @default(autoincrement())
   tenantId String @map("tenant_id") @db.Uuid
@@ -3025,6 +3132,27 @@ model StockLedgerEntry {
   /// history of a lot reads in one query and in one order.
   affectsUsableStock Boolean @default(false) @map("affects_usable_stock")
 
+  /// THE BUCKET THIS MOVEMENT PUT THE MATERIAL IN, or took it out of.
+  ///
+  /// `affectsUsableStock` answers one question — did usable stock change — and
+  /// it cannot tell quarantine from rejected from held, which are three
+  /// different places with three different consequences. A rejected drum and a
+  /// held one both leave usable stock alone and are not the same fact.
+  ///
+  /// Nullable for movements that are not about a QC bucket, such as an
+  /// adjustment.
+  resultingStatus StockLotStatus? @map("resulting_status")
+
+  /// The QC decision that caused it, where one did.
+  ///
+  /// POINTING AT the decision rather than copying its verdict, its inspector
+  /// and its timestamp onto every entry: the QcResult is the record, and two
+  /// versions of one verdict are free to drift.
+  qcResultId String? @map("qc_result_id") @db.Uuid
+
+  /// Where the material sat after this movement. See StockLot.storageLocation.
+  storageLocation String? @map("storage_location") @db.VarChar(120)
+
   /// Document that caused it, e.g. "GRN-2026-0003".
   reference String? @db.VarChar(64)
   notes     String? @db.VarChar(500)
@@ -3035,6 +3163,7 @@ model StockLedgerEntry {
   tenant   Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
   item     Item      @relation(fields: [itemId], references: [id], onDelete: Restrict)
   stockLot StockLot? @relation(fields: [stockLotId], references: [id], onDelete: Restrict)
+  qcResult QcResult? @relation(fields: [qcResultId], references: [id], onDelete: Restrict)
 
   @@index([tenantId, itemId, createdAt])
   @@index([tenantId, stockLotId, createdAt])
@@ -3325,6 +3454,12 @@ model SalesOrder {
   salesInvoices SalesInvoice[]
   salesReturns  SalesReturn[]
 
+  /// What was bought to serve this order. See PurchaseRequisition.salesOrderId.
+  purchaseRequisitions PurchaseRequisition[]
+
+  /// Material held for this order once QC accepted it. See StockReservation.
+  stockReservations StockReservation[]
+
   @@unique([tenantId, orderNumber])
   @@index([tenantId, status, deletedAt])
   @@index([tenantId, customerId])
@@ -3366,6 +3501,12 @@ model SalesOrderItem {
   item       Item       @relation(fields: [itemId], references: [id], onDelete: Restrict)
 
   allocations BatchAllocation[]
+
+  /// What was bought to serve this line. See PurchaseRequisition.salesOrderId.
+  purchaseRequisitions PurchaseRequisition[]
+
+  /// Material held for this line once QC accepted it. See StockReservation.
+  stockReservations StockReservation[]
 
   @@unique([salesOrderId, lineNumber])
   @@index([tenantId, itemId])

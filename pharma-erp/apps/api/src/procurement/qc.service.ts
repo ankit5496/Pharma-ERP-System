@@ -13,6 +13,7 @@ import type {
   QcQueueItem,
   StockLotStatus,
 } from '@pharma-erp/types';
+import { QC_DECISION_LABELS, STOCK_LOT_STATUS_LABELS } from '@pharma-erp/types';
 
 import { AuditService } from '../common/audit/audit.service';
 import { JobWorkReceiptsService } from '../job-work/job-work-receipts.service';
@@ -43,6 +44,21 @@ const LOT_INCLUDE = {
           receiptDate: true,
           vendor: { select: { id: true, name: true } },
           purchaseOrder: { select: { id: true, number: true } },
+        },
+      },
+      // THE DEMAND THIS DRUM WAS BOUGHT FOR, four links back:
+      // GRN line -> purchase order line -> requisition -> sales order line.
+      // Every link already existed; nothing here is a copy of anything.
+      purchaseOrderLine: {
+        select: {
+          requisition: {
+            select: {
+              number: true,
+              salesOrderId: true,
+              salesOrderItemId: true,
+              salesOrder: { select: { orderNumber: true, status: true } },
+            },
+          },
         },
       },
     },
@@ -141,6 +157,13 @@ export class QcService {
     }
 
     if (query.itemId) where.itemId = query.itemId;
+
+    // WHO INSPECTED IT. A lot with no decision yet has no inspector, so
+    // filtering by one narrows to lots somebody has actually judged — which is
+    // what the question means.
+    if (query.raisedById) {
+      where.qcResults = { some: { inspectedById: query.raisedById } };
+    }
 
     // Vendor and receipt date both live two levels up, on the goods receipt.
     // Assembled as one object and assigned once — merging into a partially
@@ -250,8 +273,11 @@ export class QcService {
     const wasUsable = lot.status === 'USABLE';
     const willBeUsable = dto.decision === 'ACCEPTED';
 
+    const newStatus = statusFor(dto.decision);
+    const location = dto.storageLocation?.trim() || defaultLocationFor(newStatus);
+
     await this.prisma.transaction(async (tx) => {
-      await tx.qcResult.create({
+      const result = await tx.qcResult.create({
         data: {
           tenantId,
           stockLotId: lot.id,
@@ -260,11 +286,15 @@ export class QcService {
           remarks: dto.remarks?.trim() || null,
           inspectedById,
         },
+        select: { id: true },
       });
 
       await tx.stockLot.update({
         where: { id: lot.id },
-        data: { status: statusFor(dto.decision) },
+        // WHERE IT MOVED TO, alongside what it became. The two travel together
+        // because they describe one physical act: a rejected drum goes to the
+        // rejected area BECAUSE it was rejected.
+        data: { status: newStatus, storageLocation: location },
       });
 
       // Non-null by the `ownership` filter in requireLot; guarded rather than
@@ -273,71 +303,142 @@ export class QcService {
         ? lot.goodsReceiptLine.goodsReceipt.number
         : lot.lotNumber;
 
-      if (willBeUsable && !wasUsable) {
-        // Quarantine empties, usable stock gains. Two entries rather than one,
-        // because the ledger's job is to show where material moved from as
-        // well as to.
-        await tx.stockLedgerEntry.createMany({
-          data: [
-            {
-              tenantId,
-              itemId: lot.itemId,
-              stockLotId: lot.id,
-              entryType: 'QC_ACCEPTED',
-              quantityDelta: quantity.negated(),
-              affectsUsableStock: false,
-              reference,
-              notes: 'Released from quarantine by incoming QC.',
-              createdById: inspectedById,
-            },
-            {
-              tenantId,
-              itemId: lot.itemId,
-              stockLotId: lot.id,
-              entryType: 'QC_ACCEPTED',
-              quantityDelta: quantity,
-              affectsUsableStock: true,
-              reference,
-              notes: 'Accepted into usable stock, available for FEFO picking.',
-              createdById: inspectedById,
-            },
-          ],
-        });
-      } else if (!willBeUsable && wasUsable) {
-        // A previously accepted lot pulled back. Usable stock must fall, or
-        // production would keep seeing material that is no longer releasable.
-        await tx.stockLedgerEntry.create({
-          data: {
-            tenantId,
-            itemId: lot.itemId,
-            stockLotId: lot.id,
-            entryType: dto.decision === 'REJECTED' ? 'QC_REJECTED' : 'QC_HOLD',
+      // ---------------------------------------------------------------------
+      // A LEDGER RECORD FOR EVERY DECISION, whatever the verdict.
+      //
+      // It used to write one NEGATIVE entry for a rejection or a hold —
+      // quarantine falls, and nothing anywhere says where the material went.
+      // The quantity existed only on the lot row, so the ledger could not
+      // answer "how much rejected stock is in the building", which is exactly
+      // what a return, a debit note or an inspector asks.
+      //
+      // Now every decision writes the same PAIR: out of the bucket it was in,
+      // into the bucket it moved to. Accepted, held and rejected read
+      // identically in shape and differ only in `resultingStatus` — which is
+      // what makes them comparable and countable.
+      //
+      // `affectsUsableStock` stays a separate flag because it answers a
+      // different question: only ACCEPTED material may be dispensed, and rule 8
+      // is that flag being false everywhere else.
+      // ---------------------------------------------------------------------
+
+      const from = lot.status;
+      const movement = {
+        tenantId,
+        itemId: lot.itemId,
+        stockLotId: lot.id,
+        entryType: entryTypeFor(dto.decision),
+        qcResultId: result.id,
+        reference,
+        createdById: inspectedById,
+      };
+
+      const verdict = QC_DECISION_LABELS[dto.decision].toLowerCase();
+      const reason = dto.remarks?.trim();
+
+      await tx.stockLedgerEntry.createMany({
+        data: [
+          {
+            ...movement,
+            // OUT of wherever it was. Negative, and flagged against usable
+            // stock only when it was actually usable — a lot leaving
+            // quarantine never counted towards it.
             quantityDelta: quantity.negated(),
-            affectsUsableStock: true,
-            reference,
-            notes: `Withdrawn from usable stock: ${dto.remarks?.trim() ?? 'no reason recorded'}.`,
-            createdById: inspectedById,
+            affectsUsableStock: wasUsable,
+            resultingStatus: from,
+            storageLocation: lot.storageLocation,
+            notes: `Left ${STOCK_LOT_STATUS_LABELS[from].toLowerCase()} on a QC decision.`,
           },
-        });
-      } else if (!willBeUsable) {
-        // Quarantine -> rejected/hold. Quarantine falls; usable stock is not
-        // touched at all, which is rule 8 expressed as arithmetic.
-        await tx.stockLedgerEntry.create({
+          {
+            ...movement,
+            // INTO the bucket the decision named. This is the entry that did
+            // not exist for a rejection or a hold.
+            quantityDelta: quantity,
+            affectsUsableStock: willBeUsable,
+            resultingStatus: newStatus,
+            storageLocation: location,
+            notes: willBeUsable
+              ? 'Accepted into usable stock, available for FEFO picking.'
+              : `${verdict === 'on hold' ? 'Held' : 'Rejected'} at incoming QC${
+                  // The remark usually ends in a full stop of its own, and
+                  // "assay.." on a GMP record reads as a typo nobody fixed.
+                  reason ? `: ${reason.replace(/[.s]+$/, '')}` : ''
+                }. Tracked here for return, debit note and audit; never usable.`,
+          },
+        ],
+      });
+
+      // ---------------------------------------------------------------------
+      // AND, WHERE THE MATERIAL WAS BOUGHT FOR A SALES ORDER, HOLD IT FOR IT.
+      //
+      // Accepting material that a sales order's requirement paid for does not
+      // make it free stock — it makes it that order's. Without this the
+      // Required stock tab would see it as available, report the next order as
+      // covered, and the same drum would be promised twice.
+      //
+      // The chain is walked, never copied: GRN line -> purchase order line ->
+      // requisition -> sales order line.
+      // ---------------------------------------------------------------------
+
+      const demand = lot.goodsReceiptLine?.purchaseOrderLine?.requisition ?? null;
+
+      if (willBeUsable && demand?.salesOrderId && demand.salesOrderItemId) {
+        // NOT FOR AN ORDER THAT IS OVER. A cancelled or completed order has no
+        // claim left, and holding material for one would lock it away for good.
+        const settled = demand.salesOrder?.status === 'CANCELLED' ||
+          demand.salesOrder?.status === 'COMPLETED';
+
+        if (!settled) {
+          // UPSERT, because the partial unique index allows one live hold per
+          // (lot, order line): re-accepting a lot that was held and then
+          // released tops the hold up rather than failing on the second write.
+          const existing = await tx.stockReservation.findFirst({
+            where: {
+              stockLotId: lot.id,
+              salesOrderItemId: demand.salesOrderItemId,
+              releasedAt: null,
+            },
+            select: { id: true },
+          });
+
+          if (existing) {
+            await tx.stockReservation.update({
+              where: { id: existing.id },
+              data: { quantity, reference, createdById: inspectedById },
+            });
+          } else {
+            await tx.stockReservation.create({
+              data: {
+                tenantId,
+                stockLotId: lot.id,
+                salesOrderId: demand.salesOrderId,
+                salesOrderItemId: demand.salesOrderItemId,
+                quantity,
+                reference,
+                notes:
+                  `Held for ${demand.salesOrder?.orderNumber ?? 'the originating sales order'}, ` +
+                  `which ${demand.number} was raised to serve.`,
+                createdById: inspectedById,
+              },
+            });
+          }
+        }
+      }
+
+      // A LOT THAT LEAVES USABLE STOCK CANNOT STAY RESERVED. Rejecting or
+      // holding material somebody was counting on is exactly when the shortage
+      // has to become visible again, so the hold is released — and kept, with
+      // its reason, because it is history.
+      if (!willBeUsable) {
+        await tx.stockReservation.updateMany({
+          where: { stockLotId: lot.id, releasedAt: null },
           data: {
-            tenantId,
-            itemId: lot.itemId,
-            stockLotId: lot.id,
-            entryType: dto.decision === 'REJECTED' ? 'QC_REJECTED' : 'QC_HOLD',
-            quantityDelta: quantity.negated(),
-            affectsUsableStock: false,
-            reference,
-            notes: `${dto.decision === 'REJECTED' ? 'Rejected' : 'Held'} at incoming QC: ${
-              dto.remarks?.trim() ?? 'no reason recorded'
-            }.`,
-            createdById: inspectedById,
+            releasedAt: new Date(),
+            releasedReason: `Lot ${verdict} at incoming QC${reason ? `: ${reason}` : ''}.`,
           },
         });
       }
+
 
     });
 
@@ -454,4 +555,35 @@ export class QcService {
 
 function statusFor(decision: QcDecision): StockLotStatus {
   return decision === 'ACCEPTED' ? 'USABLE' : decision === 'REJECTED' ? 'REJECTED' : 'ON_HOLD';
+}
+
+/** The ledger's own name for what the decision did. */
+function entryTypeFor(decision: QcDecision): 'QC_ACCEPTED' | 'QC_REJECTED' | 'QC_HOLD' {
+  return decision === 'ACCEPTED'
+    ? 'QC_ACCEPTED'
+    : decision === 'REJECTED'
+      ? 'QC_REJECTED'
+      : 'QC_HOLD';
+}
+
+/**
+ * Where material in a given state is kept, when nobody says otherwise.
+ *
+ * A STARTING POINT, NOT A RULE. Every site names its areas differently and the
+ * decision form can override this; what it must not do is leave the question
+ * blank, because "rejected, location unknown" is the state an inspector asks
+ * about. GMP requires the three to be physically separate, which is why the
+ * default is three different places rather than one store with a flag.
+ */
+function defaultLocationFor(status: StockLotStatus): string {
+  switch (status) {
+    case 'USABLE':
+      return 'Approved store';
+    case 'REJECTED':
+      return 'Rejected store (locked)';
+    case 'ON_HOLD':
+      return 'Quarantine — held';
+    default:
+      return 'Quarantine';
+  }
 }

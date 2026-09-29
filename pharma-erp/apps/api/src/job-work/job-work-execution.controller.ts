@@ -50,6 +50,7 @@ import {
   RecordJobWorkPackingDto,
 } from './dto/job-work-workflow.dto';
 import { JobWorkDispatchService } from './job-work-dispatch.service';
+import { JobWorkListQueryDto } from './job-work-list-query';
 import { JobWorkOrdersService } from './job-work-orders.service';
 import { JobWorkProductionService } from './job-work-production.service';
 import { JobWorkReadinessService } from './job-work-readiness.service';
@@ -106,10 +107,13 @@ export class JobWorkExecutionController {
     return this.orders.orderable();
   }
 
+  // EVERY REGISTER TAKES THE SAME FILTERS, through the same DTO: search,
+  // status, created between, created by, principal and billing model. The
+  // service applies them to the QUERY, not to the rows it has already read.
   @Get('orders')
   @SkipAudit('Read-only register.')
-  async listOrders(): Promise<JobWorkOrderSummary[]> {
-    return this.orders.list();
+  async listOrders(@Query() query: JobWorkListQueryDto): Promise<JobWorkOrderSummary[]> {
+    return this.orders.list(query);
   }
 
   @Get('orders/:id')
@@ -185,9 +189,26 @@ export class JobWorkExecutionController {
   @Get('material-receipts')
   @SkipAudit('Read-only register.')
   async listReceipts(
-    @Query('jobWorkOrderId') jobWorkOrderId?: string,
+    @Query() query: JobWorkListQueryDto,
   ): Promise<JobWorkMaterialReceiptView[]> {
-    return this.receipts.list(jobWorkOrderId);
+    return this.receipts.list(query.jobWorkOrderId, query);
+  }
+
+  /**
+   * Corrects a consignment that is still a DRAFT.
+   *
+   * SAME ROLES AS RECORDING ONE, because it is the same act: the store wrote
+   * the challan down and is writing it down again properly. The service
+   * refuses anything past DRAFT, which is what stops a document somebody is
+   * being asked to approve changing underneath them.
+   */
+  @Patch('material-receipts/:id')
+  @Roles('ADMIN', 'STORE_OFFICER')
+  async updateReceipt(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CreateJobWorkMaterialReceiptDto,
+  ): Promise<JobWorkMaterialReceiptView> {
+    return this.receipts.update(id, dto);
   }
 
   /** The store takes material in, so STORE_OFFICER — section 18. */
@@ -250,9 +271,9 @@ export class JobWorkExecutionController {
   @Get('production-orders')
   @SkipAudit('Read-only register.')
   async listProduction(
-    @Query('jobWorkOrderId') jobWorkOrderId?: string,
+    @Query() query: JobWorkListQueryDto,
   ): Promise<JobWorkProductionOrderView[]> {
-    return this.production.list(jobWorkOrderId);
+    return this.production.list(query.jobWorkOrderId, query);
   }
 
   @Get('production-orders/:id')
@@ -334,9 +355,9 @@ export class JobWorkExecutionController {
   @Get('material-issues')
   @SkipAudit('Read-only register.')
   async listIssues(
-    @Query('productionOrderId') productionOrderId?: string,
+    @Query() query: JobWorkListQueryDto,
   ): Promise<JobWorkMaterialIssueView[]> {
-    return this.workflow.listIssues(productionOrderId);
+    return this.workflow.listIssues(query.productionOrderId, query);
   }
 
   @Get('material-issues/:id')
@@ -392,9 +413,9 @@ export class JobWorkExecutionController {
   @Get('batches')
   @SkipAudit('Read-only register.')
   async listBatches(
-    @Query('productionOrderId') productionOrderId?: string,
+    @Query() query: JobWorkListQueryDto,
   ): Promise<JobWorkBatchView[]> {
-    return this.workflow.listBatches(productionOrderId);
+    return this.workflow.listBatches(query.productionOrderId, query);
   }
 
   @Get('batches/:id')
@@ -470,9 +491,9 @@ export class JobWorkExecutionController {
   @Get('invoices')
   @SkipAudit('Read-only register.')
   async listInvoices(
-    @Query('jobWorkOrderId') jobWorkOrderId?: string,
+    @Query() query: JobWorkListQueryDto,
   ): Promise<JobWorkInvoiceView[]> {
-    return this.dispatch.list(jobWorkOrderId);
+    return this.dispatch.list(query.jobWorkOrderId, query);
   }
 
   @Post('dispatches')
@@ -495,9 +516,7 @@ export class JobWorkExecutionController {
    */
   @Get('register')
   @SkipAudit('Read-only derived view.')
-  async jobWorkRegister(
-    @Query('principalId') principalId?: string,
-  ): Promise<JobWorkRegisterGroup[]> {
-    return this.register.register(principalId);
+  async jobWorkRegister(@Query() query: JobWorkListQueryDto): Promise<JobWorkRegisterGroup[]> {
+    return this.register.register(query);
   }
 }

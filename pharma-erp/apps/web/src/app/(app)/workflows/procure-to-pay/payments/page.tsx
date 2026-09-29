@@ -27,10 +27,10 @@ import {
   fetchVendors,
   toListQuery,
   toOptions,
-  fetchInvoices,
+  fetchInvoices,  fetchPeopleOptions,
 } from '@/lib/procurement';
 
-export const metadata: Metadata = { title: 'Vendor payments' };
+export const metadata: Metadata = { title: 'Vendor Payments' };
 export const dynamic = 'force-dynamic';
 
 /**
@@ -51,7 +51,7 @@ export default async function PaymentsPage({
 }) {
   const query = toListQuery(await searchParams);
 
-  const [payables, vendors, report, invoices] = await Promise.all([
+  const [payables, vendors, report, invoices, people] = await Promise.all([
     fetchPayables(query),
     fetchVendors(),
     // The report honours the vendor filter so the summary and the list below
@@ -63,6 +63,8 @@ export default async function PaymentsPage({
     // record is fetched rather than reconstructed. Same filters, same page
     // size, so the two lists describe the same invoices.
     fetchInvoices(query),
+    // Colleagues, for the Created By filter. One lookup, shared with Job Work.
+    fetchPeopleOptions(),
   ]);
 
   // Keyed by id so a row finds its invoice without scanning the list per row.
@@ -77,7 +79,7 @@ export default async function PaymentsPage({
       <PayablesReportPanel result={report} />
 
       <Panel
-        title="Vendor payables"
+        title="Vendor Payables"
         subtitle={
           payables.ok
             ? `${payables.data.total} approved invoice${payables.data.total === 1 ? '' : 's'}`
@@ -95,6 +97,7 @@ export default async function PaymentsPage({
             value: status,
             label: PAYMENT_STATUS_LABELS[status],
           }))}
+          raisedBy={people}
           vendors={vendors.ok ? toOptions(vendors.data) : []}
         />
 

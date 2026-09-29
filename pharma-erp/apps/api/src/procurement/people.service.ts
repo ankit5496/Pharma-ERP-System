@@ -58,6 +58,31 @@ export class PeopleService {
     return users.map((user) => user.id);
   }
 
+  /**
+   * Everyone in the company, for a "created by" filter to offer.
+   *
+   * ONE LOOKUP FOR BOTH MODULES, and the reason it is not the admin users
+   * endpoint: that one is ADMIN-only and returns roles, invitations and
+   * password state, none of which a filter needs and none of which a buyer
+   * should be able to read. This returns a name and an id.
+   *
+   * OPEN TO EVERY SIGNED-IN ROLE, because the filter is on every register and
+   * a screen whose filter is empty for most of the company is a screen that
+   * looks broken.
+   *
+   * SOFT-DELETED PEOPLE ARE INCLUDED, for the same reason `load` resolves
+   * them: records they created still name them, and a filter that cannot
+   * select a departed colleague cannot find their work.
+   */
+  async list(): Promise<{ id: string; name: string }[]> {
+    const users = await this.prisma.scoped.user.findMany({
+      select: { id: true, fullName: true },
+      orderBy: { fullName: 'asc' },
+    });
+
+    return users.map((user) => ({ id: user.id, name: user.fullName }));
+  }
+
   async load(userIds: readonly string[]): Promise<PeopleMap> {
     if (userIds.length === 0) return new Map();
 

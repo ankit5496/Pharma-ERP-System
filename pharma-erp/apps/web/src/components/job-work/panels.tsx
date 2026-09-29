@@ -1,5 +1,6 @@
 import {
   AGREEMENT_STATUS_LABELS,
+  AGREEMENT_STATUSES,
   BILLING_MODELS,
   BILLING_MODEL_LABELS,
   CONVERSION_RATE_BASIS_LABELS,
@@ -46,6 +47,7 @@ import Link from 'next/link';
 
 import { apiFetch, type ApiResult } from '@/lib/api';
 import { FilterButton, FilterPanel, SearchBox } from '@/components/procurement/filter-bar';
+import { JobWorkAgreementRowActions } from '@/components/job-work/agreement-view';
 
 import {
   CreateJobWorkDispatchButton,
@@ -135,7 +137,7 @@ const PATH: Record<string, { label: string; tone: 'warn' | 'info'; detail: strin
     detail: 'Principal supplies the material free of cost; we invoice the conversion charge only.',
   },
   OWN_PROCUREMENT: {
-    label: 'Own-procurement',
+    label: 'Own Procurement',
     tone: 'info',
     detail: 'We buy the material through the normal purchase flow and invoice the full value.',
   },
@@ -164,24 +166,66 @@ const param = (query: StepQuery, key: string): string | undefined =>
   typeof query[key] === 'string' && query[key].trim() ? (query[key] as string).trim() : undefined;
 
 /**
- * Whether a row answers the search term.
+ * THE FILTERS, ON THEIR WAY TO THE DATABASE.
  *
- * EVERY WORD HAS TO APPEAR, in any of the fields handed in and in any order,
- * so "healwell 500" finds the HealCure-500 order for HealWell without anyone
- * having to remember which column holds which half of it.
+ * Every Job Work register takes the same six, and every one of them is applied
+ * to the QUERY rather than to the rows the page has already been handed. That
+ * distinction is the whole point: a screen that fetches everything and filters
+ * the array it received has a pager that pages the wrong set, a count that
+ * disagrees with the rows, and a request that carries a hundred records to
+ * show three.
+ *
+ * ONE HELPER, not one per screen. The keys are the ones the shared filter
+ * panel writes into the URL, so adding a control there reaches every register
+ * at once.
  */
-function matches(term: string | undefined, ...parts: (string | null | undefined)[]): boolean {
-  if (!term) return true;
+function listQuery(query: StepQuery, extra: Record<string, string | undefined> = {}): string {
+  const params = new URLSearchParams();
 
-  const hay = parts.filter(Boolean).join(' ').toLowerCase();
+  const keys = ['search', 'status', 'dateFrom', 'dateTo', 'principalId', 'billingModel'];
 
-  return term
-    .toLowerCase()
-    .split(/\s+/)
-    .every((word) => hay.includes(word));
+  for (const key of keys) {
+    const value = param(query, key);
+
+    if (value) params.set(key, value);
+  }
+
+  // CREATED BY, UNDER BOTH ITS NAMES.
+  //
+  // The shared filter panel calls the person who owns a record the one who
+  // RAISED it — `raisedById` — because it was built for Procure-to-Pay, where
+  // a requisition is raised. Job Work's endpoints call the same person the
+  // creator. Two names for one filter is a thing to translate in one place,
+  // not to argue with: without this line the control writes a key nothing
+  // reads, and picking a colleague silently changes nothing at all.
+  //
+  // `createdById` wins where both are present, because that is what this
+  // module's own registers write.
+  const creator = param(query, 'createdById') ?? param(query, 'raisedById');
+
+  if (creator) params.set('createdById', creator);
+
+  for (const [key, value] of Object.entries(extra)) {
+    if (value) params.set(key, value);
+  }
+
+  const search = params.toString();
+
+  return search ? `?${search}` : '';
 }
 
-/** The principals in a set of rows, as filter options. */
+/** Colleagues, for the Created By filter. One lookup, shared with P2P. */
+async function peopleOptions(): Promise<{ value: string; label: string }[]> {
+  const people = await get<{ id: string; name: string }[]>('/api/v1/procurement/people');
+
+  return people.ok ? people.data.map((person) => ({ value: person.id, label: person.name })) : [];
+}
+
+// THE CLIENT-SIDE SEARCH HELPER IS GONE. Every Job Work register now sends its
+// search term to the API, and the agreement register was the last caller — a
+// spare copy of "does this row match" is how two screens come to disagree about
+// what a search means.
+
 /**
  * The principals present in a list, newest first.
  *
@@ -228,6 +272,18 @@ const BILLING_MODEL_OPTIONS = BILLING_MODELS.map((model) => ({
   label: BILLING_MODEL_LABELS[model],
 }));
 
+/**
+ * The three states an agreement can be in, as filter options.
+ *
+ * DERIVED, NOT STORED: an agreement is in force, not yet started or expired
+ * according to its validity dates against today. The query says so in dates;
+ * these are the names the badge on the row already uses.
+ */
+const AGREEMENT_STATUS_OPTIONS = AGREEMENT_STATUSES.map((status) => ({
+  value: status,
+  label: AGREEMENT_STATUS_LABELS[status],
+}));
+
 /** The count a table title carries, with no explanation attached to it. */
 const countLabel = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
@@ -236,33 +292,32 @@ const countLabel = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's
 // ---------------------------------------------------------------------------
 
 export async function PrincipalsPanel(query: StepQuery) {
-  const agreements = await apiFetch<JobWorkAgreementSummary[]>('/api/v1/job-work/agreements', {
-    authenticated: true,
-  });
+  // FILTERED BY THE DATABASE, like every other Job Work register. This screen
+  // was the last one sifting the array it had just been handed, which gives a
+  // count that is right, rows that are right, and a request that carries a
+  // hundred agreements to show three.
+  //
+  // THE UNFILTERED LIST IS FETCHED ONLY WHEN SOMETHING IS FILTERED, and only to
+  // fill the principal dropdown: deriving it from the filtered rows would
+  // narrow it to the chosen principal and strand the reader with no way back.
+  const filtering = listQuery(query) !== '';
 
-  const search = param(query, 'search');
-  const principalId = param(query, 'principalId');
-  const billingModel = param(query, 'billingModel');
+  const [agreements, unfiltered, people] = await Promise.all([
+    apiFetch<JobWorkAgreementSummary[]>(`/api/v1/job-work/agreements${listQuery(query)}`, {
+      authenticated: true,
+    }),
+    filtering
+      ? apiFetch<JobWorkAgreementSummary[]>('/api/v1/job-work/agreements', { authenticated: true })
+      : Promise.resolve(null),
+    peopleOptions(),
+  ]);
 
-  const all = agreements.ok ? agreements.data : [];
-
-  const rows = all.filter(
-    (agreement) =>
-      (!principalId || agreement.principalId === principalId) &&
-      (!billingModel || agreement.billingModel === billingModel) &&
-      matches(
-        search,
-        agreement.principalName,
-        agreement.agreementReference,
-        BILLING_MODEL_LABELS[agreement.billingModel],
-        ...agreement.mappings.map((mapping) => mapping.principalBrandName),
-        ...agreement.mappings.map((mapping) => mapping.productName),
-      ),
-  );
+  const rows = agreements.ok ? agreements.data : [];
+  const all = unfiltered?.ok ? unfiltered.data : rows;
 
   return (
     <Panel
-      title="Principals & job-work agreements"
+      title="Principals & Job Work Agreements"
       subtitle={agreements.ok ? countLabel(rows.length, 'agreement') : undefined}
       action={
         <>
@@ -285,25 +340,28 @@ export async function PrincipalsPanel(query: StepQuery) {
         </>
       }
     >
+      {/* THE SAME CONTROLS AS EVERY OTHER REGISTER: principal, billing model,
+          status, created between and created by. Status here is DERIVED from
+          the validity dates rather than stored, and the query expresses it as
+          those dates — see JobWorkService.list. */}
       <FilterPanel
         principals={principalOptions(all, (row) => row.createdAt)}
         billingModels={BILLING_MODEL_OPTIONS}
-        showDates={false}
+        statuses={AGREEMENT_STATUS_OPTIONS}
+        raisedBy={people}
       />
 
       {!agreements.ok ? (
-        <ErrorState message={`Could not load job-work agreements: ${agreements.error}`} />
+        <ErrorState message={`Could not load job work agreements: ${agreements.error}`} />
       ) : rows.length === 0 ? (
         <EmptyState
-          title={
-            all.length === 0 ? 'No job-work agreements yet.' : 'No agreement matches that.'
-          }
+          title={filtering ? 'No agreement matches that.' : 'No job work agreements yet.'}
           hint={
-            all.length === 0
-              ? 'Record the brand owner as a job-work principal in the Party register, then write an agreement against it in Master Data.'
-              : undefined
+            filtering
+              ? undefined
+              : 'Record the brand owner as a job work principal in the Party register, then write an agreement against it in Master Data.'
           }
-          filtered={all.length > 0}
+          filtered={filtering}
         />
       ) : (
         <TableWrap>
@@ -317,6 +375,7 @@ export async function PrincipalsPanel(query: StepQuery) {
                 <Th>Valid</Th>
                 <Th>Products covered</Th>
                 <Th>Status</Th>
+                <Th>Action</Th>
               </tr>
             </thead>
             <tbody>
@@ -400,6 +459,14 @@ export async function PrincipalsPanel(query: StepQuery) {
                         label={AGREEMENT_STATUS_LABELS[agreement.status]}
                       />
                     </Td>
+
+                    {/* VIEW ONLY. An agreement is a contract that orders,
+                        receipts and invoices have already inherited; it is
+                        written in Master Data, not amended on the register
+                        that reports it. */}
+                    <Td valign="top">
+                      <JobWorkAgreementRowActions agreement={agreement} />
+                    </Td>
                   </tr>
                 );
               })}
@@ -416,37 +483,34 @@ export async function PrincipalsPanel(query: StepQuery) {
 // ---------------------------------------------------------------------------
 
 export async function JobWorkOrdersPanel(query: StepQuery) {
-  const [orders, principals] = await Promise.all([
-    apiFetch<JobWorkOrderSummary[]>('/api/v1/job-work/orders', { authenticated: true }),
+  // FILTERED BY THE DATABASE. `rows` is what came back, not what a second pass
+  // over it kept — see `listQuery`.
+  //
+  // THE UNFILTERED LIST IS FETCHED ONLY WHEN SOMETHING IS FILTERED, and only to
+  // populate the dropdowns: deriving the principal list from the filtered rows
+  // would narrow it to the chosen principal and strand the reader with no way
+  // back.
+  const filtering = listQuery(query) !== '';
+
+  const [orders, principals, unfiltered, people] = await Promise.all([
+    apiFetch<JobWorkOrderSummary[]>(`/api/v1/job-work/orders${listQuery(query)}`, {
+      authenticated: true,
+    }),
     apiFetch<JobWorkOrderablePrincipal[]>('/api/v1/job-work/orders/orderable', {
       authenticated: true,
     }),
+    filtering
+      ? apiFetch<JobWorkOrderSummary[]>('/api/v1/job-work/orders', { authenticated: true })
+      : Promise.resolve(null),
+    peopleOptions(),
   ]);
 
-  const search = param(query, 'search');
-  const principalId = param(query, 'principalId');
-  const billingModel = param(query, 'billingModel');
-
-  const all = orders.ok ? orders.data : [];
-
-  const rows = all.filter(
-    (order) =>
-      (!principalId || order.principalId === principalId) &&
-      (!billingModel || order.billingModel === billingModel) &&
-      matches(
-        search,
-        order.orderNumber,
-        order.principalName,
-        order.product.principalBrandName,
-        order.product.productName,
-        order.product.productCode,
-        BILLING_MODEL_LABELS[order.billingModel],
-      ),
-  );
+  const rows = orders.ok ? orders.data : [];
+  const all = unfiltered?.ok ? unfiltered.data : rows;
 
   return (
     <Panel
-      title="Job-work orders"
+      title="Job Work Orders"
       subtitle={orders.ok ? countLabel(rows.length, 'order') : undefined}
       action={
         <>
@@ -456,23 +520,28 @@ export async function JobWorkOrdersPanel(query: StepQuery) {
         </>
       }
     >
+      {/* THE SAME FOUR CONTROLS ON EVERY REGISTER: principal, billing model,
+          created between, and created by. A job-work order has no status
+          column — where it has got to is derived from the records raised
+          against it — so this one offers none rather than a dropdown whose
+          every value returns the whole list. */}
       <FilterPanel
         principals={principalOptions(all, (row) => row.createdAt)}
         billingModels={BILLING_MODEL_OPTIONS}
-        showDates={false}
+        raisedBy={people}
       />
 
       {!orders.ok ? (
-        <ErrorState message={`Could not load job-work orders: ${orders.error}`} />
+        <ErrorState message={`Could not load job work orders: ${orders.error}`} />
       ) : rows.length === 0 ? (
         <EmptyState
-          title={all.length === 0 ? 'No job-work orders yet.' : 'No order matches that.'}
+          title={filtering ? 'No order matches that.' : 'No job work orders yet.'}
           hint={
-            all.length === 0
-              ? 'An order can only be raised against a principal whose agreement is in force. Create one with the button above.'
-              : undefined
+            filtering
+              ? undefined
+              : 'An order can only be raised against a principal whose agreement is in force. Create one with the button above.'
           }
-          filtered={all.length > 0}
+          filtered={filtering}
         />
       ) : (
         <TableWrap>
@@ -496,12 +565,14 @@ export async function JobWorkOrdersPanel(query: StepQuery) {
               {rows.map((order) => (
                 <tr key={order.id}>
                   <Td>
+                    {/* THE ORDER NUMBER, AND NOTHING ELSE. A count of the
+                        production orders raised against it used to sit here —
+                        "0 work orders" on almost every row, which is a
+                        statement about a later stage of the workflow rather
+                        than about this order, and the stage that owns it lists
+                        them properly. */}
                     <p className="font-mono text-xs font-semibold text-slate-900">
                       <Code>{order.orderNumber}</Code>
-                    </p>
-                    <p className="text-[11px] text-slate-500">
-                      {order.productionOrderCount} work order
-                      {order.productionOrderCount === 1 ? '' : 's'}
                     </p>
                   </Td>
 
@@ -575,11 +646,20 @@ export async function JobWorkOrdersPanel(query: StepQuery) {
 // ---------------------------------------------------------------------------
 
 export async function InwardMaterialsPanel(query: StepQuery) {
-  const [receipts, orders] = await Promise.all([
-    apiFetch<JobWorkMaterialReceiptView[]>('/api/v1/job-work/material-receipts', {
-      authenticated: true,
-    }),
+  const filtering = listQuery(query) !== '';
+
+  const [receipts, orders, unfiltered, people] = await Promise.all([
+    apiFetch<JobWorkMaterialReceiptView[]>(
+      `/api/v1/job-work/material-receipts${listQuery(query)}`,
+      { authenticated: true },
+    ),
     apiFetch<JobWorkOrderSummary[]>('/api/v1/job-work/orders', { authenticated: true }),
+    filtering
+      ? apiFetch<JobWorkMaterialReceiptView[]>('/api/v1/job-work/material-receipts', {
+          authenticated: true,
+        })
+      : Promise.resolve(null),
+    peopleOptions(),
   ]);
 
   // Only PURE_CONVERSION orders can take a free-of-cost receipt; the API
@@ -595,33 +675,17 @@ export async function InwardMaterialsPanel(query: StepQuery) {
     ? orders.data.filter((order) => order.billingModel === 'OWN_PROCUREMENT').length
     : 0;
 
-  const search = param(query, 'search');
-  const principalId = param(query, 'principalId');
-
-  const allReceipts = receipts.ok ? receipts.data : [];
-
   // ONE ROW PER RECEIPT. The register answers "what has this principal sent
   // us against this order, and where has it got to" — which is a question
-  // about the document. Searching still reaches the materials inside it, so a
-  // batch number or an item code finds the receipt that holds it.
-  const rows = allReceipts
-    .filter((receipt) => !principalId || receipt.principalId === principalId)
-    .filter((receipt) =>
-      matches(
-        search,
-        receipt.receiptNumber,
-        receipt.principalName,
-        receipt.jobWorkOrderNumber,
-        ...receipt.deliveryChallanNumbers,
-        ...receipt.lines.map((line) => line.item.name),
-        ...receipt.lines.map((line) => line.item.code),
-        ...receipt.lines.map((line) => line.batchNumber),
-      ),
-    );
+  // about the document. The search still reaches the materials inside it, so a
+  // batch number or an item code finds the receipt that holds it; that clause
+  // is in the query now rather than in a pass over the answer.
+  const rows = receipts.ok ? receipts.data : [];
+  const allReceipts = unfiltered?.ok ? unfiltered.data : rows;
 
   return (
     <Panel
-      title="Inward materials"
+      title="Inward Materials"
       subtitle={receipts.ok ? countLabel(rows.length, 'receipt') : undefined}
       action={
         <>
@@ -638,7 +702,11 @@ export async function InwardMaterialsPanel(query: StepQuery) {
     >
       <FilterPanel
         principals={principalOptions(allReceipts, (receipt) => receipt.receivedAt)}
-        showDates={false}
+        statuses={JOB_WORK_RECEIPT_STATUSES.map((value) => ({
+          value,
+          label: JOB_WORK_RECEIPT_STATUS_LABELS[value],
+        }))}
+        raisedBy={people}
       />
 
       {!receipts.ok ? (
@@ -652,7 +720,7 @@ export async function InwardMaterialsPanel(query: StepQuery) {
           }
           hint={
             conversionOrders.length === 0 && ownProcurementOrders > 0
-              ? 'Every job-work order you hold is on the own-procurement model, where you buy the material yourself through Procure to Pay. This screen records material a principal ships you free of cost under a pure-conversion agreement.'
+              ? 'Every job work order you hold is on the own procurement model, where you buy the material yourself through Procure to Pay. This screen records material a principal ships you free of cost under a pure conversion agreement.'
               : 'Under pure conversion the principal ships the raw material on their own delivery challan. Record it here and it enters principal-owned stock.'
           }
         />
@@ -662,7 +730,7 @@ export async function InwardMaterialsPanel(query: StepQuery) {
             <thead>
               <tr className="text-xs uppercase tracking-wide text-slate-500">
                 <Th>Receipt</Th>
-                <Th>Job-work order</Th>
+                <Th>Job work order</Th>
                 <Th>Product</Th>
                 <Th align="right">Raw</Th>
                 <Th align="right">Packing</Th>
@@ -745,7 +813,7 @@ export async function InwardMaterialsPanel(query: StepQuery) {
                     {/* ONE Actions menu, as every other register on these
                         screens has. The two controls that used to sit here
                         side by side are its entries. */}
-                    <JobWorkInwardRowActions receipt={receipt} />
+                    <JobWorkInwardRowActions receipt={receipt} orders={conversionOrders} />
                   </Td>
                 </tr>
               ))}            </tbody>
@@ -775,43 +843,41 @@ export async function InwardMaterialsPanel(query: StepQuery) {
  * only thing that does.
  */
 export async function JobWorkQualityCheckPanel(query: StepQuery) {
-  const receipts = await apiFetch<JobWorkMaterialReceiptView[]>(
-    '/api/v1/job-work/material-receipts',
-    { authenticated: true },
-  );
+  const filtering = listQuery(query) !== '';
 
-  const search = param(query, 'search');
-  const principalId = param(query, 'principalId');
-  const status = param(query, 'status');
-
-  const all = receipts.ok ? receipts.data : [];
+  const [receipts, unfiltered, people] = await Promise.all([
+    apiFetch<JobWorkMaterialReceiptView[]>(
+      `/api/v1/job-work/material-receipts${listQuery(query)}`,
+      { authenticated: true },
+    ),
+    filtering
+      ? apiFetch<JobWorkMaterialReceiptView[]>('/api/v1/job-work/material-receipts', {
+          authenticated: true,
+        })
+      : Promise.resolve(null),
+    peopleOptions(),
+  ]);
 
   // A DRAFT IS NOT YET ANYBODY ELSE’S BUSINESS. The store is still adding to
   // it, and putting it on a quality worklist would be asking for a decision
   // about a document that is still changing.
-  const submitted = all.filter((receipt) => receipt.status !== 'DRAFT');
+  //
+  // KEPT ON THE PAGE rather than pushed into the query: it is not a filter
+  // somebody chose, it is what this screen is, and a status filter that could
+  // select DRAFT here would contradict it.
+  const rows = (receipts.ok ? receipts.data : []).filter(
+    (receipt) => receipt.status !== 'DRAFT',
+  );
 
-  const rows = submitted.filter(
-    (receipt) =>
-      (!principalId || receipt.principalId === principalId) &&
-      (!status || receipt.status === status) &&
-      matches(
-        search,
-        receipt.receiptNumber,
-        receipt.principalName,
-        receipt.jobWorkOrderNumber,
-        receipt.productName,
-        ...receipt.deliveryChallanNumbers,
-        ...receipt.lines.map((line) => line.item.name),
-        ...receipt.lines.map((line) => line.batchNumber),
-      ),
+  const submitted = (unfiltered?.ok ? unfiltered.data : (receipts.ok ? receipts.data : [])).filter(
+    (receipt) => receipt.status !== 'DRAFT',
   );
 
   const waiting = submitted.filter((receipt) => receipt.status === 'PENDING_APPROVAL').length;
 
   return (
     <Panel
-      title="Quality check"
+      title="Quality Check"
       subtitle={
         receipts.ok
           ? `${countLabel(rows.length, 'consignment')}${
@@ -831,7 +897,7 @@ export async function JobWorkQualityCheckPanel(query: StepQuery) {
         statuses={JOB_WORK_RECEIPT_STATUSES.filter((value) => value !== 'DRAFT').map(
           (value) => ({ value, label: JOB_WORK_RECEIPT_STATUS_LABELS[value] }),
         )}
-        showDates={false}
+        raisedBy={people}
       />
 
       {!receipts.ok ? (
@@ -856,7 +922,7 @@ export async function JobWorkQualityCheckPanel(query: StepQuery) {
             <thead>
               <tr className="text-xs uppercase tracking-wide text-slate-500">
                 <Th>Receipt</Th>
-                <Th>Job-work order</Th>
+                <Th>Job work order</Th>
                 <Th>Product</Th>
                 <Th align="right">Raw</Th>
                 <Th align="right">Packing</Th>
@@ -968,10 +1034,14 @@ export async function JobWorkProductionToBatchReleasePanel(query: StepQuery) {
     <div className="flex flex-col gap-4">
       <StageTabs current={stage} />
 
-      {stage === 'production-orders' && <JobWorkProductionPanel />}
-      {stage === 'material-issue' && <JobWorkMaterialIssuePanel />}
-      {stage === 'batch-record' && <JobWorkBatchRecordPanel />}
-      {stage === 'batch-release' && <JobWorkBatchReleasePanel />}
+      {/* THE QUERY GOES DOWN WITH THE STAGE. Each stage reads the same five
+          keys — search, status, dateFrom, dateTo, createdById — and sends them
+          to its own endpoint, so a filter set on one register is a filter on
+          that register's query rather than on the rows it was handed. */}
+      {stage === 'production-orders' && <JobWorkProductionPanel {...query} />}
+      {stage === 'material-issue' && <JobWorkMaterialIssuePanel {...query} />}
+      {stage === 'batch-record' && <JobWorkBatchRecordPanel {...query} />}
+      {stage === 'batch-release' && <JobWorkBatchReleasePanel {...query} />}
     </div>
   );
 }
@@ -1033,15 +1103,22 @@ function StageTabs({ current }: { current: JobWorkProductionStage }) {
  * form is offered only where there is something to raise one against: a
  * job-work order with a consignment that has passed Quality check.
  */
-export async function JobWorkProductionPanel() {
-  const [ordersResult, jobWorkOrdersResult] = await Promise.all([
-    get<JobWorkProductionOrderView[]>('/api/v1/job-work/production-orders'),
+export async function JobWorkProductionPanel(query: StepQuery) {
+  const [ordersResult, jobWorkOrdersResult, people] = await Promise.all([
+    // FILTERED BY THE DATABASE. The register below shows what came back.
+    get<JobWorkProductionOrderView[]>(
+      `/api/v1/job-work/production-orders${listQuery(query)}`,
+    ),
+    // UNFILTERED, deliberately: this one populates the "raise one against"
+    // dropdown rather than the register, and narrowing it would hide the very
+    // order somebody has filtered the register down to find.
     get<JobWorkOrderSummary[]>('/api/v1/job-work/orders'),
+    peopleOptions(),
   ]);
 
   if (!ordersResult.ok) {
     return (
-      <ProductionPanel title="Production orders">
+      <ProductionPanel title="Production Orders">
         <LoadError error={ordersResult.error} />
       </ProductionPanel>
     );
@@ -1090,6 +1167,7 @@ export async function JobWorkProductionPanel() {
     <ProductionRegister>
       <JobWorkOrderTable
         orders={ordersResult.data}
+        people={people}
         actionFor={rowActions}
         toolbarAction={
           raisable.length > 0 ? (
@@ -1114,15 +1192,18 @@ export async function JobWorkProductionPanel() {
  * Pure Conversion integration the brief asks for, shown where the internal
  * screen shows company stock.
  */
-export async function JobWorkMaterialIssuePanel() {
-  const [issuesResult, ordersResult] = await Promise.all([
-    get<JobWorkMaterialIssueView[]>('/api/v1/job-work/material-issues'),
+export async function JobWorkMaterialIssuePanel(query: StepQuery) {
+  const [issuesResult, ordersResult, people] = await Promise.all([
+    get<JobWorkMaterialIssueView[]>(`/api/v1/job-work/material-issues${listQuery(query)}`),
+    // UNFILTERED: these feed the Dispense form and the consignment list beside
+    // it, neither of which is the register the filters are narrowing.
     get<JobWorkProductionOrderView[]>('/api/v1/job-work/production-orders'),
+    peopleOptions(),
   ]);
 
   if (!issuesResult.ok) {
     return (
-      <ProductionPanel title="Material issue">
+      <ProductionPanel title="Material Issue">
         <LoadError error={issuesResult.error} />
       </ProductionPanel>
     );
@@ -1185,14 +1266,18 @@ export async function JobWorkMaterialIssuePanel() {
   return (
     <ProductionTabs
       tabs={[
+        // NO COUNT BADGES. Each register states its own total in its toolbar,
+        // so a number on the tab restated it — and two counts for one list
+        // invite a comparison to check they agree. The internal tabs carry
+        // labels only, for the same reason.
         {
           key: 'issues',
-          label: 'Material issue',
-          badge: String(issues.length),
+          label: 'Material Issue',
           panel: (
             <ProductionRegister>
               <JobWorkIssueTable
                 issues={issues}
+                people={people}
                 toolbarAction={
                   open.length > 0 ? (
                     <IssueJobWorkMaterialForm orders={open} initialPlan={initialPlan} />
@@ -1204,8 +1289,7 @@ export async function JobWorkMaterialIssuePanel() {
         },
         {
           key: 'received',
-          label: 'Material received from principal',
-          badge: String(material.length),
+          label: 'Material Received From Principal',
           panel: <JobWorkReceivedMaterialTable material={material} />,
         },
       ]}
@@ -1225,20 +1309,28 @@ export async function JobWorkMaterialIssuePanel() {
  * the formulation called for against what was actually drawn from the
  * principal's consignment, and the packing record.
  */
-export async function JobWorkBatchRecordPanel() {
-  const [batchesResult, ordersResult, packagingResult] = await Promise.all([
-    get<JobWorkBatchView[]>('/api/v1/job-work/batches'),
+export async function JobWorkBatchRecordPanel(query: StepQuery) {
+  const [batchesResult, ordersResult, packagingResult, people] = await Promise.all([
+    // FILTERED BY THE DATABASE, including "Packaging due" — which is not a
+    // stored status but `PENDING with nothing packed yet`, and is now a value
+    // the batch endpoint understands.
+    get<JobWorkBatchView[]>(`/api/v1/job-work/batches${listQuery(query, {
+      manufacturedFrom: param(query, 'manufacturedFrom'),
+      manufacturedTo: param(query, 'manufacturedTo'),
+    })}`),
+    // UNFILTERED: the orders a batch could be opened against, for the form.
     get<JobWorkProductionOrderView[]>('/api/v1/job-work/production-orders'),
     // THE SAME SPECIFICATION REGISTER the internal batch record reads. A pack
     // specification describes the PRODUCT — how many units go in a carton,
     // which leaflet it takes — and that does not change according to who owns
     // the goods. The consumption it drives is written to job work's own table.
     get<PackagingRequirementView[]>('/api/v1/packaging/requirements'),
+    peopleOptions(),
   ]);
 
   if (!batchesResult.ok) {
     return (
-      <ProductionPanel title="Batch record">
+      <ProductionPanel title="Batch Record">
         <LoadError error={batchesResult.error} />
       </ProductionPanel>
     );
@@ -1340,7 +1432,16 @@ export async function JobWorkBatchRecordPanel() {
   return (
     <ProductionRegister>
       <div className="p-6">
-        {batches.length === 0 ? (
+        {/* AN EMPTY REGISTER AND A REGISTER FILTERED TO NOTHING ARE DIFFERENT
+            SCREENS, and only the first of them may replace the toolbar.
+
+            Once the filtering moved into the query, "no rows" stopped meaning
+            "nothing has been recorded": it also means "nothing matches what you
+            asked for". Swapping the register out in that case takes the search
+            box, the filter panel and its Clear off the page — so the reader is
+            left looking at an empty screen holding the one control that would
+            undo it. The register stays put and says so itself. */}
+        {batches.length === 0 && listQuery(query) === '' ? (
           // The trigger sits WITH the empty state rather than being withheld
           // until the first batch exists: an empty register is exactly when
           // somebody is looking for the way to open one.
@@ -1358,6 +1459,7 @@ export async function JobWorkBatchRecordPanel() {
         ) : (
           <JobWorkBatchRecords
             batches={batches}
+            people={people}
             packingFormFor={packingForms}
             // ALWAYS OFFERED, as the internal register offers its own: a
             // trigger that vanishes when nothing is waiting reads as the
@@ -1385,16 +1487,46 @@ export async function JobWorkBatchRecordPanel() {
  * the internal gate names. A DISCLOSURE, not the enforcement: RolesGuard on the
  * release endpoint is what actually refuses, and it names the same two roles.
  */
-export async function JobWorkBatchReleasePanel() {
-  const [user, batchesResult] = await Promise.all([
+export async function JobWorkBatchReleasePanel(query: StepQuery) {
+  /**
+   * THREE REGISTERS, THREE QUERIES, ONE ADDRESS BAR.
+   *
+   * The three tabs are three status slices of the same table, and the slicing
+   * is what the tab MEANS — so it belongs in each query rather than in a pass
+   * over one big result. Each carries the reader's own filters as well, which
+   * is how "released in March by Meera" narrows in the database.
+   *
+   * THE VERDICT FILTER WRITES `verdict`, NOT `status`. Only the third tab
+   * offers one; if it wrote `status` it would be answering for its two
+   * neighbours as well, and picking Rejected would empty them both.
+   *
+   * THREE REQUESTS RATHER THAN ONE, and cheaper than the one they replace:
+   * each is strictly narrower than the unfiltered fetch this used to make, and
+   * they go out together.
+   */
+  const verdict = param(query, 'verdict');
+
+  const [user, pendingResult, releasedResult, decidedResult, people] = await Promise.all([
     requireSession(),
-    get<JobWorkBatchView[]>('/api/v1/job-work/batches'),
+    // PENDING means awaiting a DECISION — packed and waiting on the quality
+    // officer. The endpoint draws that line; a batch with no packing entered
+    // is production's business and stays on the Batch Record register.
+    get<JobWorkBatchView[]>(`/api/v1/job-work/batches${listQuery(query, { status: 'PENDING' })}`),
+    get<JobWorkBatchView[]>(`/api/v1/job-work/batches${listQuery(query, { status: 'RELEASED' })}`),
+    // DECIDED is every verdict there is — released, on hold, rejected, blocked
+    // — which no stored value names, so the endpoint names it.
+    get<JobWorkBatchView[]>(
+      `/api/v1/job-work/batches${listQuery(query, { status: verdict ?? 'DECIDED' })}`,
+    ),
+    peopleOptions(),
   ]);
 
-  if (!batchesResult.ok) {
+  const failed = [pendingResult, releasedResult, decidedResult].find((result) => !result.ok);
+
+  if (failed && !failed.ok) {
     return (
-      <ProductionPanel title="Batch release">
-        <LoadError error={batchesResult.error} />
+      <ProductionPanel title="Batch Release">
+        <LoadError error={failed.error} />
       </ProductionPanel>
     );
   }
@@ -1404,7 +1536,7 @@ export async function JobWorkBatchReleasePanel() {
   if (!canDecide) {
     return (
       <p className="rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
-        A job-work batch should be released by Admin and Quality Officer.
+        A job work batch should be released by Admin and Quality Officer.
       </p>
     );
   }
@@ -1427,11 +1559,9 @@ export async function JobWorkBatchReleasePanel() {
    * register until its packing is entered, which is where the work to finish it
    * is done.
    */
-  const pending = batchesResult.data.filter(
-    (batch) => batch.releaseStatus === 'PENDING' && batch.packedOn !== null,
-  );
-  const decided = batchesResult.data.filter((batch) => batch.releaseStatus !== 'PENDING');
-  const released = batchesResult.data.filter((batch) => batch.releaseStatus === 'RELEASED');
+  const pending = pendingResult.ok ? pendingResult.data : [];
+  const released = releasedResult.ok ? releasedResult.data : [];
+  const decided = decidedResult.ok ? decidedResult.data : [];
 
   // The release form per batch, built HERE because it carries the server action
   // binding; the client list only decides which ones are on screen.
@@ -1464,17 +1594,23 @@ export async function JobWorkBatchReleasePanel() {
           {
             key: 'gate',
             label: 'Batch Release',
-            panel: <JobWorkPendingReleaseList batches={pending} formFor={releaseForms} />,
+            panel: (
+              <JobWorkPendingReleaseList
+                batches={pending}
+                people={people}
+                formFor={releaseForms}
+              />
+            ),
           },
           {
             key: 'stock',
             label: 'Released Stock',
-            panel: <JobWorkReleasedTable batches={released} />,
+            panel: <JobWorkReleasedTable batches={released} people={people} />,
           },
           {
             key: 'decided',
             label: 'Released',
-            panel: <JobWorkDecidedTable batches={decided} />,
+            panel: <JobWorkDecidedTable batches={decided} people={people} />,
           },
         ]}
       />
@@ -1494,12 +1630,22 @@ export async function OutwardDispatchPanel(query: StepQuery) {
   // transaction, with the page waiting on the slowest. It is the same fan-out
   // that tripped the thirty-second timeout on production orders, and the same
   // remedy: one endpoint that answers for every order at once.
-  const [orders, ready, invoices] = await Promise.all([
-    apiFetch<JobWorkOrderSummary[]>('/api/v1/job-work/orders', { authenticated: true }),
+  const filtering = listQuery(query) !== '';
+
+  const [orders, ready, invoices, unfiltered, people] = await Promise.all([
+    apiFetch<JobWorkOrderSummary[]>(`/api/v1/job-work/orders${listQuery(query)}`, {
+      authenticated: true,
+    }),
     apiFetch<Record<string, JobWorkDispatchableBatch[]>>('/api/v1/job-work/dispatchable', {
       authenticated: true,
     }),
-    apiFetch<JobWorkInvoiceView[]>('/api/v1/job-work/invoices', { authenticated: true }),
+    apiFetch<JobWorkInvoiceView[]>(`/api/v1/job-work/invoices${listQuery(query)}`, {
+      authenticated: true,
+    }),
+    filtering
+      ? apiFetch<JobWorkOrderSummary[]>('/api/v1/job-work/orders', { authenticated: true })
+      : Promise.resolve(null),
+    peopleOptions(),
   ]);
 
   // An order with nothing ready is simply absent from the map, which is what
@@ -1511,41 +1657,17 @@ export async function OutwardDispatchPanel(query: StepQuery) {
     ? orders.data.map((order) => ({ order, batches: batchesFor(order.id) }))
     : [];
 
-  const search = param(query, 'search');
-  const principalId = param(query, 'principalId');
-
-  const allOrders = orders.ok ? orders.data : [];
-
-  const readyRows = dispatchable.filter(
-    ({ order }) =>
-      (!principalId || order.principalId === principalId) &&
-      matches(
-        search,
-        order.orderNumber,
-        order.principalName,
-        order.product.principalBrandName,
-        order.product.productName,
-      ),
-  );
-
-  const allInvoices = invoices.ok ? invoices.data : [];
-
-  const challans = allInvoices.filter(
-    (invoice) =>
-      (!principalId || invoice.principalId === principalId) &&
-      matches(
-        search,
-        invoice.invoiceNumber,
-        invoice.principalName,
-        invoice.jobWorkOrderNumber,
-        invoice.batchNumber,
-      ),
-  );
+  // BOTH TABLES ARE FILTERED BY THE QUERY, each against its own register:
+  // the orders above and the challans below answer the same filters, so a
+  // reader narrowing to one principal sees that principal's half of both.
+  const allOrders = unfiltered?.ok ? unfiltered.data : (orders.ok ? orders.data : []);
+  const readyRows = dispatchable;
+  const challans = invoices.ok ? invoices.data : [];
 
   return (
     <div className="space-y-5">
       <Panel
-        title="Ready to dispatch"
+        title="Ready to Dispatch"
         subtitle={countLabel(readyRows.length, 'order')}
         action={
           <>
@@ -1555,15 +1677,15 @@ export async function OutwardDispatchPanel(query: StepQuery) {
         }
       >
         <FilterPanel
+          raisedBy={people}
           principals={principalOptions(allOrders, (order) => order.createdAt)}
-          showDates={false}
         />
 
         {!orders.ok ? (
-          <ErrorState message={`Could not load job-work orders: ${orders.error}`} />
+          <ErrorState message={`Could not load job work orders: ${orders.error}`} />
         ) : readyRows.length === 0 ? (
           <EmptyState
-            title={dispatchable.length === 0 ? 'No job-work orders yet.' : 'No order matches that.'}
+            title={dispatchable.length === 0 ? 'No job work orders yet.' : 'No order matches that.'}
             hint={dispatchable.length === 0 ? 'Raise one to begin.' : undefined}
             filtered={dispatchable.length > 0}
           />
@@ -1606,17 +1728,19 @@ export async function OutwardDispatchPanel(query: StepQuery) {
                       </DerivedValue>
                     </Td>
 
+                    {/* THE COLUMN BOTH BUTTONS BELOW ARE DECIDED BY. */}
                     <Td align="right">{batches.length}</Td>
 
                     <Td align="right">
                       <Qty value={order.dispatchedQuantity} />
                     </Td>
 
+                    {/* ONE CONTROL, because it is one act: dispatching a
+                        released batch is what raises the invoice. It is refused
+                        outright with nothing released — and carries the reason
+                        on hover rather than going quietly grey. */}
                     <Td>
-                      <CreateJobWorkDispatchButton
-                        order={order}
-                        batches={batches}
-                      />
+                      <CreateJobWorkDispatchButton order={order} batches={batches} />
                     </Td>
                   </tr>
                 ))}
@@ -1626,7 +1750,7 @@ export async function OutwardDispatchPanel(query: StepQuery) {
         )}
       </Panel>
 
-      <Panel title="Dispatch challans" subtitle={countLabel(challans.length, 'challan')}>
+      <Panel title="Dispatch Challans" subtitle={countLabel(challans.length, 'challan')}>
         {!invoices.ok ? (
           <ErrorState message={`Could not load dispatches: ${invoices.error}`} />
         ) : invoices.data.length === 0 ? (
@@ -1640,7 +1764,7 @@ export async function OutwardDispatchPanel(query: StepQuery) {
               <thead>
                 <tr className="text-xs uppercase tracking-wide text-slate-500">
                   <Th>Challan / invoice</Th>
-                  <Th>Job-work order</Th>
+                  <Th>Job work order</Th>
                   <Th>Principal</Th>
                   <Th>Batch</Th>
                   <Th align="right">Quantity</Th>
@@ -1688,35 +1812,27 @@ export async function JobWorkBillingPanel(query: StepQuery) {
   // ordered quantity and the delivery date, none of which is on the invoice —
   // so the View dialog needs them. Fetched once for the page and matched by id
   // below, rather than once per row.
-  const [invoices, orders] = await Promise.all([
-    apiFetch<JobWorkInvoiceView[]>('/api/v1/job-work/invoices', { authenticated: true }),
+  const filtering = listQuery(query) !== '';
+
+  const [invoices, orders, unfiltered, people] = await Promise.all([
+    apiFetch<JobWorkInvoiceView[]>(`/api/v1/job-work/invoices${listQuery(query)}`, {
+      authenticated: true,
+    }),
     apiFetch<JobWorkOrderSummary[]>('/api/v1/job-work/orders', { authenticated: true }),
+    filtering
+      ? apiFetch<JobWorkInvoiceView[]>('/api/v1/job-work/invoices', { authenticated: true })
+      : Promise.resolve(null),
+    peopleOptions(),
   ]);
 
   const orderById = new Map((orders.ok ? orders.data : []).map((order) => [order.id, order]));
 
-  const search = param(query, 'search');
-  const principalId = param(query, 'principalId');
-  const billingModel = param(query, 'billingModel');
-
-  const all = invoices.ok ? invoices.data : [];
-
-  const rows = all.filter(
-    (invoice) =>
-      (!principalId || invoice.principalId === principalId) &&
-      (!billingModel || invoice.billingModel === billingModel) &&
-      matches(
-        search,
-        invoice.invoiceNumber,
-        invoice.principalName,
-        invoice.jobWorkOrderNumber,
-        invoice.batchNumber,
-      ),
-  );
+  const rows = invoices.ok ? invoices.data : [];
+  const all = unfiltered?.ok ? unfiltered.data : rows;
 
   return (
     <Panel
-      title="Job-work billing"
+      title="Job Work Billing"
       subtitle={invoices.ok ? countLabel(rows.length, 'invoice') : undefined}
       action={
         <>
@@ -1725,23 +1841,26 @@ export async function JobWorkBillingPanel(query: StepQuery) {
         </>
       }
     >
+      {/* NO STATUS: a job-work invoice has no lifecycle of its own. It is
+          raised by the dispatch that returns the batch and never amended, so a
+          status dropdown here would offer values no row can carry. */}
       <FilterPanel
         principals={principalOptions(all, (row) => row.createdAt)}
         billingModels={BILLING_MODEL_OPTIONS}
-        showDates={false}
+        raisedBy={people}
       />
 
       {!invoices.ok ? (
-        <ErrorState message={`Could not load job-work invoices: ${invoices.error}`} />
+        <ErrorState message={`Could not load job work invoices: ${invoices.error}`} />
       ) : rows.length === 0 ? (
         <EmptyState
-          title={all.length === 0 ? 'Nothing invoiced yet.' : 'No invoice matches that.'}
+          title={filtering ? 'No invoice matches that.' : 'Nothing invoiced yet.'}
           hint={
-            all.length === 0
-              ? 'An invoice is raised by the dispatch that sends a released batch back to the principal.'
-              : undefined
+            filtering
+              ? undefined
+              : 'An invoice is raised by the dispatch that sends a released batch back to the principal.'
           }
-          filtered={all.length > 0}
+          filtered={filtering}
         />
       ) : (
         <TableWrap>
@@ -1849,43 +1968,42 @@ export async function JobWorkBillingPanel(query: StepQuery) {
 // ---------------------------------------------------------------------------
 
 export async function JobWorkRegisterPanel(query: StepQuery) {
-  const register = await apiFetch<JobWorkRegisterGroup[]>('/api/v1/job-work/register', {
-    authenticated: true,
-  });
+  /**
+   * FILTERED BY THE DATABASE, TOTALS AND ALL.
+   *
+   * This screen is the one where client-side filtering did the most damage,
+   * and silently. Every heading on it is a SUM — received, consumed, produced,
+   * dispatched, closing balance, invoiced — and those sums are computed by the
+   * API over the orders it selected. Dropping rows afterwards left each group
+   * claiming figures for rows the reader could no longer see: a heading saying
+   * 4,000 kg received above a list showing one order for 300.
+   *
+   * Narrowing the query instead means the totals are totals OF WHAT IS ON
+   * SCREEN, which is the only reading of them that is true.
+   *
+   * THE UNFILTERED LIST IS FETCHED ONLY TO FILL THE DROPDOWNS, and only when
+   * something is filtered: deriving the principal list from the filtered
+   * groups would narrow it to the chosen principal and strand the reader with
+   * no way back.
+   */
+  const filtering = listQuery(query) !== '';
 
-  const search = param(query, 'search');
-  const principalId = param(query, 'principalId');
-  const billingModel = param(query, 'billingModel');
+  const [register, unfiltered, people] = await Promise.all([
+    apiFetch<JobWorkRegisterGroup[]>(`/api/v1/job-work/register${listQuery(query)}`, {
+      authenticated: true,
+    }),
+    filtering
+      ? apiFetch<JobWorkRegisterGroup[]>('/api/v1/job-work/register', { authenticated: true })
+      : Promise.resolve(null),
+    peopleOptions(),
+  ]);
 
-  const all = register.ok ? register.data : [];
-
-  // Filtered at BOTH levels: a group survives if any of its rows matches, and
-  // then shows only the rows that did — so searching an order number gives that
-  // order under its own principal rather than the whole group it sits in.
-  const groups = all
-    .filter(
-      (group) =>
-        (!principalId || group.principalId === principalId) &&
-        (!billingModel || group.billingModel === billingModel),
-    )
-    .map((group) => ({
-      ...group,
-      rows: group.rows.filter((row) =>
-        matches(
-          search,
-          row.jobWorkOrderNumber,
-          row.principalName,
-          row.productName,
-          row.principalBrandName,
-          group.agreementReference,
-        ),
-      ),
-    }))
-    .filter((group) => group.rows.length > 0);
+  const groups = register.ok ? register.data : [];
+  const all = unfiltered?.ok ? unfiltered.data : groups;
 
   return (
     <Panel
-      title="Job-work register"
+      title="Job Work Register"
       subtitle={register.ok ? countLabel(groups.length, 'agreement') : undefined}
       action={
         <>
@@ -1904,20 +2022,20 @@ export async function JobWorkRegisterPanel(query: StepQuery) {
           (row) => row.createdAt,
         )}
         billingModels={BILLING_MODEL_OPTIONS}
-        showDates={false}
+        raisedBy={people}
       />
 
       {!register.ok ? (
-        <ErrorState message={`Could not load the job-work register: ${register.error}`} />
+        <ErrorState message={`Could not load the job work register: ${register.error}`} />
       ) : groups.length === 0 ? (
         <EmptyState
-          title={all.length === 0 ? 'Nothing to report yet.' : 'Nothing matches that.'}
+          title={filtering ? 'Nothing matches that.' : 'Nothing to report yet.'}
           hint={
-            all.length === 0
-              ? 'The register fills itself as material is received, consumed and dispatched against job-work orders.'
-              : undefined
+            filtering
+              ? undefined
+              : 'The register fills itself as material is received, consumed and dispatched against job work orders.'
           }
-          filtered={all.length > 0}
+          filtered={filtering}
         />
       ) : (
         <div className="divide-y-2 divide-slate-200">
@@ -1962,7 +2080,7 @@ export async function JobWorkRegisterPanel(query: StepQuery) {
                 <table className="w-full min-w-[64rem] text-left text-sm">
                   <thead>
                     <tr className="text-xs uppercase tracking-wide text-slate-500">
-                      <Th>Job-work order</Th>
+                      <Th>Job work order</Th>
                       <Th>Brand / product</Th>
                       <Th align="right">Ordered</Th>
                       <Th align="right">Material received</Th>

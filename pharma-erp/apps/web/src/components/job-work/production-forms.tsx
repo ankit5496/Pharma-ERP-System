@@ -316,8 +316,8 @@ export function RaiseJobWorkProductionOrderForm({
   if (orders.length === 0) {
     return (
       <p className="px-1 py-4 text-sm text-slate-600">
-        No job-work order is ready to manufacture. A pure-conversion order needs a consignment
-        that has passed Quality check; an own-procurement order needs only to exist, since we buy
+        No job work order is ready to manufacture. A pure conversion order needs a consignment
+        that has passed Quality check; an own procurement order needs only to exist, since we buy
         its material ourselves.
       </p>
     );
@@ -327,14 +327,14 @@ export function RaiseJobWorkProductionOrderForm({
     <Disclosure
       label="New Job Work Production Order"
       title="New Job Work Production Order"
-      subtitle="The billing model, the product and the quantity all come from the job-work order."
+      subtitle="The billing model, the product and the quantity all come from the job work order."
       closeWhen={state.status === 'success'}
     >
       {(close) => (
         <form action={formAction} className="w-full space-y-4">
           <input type="hidden" name="jobWorkOrderId" value={jobWorkOrderId} />
           {/* SENT ONLY UNDER PURE CONVERSION. The API rejects the field on an
-              own-procurement order rather than ignoring it, so posting a blank
+              own procurement order rather than ignoring it, so posting a blank
               would be a 400 for a form that was filled in correctly. */}
           {fromConsignment && (
             <input type="hidden" name="materialReceiptId" value={receiptId} />
@@ -354,10 +354,10 @@ export function RaiseJobWorkProductionOrderForm({
 
           <Section title="What to make">
             <Field
-              label="Job-work order"
+              label="Job work order"
               htmlFor="jwpo-order"
               required
-              hint="Pure-conversion orders with an approved consignment, and every own-procurement order."
+              hint="Pure Conversion orders with an approved consignment, and every own procurement order."
             >
               <SearchableSelect
                 id="jwpo-order"
@@ -369,7 +369,7 @@ export function RaiseJobWorkProductionOrderForm({
                 required
                 value={jobWorkOrderId}
                 onChange={setJobWorkOrderId}
-                emptyLabel="Select job-work order"
+                emptyLabel="Select job work order"
               />
             </Field>
 
@@ -402,7 +402,7 @@ export function RaiseJobWorkProductionOrderForm({
               <Field
                 label="Material source"
                 htmlFor="jwpo-source"
-                hint="Bought through Procure-to-Pay, so no consignment and no incoming check."
+                hint="Bought through Procure to Pay, so no consignment and no incoming check."
               >
                 <input
                   id="jwpo-source"
@@ -414,10 +414,10 @@ export function RaiseJobWorkProductionOrderForm({
               </Field>
             )}
 
-            {/* NOT AN INPUT. The quantity is the job-work order's, and the API
+            {/* NOT AN INPUT. The quantity is the job work order's, and the API
                 will not accept another — so there is nothing here to type into
                 and nothing submitted. */}
-            <Field label="Planned quantity" htmlFor="jwpo-qty" hint="From the job-work order.">
+            <Field label="Planned quantity" htmlFor="jwpo-qty" hint="From the job work order.">
               <input
                 id="jwpo-qty"
                 value={
@@ -599,7 +599,7 @@ function MaterialSufficiency({
             <>
               A production order cannot be raised until every required material is in stock. Only
               company-owned stock released by incoming QC counts, less what other open work orders
-              have already spoken for — buy the shortfall through Procure-to-Pay first.
+              have already spoken for — buy the shortfall through Procure to Pay first.
             </>
           )}
         </p>

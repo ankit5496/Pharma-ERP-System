@@ -1,6 +1,5 @@
 import type { Metadata } from 'next';
 import {
-  PACKAGING_LEVEL_LABELS,
   PROCUREMENT_ROUTES,
   REQUISITION_STATUSES,
   REQUISITION_STATUS_LABELS,
@@ -41,7 +40,7 @@ import {
 } from '@/lib/procurement';
 import { requireSession } from '@/lib/session';
 
-export const metadata: Metadata = { title: 'Purchase requisitions' };
+export const metadata: Metadata = { title: 'Purchase Requisitions' };
 export const dynamic = 'force-dynamic';
 
 /**
@@ -105,7 +104,7 @@ export default async function RequisitionsPage({
 
   return (
     <Panel
-      title="Purchase requisitions"
+      title="Purchase Requisitions"
       subtitle={
         requisitions.ok
           ? `${requisitions.data.total} requisition${requisitions.data.total === 1 ? '' : 's'}`
@@ -157,7 +156,7 @@ export default async function RequisitionsPage({
                   <Th align="right">Requested qty</Th>
                   <Th>Trigger type</Th>
                   <Th>Raised by</Th>
-                  <Th>Why</Th>
+                  <Th>Raised for</Th>
                   <Th>For</Th>
                   <Th>Linked PO</Th>
                   <Th>Status</Th>
@@ -189,11 +188,6 @@ export default async function RequisitionsPage({
 
                     <Td align="right">
                       <Qty value={requisition.requiredQuantity} uom={requisition.item.uom} />
-                      {requisition.quantityPerUnit && (
-                        <p className="text-[11px] text-slate-500">
-                          {requisition.quantityPerUnit} per unit/batch
-                        </p>
-                      )}
                     </Td>
 
                     <Td>
@@ -209,16 +203,39 @@ export default async function RequisitionsPage({
                       </span>
                     </Td>
 
-                    {/* The justification, as it stood when the requisition was
-                        raised — not today's figures. The shortfall is gone from
-                        here: it was the arithmetic difference between the two
-                        numbers printed beside it, so the column was saying the
-                        same thing twice. */}
+                    {/* THE JUSTIFICATION, as it stood when the requisition was
+                        raised — not today's figures.
+
+                        THE ORDER IT SERVES is the whole of it now. Requirements
+                        come from sales orders, so "SO-2026-0007 needed more than
+                        was free" is the reason; the reorder level that used to
+                        sit here no longer exists behind anything raised since,
+                        and printing an empty one would read as a missing value
+                        rather than an obsolete concept. Requisitions raised
+                        under the old rule still show theirs. */}
                     <Td>
-                      <p className="whitespace-nowrap text-xs text-slate-600">
-                        Stock {requisition.stockAtRequest} | Reorder{' '}
-                        {requisition.reorderLevelAtRequest}
-                      </p>
+                      {requisition.salesOrder ? (
+                        <>
+                          <p className="whitespace-nowrap font-mono text-xs text-slate-800">
+                            <Code>{requisition.salesOrder.number}</Code>
+                          </p>
+                          <p className="text-[11px] text-slate-500">
+                            <Name>{requisition.salesOrder.customerName}</Name>
+                          </p>
+                          <p className="whitespace-nowrap text-[11px] text-slate-500">
+                            {requisition.stockAtRequest} free when raised
+                          </p>
+                        </>
+                      ) : requisition.reorderLevelAtRequest !== null ? (
+                        <p className="whitespace-nowrap text-xs text-slate-600">
+                          Stock {requisition.stockAtRequest} | Reorder{' '}
+                          {requisition.reorderLevelAtRequest}
+                        </p>
+                      ) : (
+                        <p className="whitespace-nowrap text-xs text-slate-600">
+                          {requisition.stockAtRequest} free when raised
+                        </p>
+                      )}
                     </Td>
 
                     <Td valign="top">
@@ -274,7 +291,8 @@ export default async function RequisitionsPage({
 /**
  * Why this requisition exists.
  *
- * An auto-reorder requisition has no author and needs none; a manual one was
+ * An Auto requisition has no author and needs none — the system raised it
+ * because a sales order's material requirement was short. A manual one was
  * raised by somebody. Worth a column rather than a footnote, because it is the
  * first thing a buyer checks before acting on one.
  */
@@ -296,39 +314,33 @@ function TriggerCell({ requisition }: { requisition: RequisitionListItem }) {
 }
 
 /**
- * What the material is for: the run, the product, and where it sits in the
- * pack.
+ * What the material is for: the finished product, and the run where one was
+ * named.
  *
- * All optional, so the cell renders only what was actually filled in — a
- * requisition for a bulk raw material shows a dash rather than four empty
- * labels.
+ * FOUR PACKAGING FIELDS USED TO SIT HERE — pack variant, packaging component,
+ * packaging level and a mandatory flag — describing a PRODUCT's packaging on a
+ * request to buy one material. They belong to the Packaging Requirement
+ * master and have gone with the rest of that set.
+ *
+ * The finished product survives because it is no longer a field: it is read
+ * through the sales order line the requisition was raised for, so it cannot
+ * drift from the order that caused it.
  */
 function PurposeCell({ requisition }: { requisition: RequisitionListItem }) {
   const plan = requisition.productionPlan;
   const product = requisition.finishedProduct ?? plan?.finishedProduct ?? null;
-  const packVariant = requisition.packVariant ?? plan?.packVariant ?? null;
-  const component = requisition.packagingComponent;
 
-  const hasAnything = plan || product || packVariant || component || requisition.packagingLevel;
-
-  if (!hasAnything) return <Blank />;
+  if (!plan && !product) return <Blank />;
 
   return (
     <div className="space-y-0.5 text-[11px] leading-snug">
       {plan && <p className="font-mono text-slate-700"><Code>{plan.number}</Code></p>}
-      {product && <p className="text-slate-700">{product.name}</p>}
-      {packVariant && <p className="text-slate-500">{packVariant}</p>}
-
-      {component && (
-        <p className="text-slate-500">
-          {component.name}
-          {requisition.packagingLevel
-            ? ` · ${PACKAGING_LEVEL_LABELS[requisition.packagingLevel]}`
-            : ''}
-        </p>
+      {product && (
+        <>
+          <p className="text-slate-700"><Name>{product.name}</Name></p>
+          <p className="font-mono text-slate-500"><Code>{product.code}</Code></p>
+        </>
       )}
-
-      {!requisition.isMandatory && <Pill tone="muted">Optional</Pill>}
     </div>
   );
 }

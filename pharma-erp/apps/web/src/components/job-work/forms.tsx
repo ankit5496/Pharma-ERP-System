@@ -23,6 +23,7 @@ import {
 import { startTransition, useMemo, useState } from 'react';
 
 import {
+  Derived,
   Disclosure,
   Field,
   FormFooter,
@@ -45,6 +46,7 @@ import {
   raiseJobWorkProductionOrderAction,
   submitJobWorkReceiptAction,
   updateJobWorkProductionOrderAction,
+  updateJobWorkReceiptAction,
   updateJobWorkOrderAction,
 } from './actions';
 
@@ -64,38 +66,6 @@ import {
  * (section 20); these controls exist so a user is not surprised by a refusal
  * they could have seen coming.
  */
-
-/**
- * A value the system decided, shown but not editable.
- *
- * THE SHADED BOX IS THE WHOLE MESSAGE. It used to carry a badge as well —
- * SYSTEM-DERIVED, AUTO-INHERITED and so on — naming which kind of decision had
- * fixed the value. Withdrawn at the product owner's request: the field is
- * already visibly not an input, and the badge restated that in vocabulary only
- * the people who built it use.
- *
- * Nothing else changed. These values are still derived exactly as they were,
- * still not submitted, and still re-decided by the API.
- */
-function Derived({
-  label,
-  value,
-  hint,
-}: {
-  label: string;
-  value: string;
-  hint?: string;
-}) {
-  return (
-    <div>
-      <span className="field-label">{label}</span>
-      <div className="mt-1.5 flex min-h-[2.5rem] flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
-        <span className="text-sm font-medium text-slate-800">{value}</span>
-      </div>
-      {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
-    </div>
-  );
-}
 
 // ---------------------------------------------------------------------------
 // US-JW-01 — raise a job-work order
@@ -170,7 +140,7 @@ export function CreateJobWorkOrderButton({
             // CONTROL 1, stated where it can be acted on. An empty select with
             // no explanation reads as a loading failure.
             <p className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-              No principal currently holds an agreement that is in force, so no job-work order can
+              No principal currently holds an agreement that is in force, so no job work order can
               be raised. Record or renew an agreement under Master Data first.
             </p>
           )}
@@ -479,7 +449,7 @@ export function ViewJobWorkReceiptButton({
             <Derived label="Receipt no." value={receipt.receiptNumber} />
             <Derived label="Principal" value={receipt.principalName} />
             <Derived
-              label="Job-work order"
+              label="Job work order"
               value={receipt.jobWorkOrderNumber}
             />
 
@@ -579,7 +549,7 @@ export function SendForApprovalButton({
       onOpenChange={onOpenChange}
       label="Send for approval"
       title={`Send ${receipt.receiptNumber} for approval`}
-      subtitle="The quality decision is taken separately, on Quality check."
+      subtitle="The quality decision is taken separately, on Quality Check."
       closeWhen={state.status === 'success'}
       width="34rem"
     >
@@ -626,20 +596,38 @@ export function SendForApprovalButton({
  */
 export function JobWorkInwardRowActions({
   receipt,
+  orders,
 }: {
   receipt: JobWorkMaterialReceiptView;
+  /** For the edit form, which offers the same order list the create form does. */
+  orders: readonly JobWorkOrderSummary[];
 }) {
   const [viewing, setViewing] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   const isDraft = receipt.status === 'DRAFT';
 
+  /**
+   * EDIT OR VIEW, NEVER BOTH, and the status decides which.
+   *
+   * A DRAFT is a delivery somebody is still writing down: nothing has been
+   * approved and no production order can have drawn on it, so it opens for
+   * correction. The moment it is sent for approval it becomes a document a
+   * quality officer is being asked to judge, and it opens read-only — changing
+   * it underneath them is the one thing a consignment record must never do.
+   *
+   * THE API ENFORCES THE SAME RULE. Hiding the entry saves somebody a wasted
+   * dialog; `update` refuses anything past DRAFT whatever the screen offers.
+   */
   return (
     <>
       <RowActionMenu
         label={`${receipt.receiptNumber} from ${receipt.principalName}`}
         actions={[
-          { label: 'View', onSelect: () => setViewing(true) },
+          isDraft
+            ? { label: 'Edit', onSelect: () => setEditing(true) }
+            : { label: 'View', onSelect: () => setViewing(true) },
           {
             label: 'Send for approval',
             onSelect: () => setSubmitting(true),
@@ -655,6 +643,17 @@ export function JobWorkInwardRowActions({
       />
 
       <ViewJobWorkReceiptButton receipt={receipt} isOpen={viewing} onOpenChange={setViewing} />
+
+      {/* Mounted only while open, so the form opens on what the receipt says
+          now rather than on what it said when the page was drawn. */}
+      {editing && (
+        <CreateJobWorkReceiptButton
+          orders={orders}
+          receipt={receipt}
+          isOpen={editing}
+          onOpenChange={setEditing}
+        />
+      )}
 
       {/* Mounted only while open, so the dialog starts fresh each time rather
           than holding the previous row's state. */}
@@ -706,7 +705,7 @@ export function DecideJobWorkReceiptButton({
 
           <Derived label="Receipt no." value={receipt.receiptNumber} />
           <Derived label="Principal" value={receipt.principalName} />
-          <Derived label="Job-work order" value={receipt.jobWorkOrderNumber} />
+          <Derived label="Job work order" value={receipt.jobWorkOrderNumber} />
           <Derived
             label="Sent for approval"
             value={
@@ -924,8 +923,23 @@ export function ReceiptMaterialTables({
 export function CreateJobWorkReceiptButton({
   orders,
   ownProcurementOrderCount = 0,
+  receipt,
+  isOpen,
+  onOpenChange,
 }: {
   orders: readonly JobWorkOrderSummary[];
+  /**
+   * THE DRAFT BEING CORRECTED, when one is.
+   *
+   * ONE FORM FOR BOTH, and not two that drift: recording a challan and
+   * correcting it ask for exactly the same things, and the API takes the same
+   * payload either way. Present means edit — the order is fixed, the fields
+   * open on what is there, and the action is the PATCH.
+   */
+  receipt?: JobWorkMaterialReceiptView;
+  /** Passed by a row's Actions menu, which is then the trigger. */
+  isOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
   /**
    * How many job-work orders exist on the OTHER billing model.
    *
@@ -936,7 +950,31 @@ export function CreateJobWorkReceiptButton({
    */
   ownProcurementOrderCount?: number;
 }) {
-  const [state, formAction] = useAction(createJobWorkReceiptAction);
+  const editing = receipt !== undefined;
+
+  const [state, formAction] = useAction(
+    editing ? updateJobWorkReceiptAction : createJobWorkReceiptAction,
+  );
+
+  /**
+   * What the receipt already records for one material, by item.
+   *
+   * BY ITEM ID, because that is what a line is about. A receipt holds at most
+   * one line per material — the service refuses a second — so the lookup is
+   * unambiguous.
+   */
+  const recordedFor = (itemId: string) => {
+    const line = receipt?.lines.find((row) => row.item.id === itemId);
+
+    if (!line) return undefined;
+
+    return {
+      batchNumber: line.batchNumber,
+      receivedQuantity: line.receivedQuantity,
+      manufacturingDate: line.manufacturingDate,
+      expiryDate: line.expiryDate,
+    };
+  };
 
   // Nothing is preselected: which order the challan belongs to is a deliberate
   // choice, and everything else on the form follows from it.
@@ -975,14 +1013,26 @@ export function CreateJobWorkReceiptButton({
 
   return (
     <Disclosure
-      label="Record material receipt"
-      title="Material received from principal"
-      subtitle="Against the principal's delivery challan. This is not a purchase: no purchase order and no purchase invoice is created."
+      isOpen={isOpen}
+      onOpenChange={onOpenChange}
+      label={editing ? 'Edit' : 'Record material receipt'}
+      title={
+        editing ? `Correct ${receipt.receiptNumber}` : 'Material Received From Principal'
+      }
+      subtitle={
+        editing
+          ? 'Still a draft, so it can be corrected. Saving restates the whole challan.'
+          : "Against the principal's delivery challan. This is not a purchase: no purchase order and no purchase invoice is created."
+      }
       closeWhen={state.status === 'success'}
       width="52rem"
     >
       {(close) => (
         <form action={formAction} className="grid gap-4 sm:grid-cols-2">
+          {/* Which draft is being corrected. Not `id`: a control called `id`
+              shadows the form element's own property and React then drops the
+              submitter's name and value. */}
+          {editing && <input type="hidden" name="receiptId" value={receipt.id} />}
           {orders.length === 0 ? (
             <div className="sm:col-span-2 space-y-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
               {ownProcurementOrderCount > 0 ? (
@@ -990,27 +1040,27 @@ export function CreateJobWorkReceiptButton({
                   <p>
                     <strong>Nothing to record here.</strong>{' '}
                     {ownProcurementOrderCount === 1
-                      ? 'Your only job-work order is'
-                      : `All ${ownProcurementOrderCount} of your job-work orders are`}{' '}
-                    on the <strong>own-procurement</strong> billing model, where you buy the
+                      ? 'Your only job work order is'
+                      : `All ${ownProcurementOrderCount} of your job work orders are`}{' '}
+                    on the <strong>own procurement</strong> billing model, where you buy the
                     material yourself — so the principal ships you nothing to receive.
                   </p>
                   <p>
                     Buy it through <strong>Procure to Pay</strong> instead: requisition, purchase
                     order, goods receipt and incoming QC. It becomes your own stock, which is what
-                    an own-procurement order must consume.
+                    an own procurement order must consume.
                   </p>
                 </>
               ) : (
                 <>
                   <p>
-                    <strong>No pure-conversion job-work order to receive against.</strong> Material
+                    <strong>No pure conversion job work order to receive against.</strong> Material
                     arrives free of cost only on that billing model.
                   </p>
                   <p>
-                    Set one up first: a <strong>pure-conversion agreement</strong> with the
+                    Set one up first: a <strong>pure conversion agreement</strong> with the
                     principal under <strong>Principals &amp; agreements</strong>, then a{' '}
-                    <strong>job-work order</strong> under it. The billing model is inherited from
+                    <strong>job work order</strong> under it. The billing model is inherited from
                     the agreement, so it has to be right there.
                   </p>
                 </>
@@ -1018,7 +1068,7 @@ export function CreateJobWorkReceiptButton({
             </div>
           ) : (
             <>
-              <Field label="Job-work order" htmlFor="jw-jobWorkOrderId">
+              <Field label="Job work order" htmlFor="jw-jobWorkOrderId">
                 <SearchableSelect
                   id="jw-jobWorkOrderId"
                   name="jobWorkOrderId"
@@ -1030,7 +1080,7 @@ export function CreateJobWorkReceiptButton({
                   }))}
                   value={receiptOrderId}
                   onChange={chooseOrder}
-                  emptyLabel="Select job-work order"
+                  emptyLabel="Select job work order"
                   className="field h-10"
                 />
               </Field>
@@ -1071,7 +1121,7 @@ export function CreateJobWorkReceiptButton({
               {/* The materials the chosen order expects, one row each. */}
               {!orderChosen ? (
                 <p className="sm:col-span-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
-                  Choose the job-work order above and its materials will be listed here.
+                  Choose the job work order above and its materials will be listed here.
                 </p>
               ) : loadingMaterials ? (
                 <p className="sm:col-span-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
@@ -1117,6 +1167,7 @@ export function CreateJobWorkReceiptButton({
                             key={material.item.id}
                             index={index}
                             material={material}
+                            recorded={recordedFor(material.item.id)}
                           />
                         ))}
                       </fieldset>
@@ -1169,14 +1220,57 @@ const MATERIAL_SECTIONS = [
  * The material itself is stated, never selected: it comes from the order, and
  * the API refuses any line naming something the formulation does not list.
  */
+/** The next calendar day, as YYYY-MM-DD. Used as an exclusive lower bound. */
+function dayAfter(day: string): string {
+  const next = new Date(`${day}T00:00:00Z`);
+
+  next.setUTCDate(next.getUTCDate() + 1);
+
+  return next.toISOString().slice(0, 10);
+}
+
 function MaterialReceiptRow({
   index,
   material,
+  recorded,
 }: {
   index: number;
   material: JobWorkOrderMaterial;
+  /**
+   * What this material already says on the receipt, when one is being
+   * corrected.
+   *
+   * A CORRECTION OPENS ON WHAT IS THERE. An edit form that starts empty is one
+   * where every untouched field is silently cleared on save, which is the
+   * worst possible behaviour for a consignment record.
+   */
+  recorded?: {
+    batchNumber: string;
+    receivedQuantity: string;
+    manufacturingDate: string | null;
+    expiryDate: string | null;
+  };
 }) {
   const prefix = `lines.${index}`;
+
+  /**
+   * THE TWO DATES CONSTRAIN EACH OTHER, so they are held here rather than left
+   * to the browser's defaults.
+   *
+   * A drum cannot have been made tomorrow, and it cannot expire before it was
+   * made. Both are typed on the same row, so the bounds are live: choosing a
+   * manufacturing date raises the floor under the expiry, and choosing an
+   * expiry lowers the ceiling over the manufacturing date. The picker then
+   * greys out the impossible days instead of accepting them and failing on
+   * save.
+   *
+   * THIS IS THE COURTESY. `job-work-receipts.service` re-checks both on the
+   * way in, because a date typed into a request never passed through here.
+   */
+  const today = new Date().toISOString().slice(0, 10);
+
+  const [manufacturedOn, setManufacturedOn] = useState(recorded?.manufacturingDate ?? '');
+  const [expiresOn, setExpiresOn] = useState(recorded?.expiryDate ?? '');
 
   return (
     <div className="grid gap-3 border-t border-slate-100 pt-3 first:border-0 first:pt-0 sm:grid-cols-4">
@@ -1196,6 +1290,7 @@ function MaterialReceiptRow({
           name={`${prefix}.batchNumber`}
           type="text"
           maxLength={64}
+          defaultValue={recorded?.batchNumber ?? ''}
           className="field h-10"
         />
       </Field>
@@ -1207,24 +1302,56 @@ function MaterialReceiptRow({
           type="text"
           inputMode="decimal"
           placeholder="0.0000"
+          defaultValue={recorded?.receivedQuantity ?? ''}
           className="field h-10"
         />
       </Field>
 
-      <Field label="Manufacturing date" htmlFor={`jw-mfg-${index}`}>
+      <Field
+        label="Manufacturing date"
+        htmlFor={`jw-mfg-${index}`}
+        hint="Not in the future."
+      >
         <input
           id={`jw-mfg-${index}`}
           name={`${prefix}.manufacturingDate`}
           type="date"
+          value={manufacturedOn}
+          onChange={(event) => setManufacturedOn(event.target.value)}
+          // NOT AFTER TODAY, and not after the expiry once one is chosen: the
+          // earlier of the two is the real ceiling.
+          max={expiresOn && expiresOn < today ? expiresOn : today}
           className="field h-10"
         />
       </Field>
 
-      <Field label="Expiry date" htmlFor={`jw-expiry-${index}`}>
+      <Field
+        label="Expiry date"
+        htmlFor={`jw-expiry-${index}`}
+        required
+        hint="Today or later, and after the manufacturing date."
+      >
         <input
           id={`jw-expiry-${index}`}
           name={`${prefix}.expiryDate`}
           type="date"
+          required
+          value={expiresOn}
+          onChange={(event) => setExpiresOn(event.target.value)}
+          // THE LATER OF TWO FLOORS, because both have to hold.
+          //
+          // TODAY, because material that expired before it arrived cannot be
+          // taken into stock — accepting it would put unusable material on the
+          // shelf for production to draw on.
+          //
+          // AND THE DAY AFTER IT WAS MADE: `min` is inclusive, so the floor is
+          // the next day. Something that expires the day it was made is a typo,
+          // not a shelf life.
+          min={
+            manufacturedOn && dayAfter(manufacturedOn) > today
+              ? dayAfter(manufacturedOn)
+              : today
+          }
           className="field h-10"
         />
       </Field>
@@ -1302,7 +1429,7 @@ export function RaiseJobWorkProductionButton({ order }: { order: JobWorkOrderSum
         Raise work order
       </button>
 
-      {/* SAID, NOT PREVENTED. A second batch against one job-work order is
+      {/* SAID, NOT PREVENTED. A second batch against one job work order is
           ordinary — a principal orders 200,000 and the plant runs two of
           100,000 — so this reports what already exists rather than blocking a
           legitimate second run. What stops a DUPLICATE is the material: the
@@ -1335,7 +1462,7 @@ export function RaiseJobWorkProductionButton({ order }: { order: JobWorkOrderSum
             value={order.agreementReference ?? 'No reference'}
           />
 
-          <Derived label="Job-work order" value={order.orderNumber} />
+          <Derived label="Job work order" value={order.orderNumber} />
 
           <Derived
             label="Billing model"
@@ -1669,7 +1796,7 @@ export function RaiseJobWorkProductionOrderButton({
                 which are the part somebody opened this to see. Stacking them
                 two-up would push the tables below the fold. */}
             <Derived label="Production order no." value="Generated on save" />
-            <Derived label="Job-work order" value={order.orderNumber} />
+            <Derived label="Job work order" value={order.orderNumber} />
             <Derived label="Principal" value={order.principalName} />
 
             <Derived
@@ -1824,7 +1951,7 @@ export function JobWorkProductionOrderDialog({
           <input type="hidden" name="id" value={order.id} />
 
           <Derived label="Production order no." value={order.orderNumber} />
-          <Derived label="Job-work order" value={order.jobWorkOrderNumber} />
+          <Derived label="Job work order" value={order.jobWorkOrderNumber} />
           <Derived label="Principal" value={order.principalName} />
 
           <Derived
@@ -1842,13 +1969,13 @@ export function JobWorkProductionOrderDialog({
           />
 
           {/* UNDER OWN PROCUREMENT there is neither: we bought the material
-              through Procure-to-Pay, where it passed incoming QC on its own
+              through Procure to Pay, where it passed incoming QC on its own
               goods receipt. Showing an empty "Quality check" here would imply a
               step was skipped rather than that it does not apply. */}
           <Derived
             label="Material source"
             value={order.materialReceipt?.receiptNumber ?? 'Our own inventory'}
-            hint={order.materialReceipt ? undefined : 'Bought through Procure-to-Pay.'}
+            hint={order.materialReceipt ? undefined : 'Bought through Procure to Pay.'}
           />
           <Derived
             label="Quality check"
@@ -1959,7 +2086,7 @@ export function JobWorkProductionOrderDialog({
             )}
           </div>
 
-          {/* ONLY WHERE THERE IS A CONSIGNMENT. An own-procurement order's
+          {/* ONLY WHERE THERE IS A CONSIGNMENT. An own procurement order's
               material is company stock and is not listed here — the drums it
               will actually draw on are chosen at Material issue, from the
               shelf, and naming them before that would be a guess. */}
@@ -2063,12 +2190,35 @@ export function CreateJobWorkDispatchButton({
   /** The released batch being dispatched. */
   const [dispatchBatchId, setDispatchBatchId] = useState('');
 
+  /**
+   * NOTHING RELEASED, NOTHING TO SEND.
+   *
+   * The form used to open on an order with no released batch and explain
+   * itself inside, which is a dialog somebody opens, reads and closes. The
+   * trigger now says so without being pressed — and the reason travels with
+   * it, because a greyed-out button that explains nothing is worse than one
+   * that opens onto a refusal.
+   *
+   * THE API IS THE ENFORCEMENT, not this. A dispatch names a batch, and the
+   * service re-checks that the batch is RELEASED inside its own transaction.
+   */
+  const nothingReleased =
+    batches.length === 0
+      ? 'No batch made against this order is released with stock remaining, so there is nothing ' +
+        'to dispatch or bill. A batch has to pass the quality gate first.'
+      : null;
+
   return (
     <Disclosure
-      label="Dispatch & invoice"
+      // ONE BUTTON FOR ONE ACT. Dispatching a released batch IS what raises the
+      // invoice — US-JW-05 makes them a single transaction — so two controls
+      // implied two decisions and a Billing button that could not, on its own,
+      // bill anything.
+      label="Dispatch & Invoice"
       title={`Dispatch against ${order.orderNumber}`}
       subtitle="Only released batches can be sent. The invoice basis follows the agreement's billing model."
       closeWhen={state.status === 'success'}
+      disabledReason={nothingReleased}
       width="44rem"
     >
       {(close) => (
@@ -2134,7 +2284,7 @@ export function CreateJobWorkDispatchButton({
                 />
               </div>
 
-              {/* Own-procurement only. Under pure conversion the API REJECTS
+              {/* Own Procurement only. Under pure conversion the API REJECTS
                   this field rather than ignoring it, so the control must not
                   exist here either. */}
               {order.billingModel === 'OWN_PROCUREMENT' && (
@@ -2318,7 +2468,7 @@ export function ViewJobWorkInvoiceButton({
             </h3>
 
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {/* NOT A STORED FIELD. A job-work invoice has no lifecycle of its
+              {/* NOT A STORED FIELD. A job work invoice has no lifecycle of its
                   own — it is raised by the dispatch that returns the batch and
                   is never amended — so the status is stated as what it is
                   rather than left off the dialog for somebody to wonder about. */}

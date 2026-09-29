@@ -33,10 +33,10 @@ import {
   fetchRequisitions,
   fetchVendors,
   toListQuery,
-  toOptions,
+  toOptions,  fetchPeopleOptions,
 } from '@/lib/procurement';
 
-export const metadata: Metadata = { title: 'Purchase orders' };
+export const metadata: Metadata = { title: 'Purchase Orders' };
 export const dynamic = 'force-dynamic';
 
 /**
@@ -63,7 +63,7 @@ export default async function PurchaseOrdersPage({
 
   const isFiltered = Object.values(query).some(Boolean);
 
-  const [orders, drafts, vendors, items, requisitions] = await Promise.all([
+  const [orders, drafts, vendors, items, requisitions, people] = await Promise.all([
     fetchPurchaseOrders(query),
     fetchDraftOrders(),
     fetchVendors(),
@@ -74,6 +74,8 @@ export default async function PurchaseOrdersPage({
     // this page is re-rendered on every filter change, where it would be paid
     // again each time.
     fromRequisition || isFiltered ? fetchRequisitions({}) : Promise.resolve(null),
+    // Colleagues, for the Created By filter. One lookup, shared with Job Work.
+    fetchPeopleOptions(),
   ]);
 
   // Resolved once: the edit form offers these while the order is still a draft
@@ -117,7 +119,7 @@ export default async function PurchaseOrdersPage({
 
       {drafts.ok && drafts.data.length > 0 && (
         <Panel
-          title="Draft purchase orders"
+          title="Draft Purchase Orders"
           subtitle={`${drafts.data.length} unplaced draft${drafts.data.length === 1 ? '' : 's'} — nothing has been sent to a vendor`}
         >
           <TableWrap>
@@ -214,7 +216,7 @@ export default async function PurchaseOrdersPage({
       )}
 
       <Panel
-        title="Purchase orders"
+        title="Purchase Orders"
         subtitle={
           orders.ok ? `${orders.data.total} order${orders.data.total === 1 ? '' : 's'}` : undefined
         }
@@ -230,6 +232,7 @@ export default async function PurchaseOrdersPage({
             value: status,
             label: PURCHASE_ORDER_STATUS_LABELS[status],
           }))}
+          raisedBy={people}
           vendors={vendors.ok ? toOptions(vendors.data) : []}
           items={items.ok ? toOptions(items.data) : []}
           requisitions={requisitionOptions}
@@ -307,6 +310,21 @@ export default async function PurchaseOrdersPage({
                               {line.requisition && (
                                 <span className="block font-mono text-[11px] text-slate-500">
                                   <Code>{line.requisition.number}</Code>
+                                </span>
+                              )}
+
+                              {/* WHO IT IS ULTIMATELY FOR, read through the
+                                  requisition rather than stored on the order.
+                                  Completes the chain on screen: customer ->
+                                  sales order -> requirement -> requisition ->
+                                  this line. */}
+                              {line.salesOrder && (
+                                <span
+                                  className="block text-[11px] text-slate-500"
+                                  title={`Bought to serve ${line.salesOrder.number} for ${line.salesOrder.customerName}`}
+                                >
+                                  for <Code>{line.salesOrder.number}</Code> ·{' '}
+                                  <Name>{line.salesOrder.customerName}</Name>
                                 </span>
                               )}
                             </li>

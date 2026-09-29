@@ -24,6 +24,8 @@ import type {
   JobWorkMappingDto,
   UpdateJobWorkAgreementDto,
 } from './dto/job-work.dto';
+import { jobWorkListWhere, type JobWorkListQueryDto } from './job-work-list-query';
+
 
 /**
  * The Principal & Job-Work Agreement register — US-MD-05.
@@ -63,9 +65,72 @@ export class JobWorkService {
     private readonly numbering: NumberingService,
   ) {}
 
-  async list(): Promise<JobWorkAgreementSummary[]> {
+  /**
+   * The agreement register, filtered in the DATABASE.
+   *
+   * THE SAME FIVE FILTERS THE REST OF JOB WORK TAKES — search, status, created
+   * between, created by, and the two this register has of its own — so a
+   * filtered link means the same thing here as on any other tab. This screen
+   * was the last one still sifting the array it had been handed.
+   *
+   * STATUS IS DERIVED, NOT STORED, so it is expressed as the dates that decide
+   * it. An agreement is in force when it has started and has not ended, not
+   * yet started when its start is in the future, and expired when its end is
+   * past. Those are the three the register's badge shows, and computing them
+   * here rather than after the fetch is what makes the count, the rows and the
+   * pager agree.
+   */
+  async list(query: JobWorkListQueryDto = {}): Promise<JobWorkAgreementSummary[]> {
+    const search = query.search?.trim();
+
+    // Midnight today, as a DATE: `valid_from`/`valid_to` are dates, and
+    // comparing them against an instant would make "in force today" depend on
+    // the hour the page was opened.
+    const today = new Date(new Date().toISOString().slice(0, 10));
+
+    const status: Record<string, Prisma.JobWorkAgreementWhereInput> = {
+      IN_FORCE: {
+        AND: [
+          { OR: [{ validFrom: null }, { validFrom: { lte: today } }] },
+          { OR: [{ validTo: null }, { validTo: { gte: today } }] },
+        ],
+      },
+      NOT_YET_STARTED: { validFrom: { gt: today } },
+      EXPIRED: { validTo: { lt: today } },
+    };
+
     const agreements = await this.prisma.scoped.jobWorkAgreement.findMany({
-      where: { deletedAt: null },
+      where: {
+        deletedAt: null,
+        ...jobWorkListWhere(query),
+        ...(query.principalId ? { principalId: query.principalId } : {}),
+        ...(query.billingModel ? { billingModel: query.billingModel } : {}),
+        ...(query.status && status[query.status] ? status[query.status] : {}),
+        ...(search
+          ? {
+              OR: [
+                { agreementReference: { contains: search, mode: 'insensitive' } },
+                { principal: { name: { contains: search, mode: 'insensitive' } } },
+                { principal: { code: { contains: search, mode: 'insensitive' } } },
+                {
+                  mappings: {
+                    some: { principalBrandName: { contains: search, mode: 'insensitive' } },
+                  },
+                },
+                {
+                  mappings: {
+                    some: { bom: { product: { name: { contains: search, mode: 'insensitive' } } } },
+                  },
+                },
+                {
+                  mappings: {
+                    some: { bom: { product: { code: { contains: search, mode: 'insensitive' } } } },
+                  },
+                },
+              ],
+            }
+          : {}),
+      },
       include: AGREEMENT_INCLUDE,
       // Soonest to lapse first, open-ended agreements last: the register and
       // the question "what needs renegotiating" are the same question.

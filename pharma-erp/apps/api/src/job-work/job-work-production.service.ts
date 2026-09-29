@@ -11,9 +11,11 @@ import type {
   JobWorkProductionOrderView,
   JobWorkProductionStatus,
 } from '@pharma-erp/types';
+import { JOB_WORK_PRODUCTION_STATUSES } from '@pharma-erp/types';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { NumberingService } from '../procurement/numbering.service';
+import { materialRequirementFor } from '../production/material-requirements';
 import { fromIsoDate, toItemSummary, toIsoDate } from '../production/production.mappers';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
@@ -21,10 +23,10 @@ import type {
   CreateJobWorkProductionOrderDto,
   UpdateJobWorkProductionOrderDto,
 } from './dto/job-work-production.dto';
+import { jobWorkListWhere, statusIn, type JobWorkListQueryDto } from './job-work-list-query';
 import { JobWorkOrdersService, parseQuantity } from './job-work-orders.service';
 import { JobWorkReadinessService } from './job-work-readiness.service';
 import { toReceiptView, RECEIPT_INCLUDE } from './job-work-receipts.service';
-import { materialRequirementFor } from './job-work-requirements';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -66,7 +68,13 @@ export class JobWorkProductionService {
     private readonly orders: JobWorkOrdersService,
   ) {}
 
-  async list(jobWorkOrderId?: string): Promise<JobWorkProductionOrderView[]> {
+  async list(
+    jobWorkOrderId?: string,
+    query: JobWorkListQueryDto = {},
+  ): Promise<JobWorkProductionOrderView[]> {
+    const search = query.search?.trim();
+    const status = statusIn(query.status, JOB_WORK_PRODUCTION_STATUSES);
+
     const rows = await this.prisma.scoped.jobWorkProductionOrder.findMany({
       // ONE QUERY, NOT ONE PER RELATION. This include is six levels deep, and
       // the default strategy fetches each level in its own round trip — twenty
@@ -75,7 +83,41 @@ export class JobWorkProductionService {
       //
       // OPT-IN, HERE ONLY. Nothing else in the codebase generates differently.
       relationLoadStrategy: 'join',
-      where: { deletedAt: null, ...(jobWorkOrderId ? { jobWorkOrderId } : {}) },
+      where: {
+        deletedAt: null,
+        ...(jobWorkOrderId ? { jobWorkOrderId } : {}),
+        ...jobWorkListWhere(query),
+        ...(status ? { status } : {}),
+        ...(query.principalId ? { jobWorkOrder: { principalId: query.principalId } } : {}),
+        ...(query.billingModel ? { jobWorkOrder: { billingModel: query.billingModel } } : {}),
+        ...(search
+          ? {
+              OR: [
+                { orderNumber: { contains: search, mode: 'insensitive' } },
+                { jobWorkOrder: { orderNumber: { contains: search, mode: 'insensitive' } } },
+                {
+                  jobWorkOrder: {
+                    principal: { name: { contains: search, mode: 'insensitive' } },
+                  },
+                },
+                {
+                  jobWorkOrder: {
+                    mapping: {
+                      principalBrandName: { contains: search, mode: 'insensitive' },
+                    },
+                  },
+                },
+                {
+                  jobWorkOrder: {
+                    mapping: {
+                      bom: { product: { code: { contains: search, mode: 'insensitive' } } },
+                    },
+                  },
+                },
+              ],
+            }
+          : {}),
+      },
       include: PRODUCTION_INCLUDE,
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     });
