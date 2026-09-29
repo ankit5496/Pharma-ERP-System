@@ -263,6 +263,20 @@ export class SalesReturnsService {
       for (const line of salesReturn.items) {
         if (line.disposition !== 'RESTOCK') continue;
 
+        // BACK ON ITS OWN BATCH, AND FREE — US-SAL-07.
+        //
+        // The batch is the one the goods left on, carried down from the invoice
+        // line, so the units rejoin the lot they came from rather than the
+        // nearest lot of the same product: a recall asks which batch went
+        // where, and answering it wrongly is worse than not answering.
+        //
+        // RAISING THE LOT IS THE WHOLE OF IT. Reserved stock in this system is
+        // stock carrying a live BatchAllocation; free stock is what the lot
+        // holds beyond that. So adding to `quantityAvailable` and writing no
+        // allocation IS the free/unreserved outcome — there is deliberately no
+        // second write here, and nothing reserves these units for the order
+        // they came back from or for any other. They sit as incidental stock
+        // until somebody allocates them on purpose.
         await tx.finishedGoodsLot.updateMany({
           where: { batchId: line.batchId },
           data: { quantityAvailable: { increment: line.quantity } },
@@ -356,8 +370,24 @@ function toListItem(row: {
   salesInvoice: { invoiceNumber: string };
   salesOrder: { orderNumber: string } | null;
   createdBy: { fullName: string } | null;
-  items: unknown[];
+  items: readonly { quantity: Prisma.Decimal; disposition: string }[];
 }): SalesReturnListItem {
+  // US-SAL-07, derived from the lines rather than stored: what went back into
+  // saleable stock, and what was held out of it. Only counted once the goods
+  // are actually in — a draft return has promised nothing to the shelf.
+  const received = row.status !== 'DRAFT' && row.status !== 'CANCELLED';
+
+  const restocked = row.items.reduce(
+    (sum, line) =>
+      received && line.disposition === 'RESTOCK' ? sum.add(line.quantity) : sum,
+    new Prisma.Decimal(0),
+  );
+
+  const quarantined = row.items.reduce(
+    (sum, line) => (line.disposition === 'RESTOCK' ? sum : sum.add(line.quantity)),
+    new Prisma.Decimal(0),
+  );
+
   return {
     id: row.id,
     returnNumber: row.returnNumber,
@@ -374,6 +404,8 @@ function toListItem(row: {
     taxAmount: row.taxAmount.toFixed(2),
     totalAmount: row.totalAmount.toFixed(2),
     itemCount: row.items.length,
+    restockedQuantity: restocked.toFixed(3),
+    quarantinedQuantity: quarantined.toFixed(3),
     createdByName: row.createdBy?.fullName ?? null,
     createdAt: row.createdAt.toISOString(),
   };

@@ -15,15 +15,16 @@ import { EditDialog } from './edit-kit';
 import { formatDate, PRIMARY_BUTTON } from './ui';
 
 /**
- * Commits the FEFO allocation for one order.
+ * Checks the batch released for one order, and reserves it.
  *
- * Sends nothing but the order id. The batches, the quantities and the order they
- * are drawn in are all decided server-side — there is no payload here that could
- * nominate a batch, which is what keeps the expiry rule and the release-status
- * rule from being negotiable.
+ * Sends nothing but the order id. There is no payload here that could nominate
+ * a batch, because there is no batch to choose: the quality gate already
+ * released one against this order, and the server only verifies the match and
+ * that the released quantity covers the lines.
  *
- * A shortfall comes back as a SUCCESS with less allocated than asked for, not as
- * an error, so the message distinguishes "allocated" from "partly allocated".
+ * A mismatch or a shortfall comes back as an ERROR, not a partial success —
+ * nothing is reserved unless every line is covered — so the message the server
+ * sends is shown as it is, naming the line and the figures.
  */
 export function AllocateOrderButton({
   salesOrderId,
@@ -83,8 +84,8 @@ export function AllocateOrderButton({
             setMessage({
               kind: 'info',
               text: picks
-                ? `${orderNumber} now holds ${picks}. Nearest expiry first — the rows are at the top of Reservations below.`
-                : `Stock reserved for ${orderNumber}, nearest expiry first.`,
+                ? `${orderNumber} now holds ${picks} — the batch released for it. The rows are at the top of Reservations below.`
+                : `The batch released for ${orderNumber} is now reserved against it.`,
             });
 
             router.refresh();
@@ -92,7 +93,7 @@ export function AllocateOrderButton({
         }}
         className={PRIMARY_BUTTON}
       >
-        {pending ? 'Allocating…' : 'Allocate (FEFO)'}
+        {pending ? 'Checking…' : 'Check & Allocate'}
       </button>
 
       {message && (
@@ -188,7 +189,7 @@ export function AllocationRowActions({ allocation }: { allocation: AllocationRow
           description={`${allocation.itemCode} · batch ${allocation.batchNumber} · expires ${formatDate(
             allocation.expiryDate,
           )}`}
-          note="The batch cannot be changed — FEFO picked it. To reserve a different batch, release this allocation and allocate again."
+          note="The batch cannot be changed — it is the one released for this order. To reserve a different batch, release this allocation and allocate again."
           fields={[
             {
               name: 'quantityAllocated',

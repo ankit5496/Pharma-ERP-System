@@ -487,6 +487,20 @@ export interface CustomerBalance {
  * Every field is optional because the master fills them in over time: what
  * exists is shown, what does not is left blank rather than invented.
  */
+/**
+ * Whether the product's formulation can still be made to.
+ *
+ * ACTIVE     one approved, active version — the ordinary case, nothing to say
+ * SUSPENDED  versions exist but none is active, so production has no
+ *            formulation to work from until one is reactivated
+ * NONE       no formulation at all, which is normal for a traded product
+ *
+ * SUSPENDED is the one worth a warning. NONE looks the same from the order
+ * screen but means something different, and warning about it would put a red
+ * flag on every bought-in line.
+ */
+export type ProductBomStatus = 'ACTIVE' | 'SUSPENDED' | 'NONE';
+
 export interface ItemPackagingSpec {
   itemId: string;
   itemCode: string;
@@ -504,6 +518,11 @@ export interface ItemPackagingSpec {
   primaryComponents: readonly PackagingComponentView[];
   secondaryComponents: readonly PackagingComponentView[];
   tertiaryComponents: readonly PackagingComponentView[];
+
+  /** The state of this product's formulation. Read-only; see ProductBomStatus. */
+  bomStatus: ProductBomStatus;
+  /** The active version, or the highest one on file when none is active. */
+  bomVersion: number | null;
 }
 
 export interface PackagingComponentView {
@@ -511,6 +530,144 @@ export interface PackagingComponentView {
   itemName: string;
   quantityPer: string;
   uom: string;
+}
+
+// ---------------------------------------------------------------------------
+// Sales order fulfilment trace — US-SAL-08
+// ---------------------------------------------------------------------------
+
+/**
+ * Where an order has got to, DERIVED from the records that exist for it.
+ *
+ * No column anywhere holds this. It is read off the linked procurement,
+ * production, allocation and despatch rows every time it is asked for, so it
+ * cannot drift from them the way a stored stage would.
+ *
+ * NOT_STARTED and CANCELLED are not in the story's four stages, and are here
+ * because the data has those cases: an order with nothing raised against it
+ * yet is not "awaiting material" — nobody has asked for any — and a cancelled
+ * order is not somewhere in the pipeline at all.
+ */
+export const FULFILMENT_STAGES = [
+  'NOT_STARTED',
+  'AWAITING_MATERIAL',
+  'IN_PRODUCTION',
+  'READY_TO_DISPATCH',
+  'DISPATCHED',
+  'CANCELLED',
+] as const;
+
+export type FulfilmentStage = (typeof FULFILMENT_STAGES)[number];
+
+export const FULFILMENT_STAGE_LABELS: Record<FulfilmentStage, string> = {
+  NOT_STARTED: 'Not started',
+  AWAITING_MATERIAL: 'Awaiting material',
+  IN_PRODUCTION: 'In production',
+  READY_TO_DISPATCH: 'Ready to dispatch',
+  DISPATCHED: 'Dispatched',
+  CANCELLED: 'Cancelled',
+};
+
+/** A purchase requisition raised to serve this order. */
+export interface TraceRequisition {
+  id: string;
+  number: string;
+  itemCode: string;
+  itemName: string;
+  quantity: string;
+  status: string;
+  raisedOn: string;
+}
+
+/** A purchase order carrying at least one line for this order's requisitions. */
+export interface TracePurchaseOrder {
+  id: string;
+  number: string;
+  vendorName: string;
+  status: string;
+  orderedOn: string;
+  /** The requisition numbers this order covers, of those raised for this sale. */
+  requisitionNumbers: readonly string[];
+}
+
+/** A goods receipt against one of those purchase orders. */
+export interface TraceGoodsReceipt {
+  id: string;
+  number: string;
+  purchaseOrderNumber: string;
+  vendorName: string;
+  receivedOn: string;
+  lineCount: number;
+}
+
+/**
+ * A work order raised for this sale, with what it produced.
+ *
+ * BMR and BPR are not separate tables: the BMR is the `Batch` record itself and
+ * the BPR is its packing record, which is how the Production screens name them.
+ * They are reported as the fields of the batch rather than as invented rows.
+ */
+export interface TraceWorkOrder {
+  id: string;
+  number: string;
+  productCode: string;
+  productName: string;
+  plannedQuantity: string;
+  status: string;
+  batches: readonly TraceBatch[];
+}
+
+export interface TraceBatch {
+  id: string;
+  batchNumber: string;
+  /** The BMR: manufacture recorded against the batch. Null until it is. */
+  manufacturedOn: string | null;
+  actualQuantity: string | null;
+  expiryDate: string;
+  /** The BPR: the packing record, null until packing is recorded. */
+  packedQuantity: string | null;
+  packedOn: string | null;
+  packVariant: string | null;
+  releaseStatus: string;
+  releasedOn: string | null;
+}
+
+export interface TraceDispatch {
+  id: string;
+  dispatchNumber: string;
+  dispatchDate: string;
+  status: DispatchStatus;
+  totalQuantity: string;
+  invoiceNumber: string | null;
+}
+
+/**
+ * The whole chain behind one order, read-only — US-SAL-08.
+ *
+ * "Record created: none." Every field here is read from rows that already
+ * exist, through relationships that already exist; nothing is written, and
+ * there is no trace table.
+ */
+export interface SalesOrderTrace {
+  salesOrderId: string;
+  orderNumber: string;
+  customerName: string;
+  orderStatus: SalesOrderStatus;
+
+  stage: FulfilmentStage;
+  /** Why the stage is what it is, in one sentence, from the same records. */
+  stageReason: string;
+
+  requisitions: readonly TraceRequisition[];
+  purchaseOrders: readonly TracePurchaseOrder[];
+  goodsReceipts: readonly TraceGoodsReceipt[];
+
+  workOrders: readonly TraceWorkOrder[];
+
+  /** Reservations standing against the order, which is what despatch draws on. */
+  allocationCount: number;
+  allocatedQuantity: string;
+  dispatches: readonly TraceDispatch[];
 }
 
 // ---------------------------------------------------------------------------
@@ -661,6 +818,23 @@ export interface SalesInvoiceListItem {
   status: InvoiceStatus;
   paymentStatus: O2cPaymentStatus;
   subtotal: string;
+
+  /**
+   * The tax as it was charged, head by head.
+   *
+   * A lumped "GST" figure hides which heads were applied: an inter-state sale
+   * billed as CGST+SGST comes to exactly the same money and is wrong only in
+   * the heads. These are the amounts stored on the invoice when it was issued,
+   * not a re-split of `taxAmount`.
+   *
+   * One side is zero: CGST and SGST carry the tax on an intra-state sale, IGST
+   * on an inter-state one, per `isInterState`.
+   */
+  cgstAmount: string;
+  sgstAmount: string;
+  igstAmount: string;
+
+  /** CGST + SGST + IGST, as billed. */
   taxAmount: string;
   grandTotal: string;
   amountPaid: string;
@@ -681,9 +855,6 @@ export interface SalesInvoiceDetail extends SalesInvoiceListItem {
   sellerGstin: string | null;
   placeOfSupplyStateCode: string | null;
   sellerStateCode: string | null;
-  cgstAmount: string;
-  sgstAmount: string;
-  igstAmount: string;
   discountAmount: string;
   notes: string | null;
   items: readonly SalesInvoiceItemView[];
@@ -896,6 +1067,17 @@ export const RETURNED_STOCK_DISPOSITION_LABELS: Record<ReturnedStockDisposition,
   RESTOCK: 'Return to saleable stock',
 };
 
+/**
+ * What became of the goods on a return, in quantities — US-SAL-07.
+ *
+ * DERIVED FROM THE LINES, not stored. `restockedQuantity` is the part whose
+ * disposition was RESTOCK and which `receive()` added back to its ORIGINAL
+ * batch; it is FREE / UNRESERVED there, because putting stock back raises the
+ * lot's available quantity and writes no BatchAllocation — and free stock in
+ * this system is precisely "on the lot and not allocated".
+ *
+ * The rest was quarantined or destroyed and never re-enters saleable stock.
+ */
 export interface SalesReturnItemView {
   id: string;
   salesInvoiceItemId: string;
@@ -932,6 +1114,16 @@ export interface SalesReturnListItem {
   taxAmount: string;
   totalAmount: string;
   itemCount: number;
+
+  /**
+   * Quantity put back into saleable stock on its original batch, free and
+   * unreserved — US-SAL-07. Zero until the return is received, and zero for
+   * anything not dispositioned RESTOCK.
+   */
+  restockedQuantity: string;
+  /** Quantity held back: quarantined or destroyed. Never re-enters stock. */
+  quarantinedQuantity: string;
+
   createdByName: string | null;
   createdAt: string;
 }
@@ -983,6 +1175,13 @@ export interface ItemListItem {
   mrp: string | null;
   priceControlType: PriceControlType;
   status: 'ACTIVE' | 'INACTIVE' | 'DISCONTINUED';
+
+  /**
+   * The state of this product's formulation, carried on the LIST so the Sales
+   * Order line can say so the moment a product is chosen, rather than after a
+   * second request for the specification. See ProductBomStatus.
+   */
+  bomStatus: ProductBomStatus;
   /**
    * Saleable stock: released, unexpired, and NOT already reserved for another
    * order. This is the figure order entry is checked against.

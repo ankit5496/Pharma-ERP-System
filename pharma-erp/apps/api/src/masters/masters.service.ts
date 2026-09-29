@@ -7,6 +7,7 @@ import type {
   O2cItemType,
   PackagingComponentView,
   PriceControlType,
+  ProductBomStatus,
   ScheduleCategory,
 } from '@pharma-erp/types';
 
@@ -107,6 +108,24 @@ export class MastersService {
 
     if (items.length === 0) return [];
 
+    // The formulation state of every product on the list, in ONE query. Read
+    // here rather than left to the per-product specification call, so the Sales
+    // Order line can warn the moment a product is picked — a warning that
+    // arrives a request later is one somebody has already typed past.
+    const boms = await this.prisma.scoped.bom.findMany({
+      where: { productId: { in: items.map((item) => item.id) }, deletedAt: null },
+      select: { productId: true, isActive: true },
+    });
+
+    const bomStateByItem = new Map<string, { any: boolean; active: boolean }>();
+    for (const bom of boms) {
+      const state = bomStateByItem.get(bom.productId) ?? { any: false, active: false };
+      bomStateByItem.set(bom.productId, {
+        any: true,
+        active: state.active || bom.isActive,
+      });
+    }
+
     // Saleable stock per item, in ONE grouped query rather than per row.
     const today = new Date();
     const lots = await this.prisma.scoped.finishedGoodsLot.groupBy({
@@ -161,11 +180,18 @@ export class MastersService {
       const held = reservedByItem.get(item.id) ?? new Prisma.Decimal(0);
       const available = Prisma.Decimal.max(onHand.sub(held), 0);
 
+      const bom = bomStateByItem.get(item.id);
+
       return {
         id: item.id,
         code: item.code,
         name: item.name,
         itemType: toO2cItemType(item.type),
+        // Versions on file but none active means production has no formulation
+        // to work from. No versions at all is a different thing — an ordinary
+        // bought-in product — and is not warned about.
+        bomStatus: (!bom?.any ? 'NONE' : bom.active ? 'ACTIVE' : 'SUSPENDED') satisfies
+          ProductBomStatus,
         // The shared register has no pack-size column. Null rather than an
         // invented string — see the same note in the sales-order mapper.
         packSize: null,
@@ -208,12 +234,27 @@ export class MastersService {
           orderBy: { createdAt: 'desc' },
           take: 1,
         },
+        // The formulation's state, for the Sales Order line's BOM warning.
+        // An ACTIVE version sorts first, so the head of this list answers both
+        // questions at once: is one live, and which version is it.
+        boms: {
+          where: { deletedAt: null },
+          select: { isActive: true, version: true },
+          orderBy: [{ isActive: 'desc' }, { version: 'desc' }],
+          take: 1,
+        },
       },
     });
 
     if (!item) throw new NotFoundException('Item not found.');
 
     const packaging = item.packagingRequirements[0] ?? null;
+
+    // A formulation on file but none of it active means production has nothing
+    // to make this to — worth saying on the order, while no formulation at all
+    // is simply what a traded product looks like.
+    const bom = item.boms[0] ?? null;
+    const bomStatus: ProductBomStatus = !bom ? 'NONE' : bom.isActive ? 'ACTIVE' : 'SUSPENDED';
 
     const at = (level: 'PRIMARY' | 'SECONDARY' | 'TERTIARY'): PackagingComponentView[] =>
       (packaging?.lines ?? [])
@@ -241,6 +282,8 @@ export class MastersService {
       primaryComponents: at('PRIMARY'),
       secondaryComponents: at('SECONDARY'),
       tertiaryComponents: at('TERTIARY'),
+      bomStatus,
+      bomVersion: bom?.version ?? null,
     };
   }
 }
