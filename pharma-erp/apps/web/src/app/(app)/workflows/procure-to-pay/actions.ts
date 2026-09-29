@@ -90,7 +90,7 @@ async function submit(
   return { status: 'success', message: successMessage };
 }
 
-/** Runs the reorder check by hand. Idempotent — safe to press twice. */
+/** Runs the Auto requisition pass by hand. Idempotent — safe to press twice. */
 export async function runReorderCheckAction(
   _previous: ActionState,
   _form: FormData,

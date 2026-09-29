@@ -10,9 +10,11 @@ import type {
   JobWorkIssuePlanLine,
   JobWorkMaterialIssueView,
 } from '@pharma-erp/types';
+import { BATCH_RELEASE_STATUSES } from '@pharma-erp/types';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { NumberingService } from '../procurement/numbering.service';
+import { loadRecipes, materialRequirementFor, scaleRecipe } from '../production/material-requirements';
 import { fromIsoDate, todayUtc, toItemSummary, toIsoDate } from '../production/production.mappers';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
@@ -22,7 +24,15 @@ import type {
   RecordJobWorkIssueDto,
   RecordJobWorkPackingDto,
 } from './dto/job-work-workflow.dto';
-import { loadRecipes, materialRequirementFor, scaleRecipe } from './job-work-requirements';
+import {
+  createdBetween,
+  DECIDED,
+  jobWorkListWhere,
+  PACKAGING_DUE,
+  statusIn,
+  type JobWorkListQueryDto,
+} from './job-work-list-query';
+
 
 
 const ZERO = new Prisma.Decimal(0);
@@ -67,7 +77,12 @@ export class JobWorkWorkflowService {
   // ---------------------------------------------------------------------------
 
   /** One transaction, for the reason given on `listBatches`. */
-  async listIssues(productionOrderId?: string): Promise<JobWorkMaterialIssueView[]> {
+  async listIssues(
+    productionOrderId?: string,
+    query: JobWorkListQueryDto = {},
+  ): Promise<JobWorkMaterialIssueView[]> {
+    const search = query.search?.trim();
+
     const rows = await this.prisma.scoped.jobWorkMaterialIssue.findMany({
       // ONE QUERY, NOT ONE PER RELATION. This include is six levels deep, and
       // the default strategy fetches each level in its own round trip — twenty
@@ -79,6 +94,37 @@ export class JobWorkWorkflowService {
       where: {
         deletedAt: null,
         ...(productionOrderId ? { jobWorkProductionOrderId: productionOrderId } : {}),
+        // AN ISSUE IS DISPENSED, not created. Same person, different column.
+        //
+        // NO STATUS: an issue has none. It happened or it did not, and a filter
+        // offering values no row can carry is one that always returns nothing.
+        // BY THE DATE ON THE ROW: a dispensing record is looked up by when the
+        // material was issued, which is the column the register displays.
+        ...jobWorkListWhere(query, 'issuedById', 'issuedAt'),
+        ...(query.principalId
+          ? { productionOrder: { jobWorkOrder: { principalId: query.principalId } } }
+          : {}),
+        ...(search
+          ? {
+              OR: [
+                { issueNumber: { contains: search, mode: 'insensitive' } },
+                { productionOrder: { orderNumber: { contains: search, mode: 'insensitive' } } },
+                {
+                  productionOrder: {
+                    jobWorkOrder: { orderNumber: { contains: search, mode: 'insensitive' } },
+                  },
+                },
+                {
+                  productionOrder: {
+                    jobWorkOrder: {
+                      principal: { name: { contains: search, mode: 'insensitive' } },
+                    },
+                  },
+                },
+                { lines: { some: { item: { code: { contains: search, mode: 'insensitive' } } } } },
+              ],
+            }
+          : {}),
       },
       include: ISSUE_INCLUDE,
       orderBy: [{ issuedAt: 'desc' }, { id: 'desc' }],
@@ -488,7 +534,41 @@ export class JobWorkWorkflowService {
    * query at a single round trip. It is a READ: nothing here writes, so holding
    * the transaction costs no lock contention.
    */
-  async listBatches(productionOrderId?: string): Promise<JobWorkBatchView[]> {
+  async listBatches(
+    productionOrderId?: string,
+    query: JobWorkListQueryDto = {},
+  ): Promise<JobWorkBatchView[]> {
+    const search = query.search?.trim();
+    const status = statusIn(query.status, BATCH_RELEASE_STATUSES);
+
+    // THE TWO STATES A BATCH CAN BE IN WITHOUT A DECISION, told apart.
+    //
+    // `PENDING` on the row means two different things to the person reading
+    // it: a batch that has been packed and is waiting on the quality officer,
+    // and one that has not been packed at all and is waiting on production.
+    // The badges already say "Pending" and "Packaging due" for those, so the
+    // filter names them the same way — a filter offering a state no row
+    // displays is one that looks broken when it answers.
+    //
+    // The distinction is derived rather than stored, which is exactly why it
+    // belongs here: the screen used to compute it over the rows it had been
+    // handed, and a page that has been handed only the first fifty cannot.
+    const packingClause: Prisma.JobWorkBatchWhereInput = (() => {
+      if (query.status === PACKAGING_DUE) return { releaseStatus: 'PENDING', packedOn: null };
+
+      if (query.status === DECIDED) return { releaseStatus: { not: 'PENDING' } };
+
+      if (status === 'PENDING') return { releaseStatus: 'PENDING', packedOn: { not: null } };
+
+      return status ? { releaseStatus: status } : {};
+    })();
+
+    // MANUFACTURED BETWEEN, which is a different question from created
+    // between and kept beside it rather than instead of it: a batch is looked
+    // up by the date on the carton at least as often as by when the row was
+    // written, and the two are not the same day.
+    const manufactured = createdBetween(query.manufacturedFrom, query.manufacturedTo);
+
     return this.prisma.transaction(async (tx) => {
       const rows = await tx.jobWorkBatch.findMany({
         // ONE QUERY, NOT ONE PER RELATION. This include is six levels deep, and
@@ -501,6 +581,40 @@ export class JobWorkWorkflowService {
         where: {
           deletedAt: null,
           ...(productionOrderId ? { jobWorkProductionOrderId: productionOrderId } : {}),
+          // A BATCH IS RECORDED, not created — the column says so, and the
+          // filter means the same thing.
+          ...jobWorkListWhere(query, 'recordedById'),
+          ...(manufactured ? { manufacturedOn: manufactured } : {}),
+          ...packingClause,
+          ...(query.principalId
+            ? { productionOrder: { jobWorkOrder: { principalId: query.principalId } } }
+            : {}),
+          ...(search
+            ? {
+                OR: [
+                  { batchNumber: { contains: search, mode: 'insensitive' } },
+                  {
+                    productionOrder: {
+                      orderNumber: { contains: search, mode: 'insensitive' },
+                    },
+                  },
+                  {
+                    productionOrder: {
+                      jobWorkOrder: {
+                        orderNumber: { contains: search, mode: 'insensitive' },
+                      },
+                    },
+                  },
+                  {
+                    productionOrder: {
+                      jobWorkOrder: {
+                        principal: { name: { contains: search, mode: 'insensitive' } },
+                      },
+                    },
+                  },
+                ],
+              }
+            : {}),
         },
         include: BATCH_INCLUDE,
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],

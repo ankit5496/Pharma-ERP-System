@@ -10,7 +10,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 
 import { ZERO, money, positiveDifference } from './decimal.util';
-import { StockService } from './stock.service';
+import { RequiredStockService } from './required-stock.service';
 
 /**
  * The counts across the top of Procure-to-Pay.
@@ -25,14 +25,14 @@ import { StockService } from './stock.service';
 export class SummaryService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly stock: StockService,
+    private readonly requiredStock: RequiredStockService,
   ) {}
 
   async build(): Promise<ProcurementSummary> {
     const scoped = this.prisma.scoped;
 
     const [
-      lowStock,
+      requiredStock,
       pendingRequisitions,
       approvedRequisitions,
       draftOrders,
@@ -42,7 +42,7 @@ export class SummaryService {
       draftInvoices,
       approvedInvoices,
     ] = await Promise.all([
-      this.stock.lowStockItems(),
+      this.requiredStock.lines(),
       scoped.purchaseRequisition.count({ where: { deletedAt: null, status: 'OPEN' } }),
       scoped.purchaseRequisition.count({ where: { deletedAt: null, status: 'APPROVED' } }),
       scoped.purchaseOrder.count({ where: { deletedAt: null, status: 'OPEN' } }),
@@ -86,14 +86,24 @@ export class SummaryService {
       return positiveDifference(new Prisma.Decimal(invoice.totalAmount), paid).greaterThan(0);
     }).length;
 
+    const shortages = requiredStock.filter(
+      (line) => line.blockedReason === null && Number(line.shortfallQuantity) > 0,
+    );
+
     const cards: ProcurementSummaryCard[] = [
       {
-        key: 'low-stock',
-        label: 'Low stock items',
-        count: lowStock.length,
-        detail: lowStock.length > 0 ? 'Below reorder level' : 'All items above reorder level',
-        href: PROCUREMENT_ROUTES.lowStock,
-        tone: lowStock.length > 0 ? 'attention' : 'neutral',
+        // SHORTAGES, not lines. The tab lists one line per material per order
+        // and most of them are covered; what is worth a tile is the number
+        // that cannot be served from stock.
+        key: 'required-stock',
+        label: 'Materials short',
+        count: shortages.length,
+        detail:
+          shortages.length > 0
+            ? 'Sales orders need more than is free'
+            : 'Every live sales order can be served from stock',
+        href: PROCUREMENT_ROUTES.requiredStock,
+        tone: shortages.length > 0 ? 'attention' : 'neutral',
       },
       {
         key: 'pending-requisitions',

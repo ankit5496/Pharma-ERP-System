@@ -20,13 +20,17 @@ import {
 
 import { MasterDataDrawer } from '@/components/master-data-drawer';
 import {
-  createdFilters,
-  matchesCreated,
   RegisterPager,
   RegisterToolbar,
   useRegisterView,
 } from '@/components/production/register-toolbar';
+import {
+  serverCreatedFilters,
+  useJobWorkRegisterView,
+  type PersonOption,
+} from '@/components/job-work/register-query';
 import { DateCell, ExpiryHint, Quantity, ReleaseBadge } from '@/components/production/shared';
+import { ProductionTabs } from '@/components/production/tabs';
 
 /**
  * The four Job Work registers, built from the Production & Quality Gate ones.
@@ -106,10 +110,13 @@ function PrincipalTag({ order }: { order: JobWorkProductionOrderView }) {
 /** Job-work production orders, searchable and filtered by stage. */
 export function JobWorkOrderTable({
   orders,
+  people,
   actionFor,
   toolbarAction,
 }: {
   orders: JobWorkProductionOrderView[];
+  /** Colleagues, for the Created By filter. From the API, not from the rows. */
+  people: readonly PersonOption[];
   /** View/Edit for one order, built by the server component above. */
   actionFor?: Record<string, ReactNode>;
   /**
@@ -121,38 +128,17 @@ export function JobWorkOrderTable({
    */
   toolbarAction?: ReactNode;
 }) {
-  const searchText = useCallback(
-    (order: JobWorkProductionOrderView) =>
-      [
-        order.orderNumber,
-        order.jobWorkOrderNumber,
-        order.product.code,
-        order.product.name,
-        order.principalName,
-        order.principalBrandName,
-        order.materialReceipt?.receiptNumber,
-        order.batchNumber,
-        order.createdBy,
-      ]
-        .filter(Boolean)
-        .join(' '),
-    [],
-  );
-
-  const matchesFilter = useCallback(
-    (order: JobWorkProductionOrderView, value: string) => order.status === value,
-    [],
-  );
-
-  const view = useRegisterView({ rows: orders, searchText, matchesFilter });
+  // FILTERED BY THE DATABASE. `orders` is the answer to the current query,
+  // not a list to sift — see useJobWorkRegisterView.
+  const view = useJobWorkRegisterView({ rows: orders });
 
   return (
     <>
       <RegisterToolbar
-        title="Production orders"
+        title="Production Orders"
         query={view.query}
         onQuery={view.setQuery}
-        placeholder="Search order, job-work order, principal or product…"
+        placeholder="Search order, job work order, principal or product…"
         noun="production orders"
         filter={view.filter}
         onFilter={view.setFilter}
@@ -161,6 +147,10 @@ export function JobWorkOrderTable({
           value: status,
           label: JOB_WORK_PRODUCTION_STATUS_LABELS[status],
         }))}
+        fields={serverCreatedFilters(people)}
+        fieldValues={view.fieldValues}
+        onField={view.setField}
+        onClearFields={view.clearFields}
         shown={view.filtered.length}
         total={view.total}
       >
@@ -169,9 +159,9 @@ export function JobWorkOrderTable({
 
       {view.filtered.length === 0 ? (
         <p className="px-6 py-8 text-sm text-slate-600">
-          {orders.length === 0
-            ? 'No production order raised yet. One is raised against a consignment that has passed Quality check.'
-            : 'No production order matches that search.'}
+          {view.isFiltered
+            ? 'No production order matches those filters.'
+            : 'No production order raised yet. One is raised against a consignment that has passed Quality check.'}
         </p>
       ) : (
         <div className="table-scroll overflow-x-auto">
@@ -291,42 +281,32 @@ export function JobWorkOrderTable({
 /** Dispensing records, searchable by issue number, order, material or lot. */
 export function JobWorkIssueTable({
   issues,
+  people,
   toolbarAction,
 }: {
   issues: JobWorkMaterialIssueView[];
+  /** Colleagues, for the Created By filter. */
+  people: readonly PersonOption[];
   /** The Dispense button — see JobWorkOrderTable for why it arrives this way. */
   toolbarAction?: ReactNode;
 }) {
-  const searchText = useCallback(
-    (issue: JobWorkMaterialIssueView) =>
-      [
-        issue.issueNumber,
-        issue.productionOrderNumber,
-        issue.jobWorkOrderNumber,
-        issue.principalName,
-        issue.issuedBy,
-        ...issue.lines.flatMap((line) => [
-          line.item.code,
-          line.item.name,
-          line.lotNumber,
-          line.batchNumber,
-        ]),
-      ]
-        .filter(Boolean)
-        .join(' '),
-    [],
-  );
-
-  const view = useRegisterView({ rows: issues, searchText });
+  const view = useJobWorkRegisterView({ rows: issues });
 
   return (
     <>
       <RegisterToolbar
-        title="Material issue"
+        title="Material Issue"
         query={view.query}
         onQuery={view.setQuery}
         placeholder="Search issue, order, material or lot…"
         noun="dispensing records"
+        // NO STATUS CONTROL. A dispensing record has no status — the material
+        // either left the store or the record was never written — so a
+        // dropdown here would have one option meaning "all".
+        fields={serverCreatedFilters(people, 'Issued date')}
+        fieldValues={view.fieldValues}
+        onField={view.setField}
+        onClearFields={view.clearFields}
         shown={view.filtered.length}
         total={view.total}
       >
@@ -335,9 +315,9 @@ export function JobWorkIssueTable({
 
       {view.filtered.length === 0 ? (
         <p className="px-6 py-8 text-sm text-slate-600">
-          {issues.length === 0
-            ? 'Nothing dispensed yet. Material is drawn from the consignment the principal sent.'
-            : 'No dispensing record matches that search.'}
+          {view.isFiltered
+            ? 'No dispensing record matches those filters.'
+            : 'Nothing dispensed yet. Material is drawn from the consignment the principal sent.'}
         </p>
       ) : (
         <div className="table-scroll overflow-x-auto">
@@ -461,7 +441,7 @@ export function JobWorkReceivedMaterialTable({
   return (
     <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
       <RegisterToolbar
-        title="Material received from principal"
+        title="Material Received From Principal"
         query={view.query}
         onQuery={view.setQuery}
         placeholder="Search material, lot, batch or challan…"
@@ -596,18 +576,25 @@ export function JobWorkReceivedMaterialTable({
 /**
  * The filter value for the derived "Packaging due" state.
  *
- * Prefixed so it cannot collide with a real `BatchReleaseStatus`, now or when
- * one is added: this travels through the same filter field as the stored
- * values, and a clash would silently match the wrong rows.
+ * THE API'S SPELLING, not a local one. This now travels to the server as
+ * `?status=PACKAGING_DUE` and the batch query turns it into
+ * `release_status = 'PENDING' AND packed_on IS NULL` — so the constant has to
+ * be the string that endpoint recognises. It cannot collide with a stored
+ * `BatchReleaseStatus`, because no status is called that.
+ *
+ * Kept in step with PACKAGING_DUE in apps/api/src/job-work/job-work-list-query.ts.
  */
-const PACKAGING_DUE = '__packagingDue';
+const PACKAGING_DUE = 'PACKAGING_DUE';
 
 export function JobWorkBatchRecords({
   batches,
+  people,
   packingFormFor,
   toolbarAction,
 }: {
   batches: JobWorkBatchView[];
+  /** Colleagues, for the Created By filter. */
+  people: readonly PersonOption[];
   /** The packing form for a batch, or absent once it has been decided. */
   packingFormFor: Record<string, ReactNode>;
   /** The New batch button — see JobWorkOrderTable for why it arrives this way. */
@@ -615,46 +602,20 @@ export function JobWorkBatchRecords({
 }) {
   const [openId, setOpenId] = useState<string | null>(batches[0]?.id ?? null);
 
-  const searchText = useCallback(
-    (batch: JobWorkBatchView) =>
-      [
-        batch.batchNumber,
-        batch.productionOrderNumber,
-        batch.jobWorkOrderNumber,
-        batch.principalName,
-        batch.product.code,
-        batch.product.name,
-        batch.principalBrandName,
-      ].join(' '),
-    [],
-  );
-
-  const matchesFilter = useCallback((batch: JobWorkBatchView, value: string) => {
-    // The derived state, which is not a stored `releaseStatus` — see
-    // ReleaseBadge for why.
-    if (value === PACKAGING_DUE) {
-      return batch.releaseStatus === 'PENDING' && batch.packedOn === null;
-    }
-
-    // "Pending" means awaiting a DECISION, so a batch still waiting on its
-    // packing belongs under the option above rather than in both.
-    if (value === 'PENDING') {
-      return batch.releaseStatus === 'PENDING' && batch.packedOn !== null;
-    }
-
-    return batch.releaseStatus === value;
-  }, []);
-
-  // MANUFACTURED ON, not a creation timestamp. A batch is looked up by the day
-  // it was made — the date that goes on the carton — and filtering by the
-  // row's insert time would answer a question nobody asks.
-  const matchesField = useCallback(
-    (batch: JobWorkBatchView, name: string, value: string) =>
-      matchesCreated(batch.manufacturedOn, null, name, value),
-    [],
-  );
-
-  const view = useRegisterView({ rows: batches, searchText, matchesFilter, matchesField });
+  // TWO DATE RANGES, and both of them real questions. A batch is looked up by
+  // the day it was MADE — the date that goes on the carton — and also by when
+  // the record was written, and those are different days because manufacturing
+  // is entered afterwards. The register used to offer only the first; dropping
+  // it to add the second would have traded one working filter for another.
+  //
+  // PACKAGING_DUE and PENDING are told apart BY THE QUERY now — see the batch
+  // list in job-work-workflow.service.ts. The screen used to derive the
+  // difference over the rows it held, which a page holding only the first ten
+  // cannot do.
+  const view = useJobWorkRegisterView({
+    rows: batches,
+    extraKeys: ['manufacturedFrom', 'manufacturedTo'],
+  });
 
   /**
    * Opens a batch that was not in the register a moment ago.
@@ -700,7 +661,7 @@ export function JobWorkBatchRecords({
     <div className="space-y-4">
       <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
         <RegisterToolbar
-          title="Batch record"
+          title="Batch Record"
           query={view.query}
           onQuery={view.setQuery}
           placeholder="Search batch, production order, principal or product…"
@@ -718,7 +679,10 @@ export function JobWorkBatchRecords({
               label: BATCH_RELEASE_STATUS_LABELS[status],
             })),
           ]}
-          fields={createdFilters([], 'Manufactured')}
+          fields={[
+            { name: 'manufactured', label: 'Manufactured', kind: 'dateRange' },
+            ...serverCreatedFilters(people),
+          ]}
           fieldValues={view.fieldValues}
           onField={view.setField}
           onClearFields={view.clearFields}
@@ -731,9 +695,9 @@ export function JobWorkBatchRecords({
 
       {view.visible.length === 0 ? (
         <p className="rounded-lg border border-slate-200 bg-white px-6 py-8 text-sm text-slate-600 shadow-sm">
-          {batches.length === 0
-            ? 'No batch recorded yet. A batch is opened against a production order material has been issued to.'
-            : 'No batch matches that search.'}
+          {view.isFiltered
+            ? 'No batch matches those filters.'
+            : 'No batch recorded yet. A batch is opened against a production order material has been issued to.'}
         </p>
       ) : (
         <div className="grid gap-4 lg:grid-cols-[18rem_minmax(0,1fr)]">
@@ -849,93 +813,135 @@ function JobWorkBatchDetail({
         </Figure>
       </dl>
 
-      <div className="border-b border-slate-200 px-6 py-4">
-        <h4 className="text-xs font-medium uppercase tracking-wide text-slate-600">
-          Manufacturing &amp; consumption
-        </h4>
-        <p className="mt-1 text-xs text-slate-500">
-          What the formulation called for against what was drawn from the principal’s consignment.
-          Anything beyond ±{batch.varianceThresholdPercent}% is flagged for review.
-        </p>
+      {/* TWO TABS, not one long page — the arrangement the internal batch
+          record settled on, for the same reason. The batch record and the
+          packaging record are separate documents that happen to share a batch:
+          one reports what was MADE and is read, the other records what was
+          PACKED and is filled in. Stacked, the form sat below a consumption
+          table that grows with the formulation, so on a batch with several
+          materials the fields somebody came here to complete started below the
+          fold.
 
-        {batch.materialVariances.length === 0 ? (
-          <p className="mt-3 text-xs text-slate-500">
-            No active formulation behind this product, so there is nothing to compare against.
-          </p>
-        ) : (
-          <div className="mt-3 overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead>
-                <tr className="border-b border-slate-200 text-[10px] uppercase tracking-wide text-slate-500">
-                  <th scope="col" className="py-2 pr-4 font-medium">
-                    Material
-                  </th>
-                  <th scope="col" className="py-2 pr-4 font-medium">
-                    Kind
-                  </th>
-                  <th scope="col" className="py-2 pr-4 text-right font-medium">
-                    Planned
-                  </th>
-                  <th scope="col" className="py-2 pr-4 text-right font-medium">
-                    Issued
-                  </th>
-                  <th scope="col" className="py-2 text-right font-medium">
-                    Variance
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {batch.materialVariances.map((variance) => (
-                  <tr key={variance.item.id} className={variance.flagged ? 'bg-amber-50/60' : ''}>
-                    <td className="py-2 pr-4">
-                      <span className="font-mono text-slate-700">{variance.item.code}</span>{' '}
-                      <span className="text-slate-600">{variance.item.name}</span>
-                    </td>
-                    <td className="py-2 pr-4 text-slate-600">
-                      {JOB_WORK_MATERIAL_KIND_LABELS[variance.kind]}
-                    </td>
-                    <td className="py-2 pr-4 text-right">
-                      <Quantity value={variance.quantityPlanned} uom={variance.item.uom} />
-                    </td>
-                    <td className="py-2 pr-4 text-right">
-                      <Quantity value={variance.quantityIssued} uom={variance.item.uom} />
-                    </td>
-                    <td className="py-2 text-right">
-                      <span
-                        className={`tabular-nums ${
-                          variance.flagged ? 'font-semibold text-amber-800' : 'text-slate-600'
-                        }`}
-                      >
-                        {variance.variancePercent}%
-                      </span>
-                      {variance.flagged && (
-                        <span className="ml-2 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900">
-                          review
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+          The hidden panel stays MOUNTED — see ProductionTabs — so a
+          half-filled packing form survives a look at the consumption figures,
+          which is exactly what somebody checks before entering it. */}
+      {/* Inset to match the header and the figures above: ProductionTabs draws
+          a full-width rule under its strip, which run edge to edge would cut
+          across a card whose every other row is padded. */}
+      <div className="px-6 pt-4">
+        <ProductionTabs
+          // REMOUNTED PER BATCH, so choosing another one opens on its record
+          // rather than on whichever tab was last looked at.
+          key={batch.id}
+          tabs={[
+            {
+              key: 'record',
+              label: 'Batch Record',
+              panel: <JobWorkBatchRecordTab batch={batch} />,
+            },
+            {
+              key: 'packing',
+              label: 'Packaging Record',
+              panel: packingForm ?? (
+                // Nothing to show only when a DECIDED batch never had packing
+                // recorded — a rejected batch, usually. A decided batch that
+                // was packed renders its record read-only, and a pending one
+                // renders the form, so both arrive as `packingForm`.
+                <p className="text-sm text-slate-600">
+                  No packing was recorded for this batch before it went through the quality gate.
+                </p>
+              ),
+            },
+          ]}
+        />
       </div>
-
-      {/* Absent once the batch has been through the quality gate — packing
-          cannot be amended after a release decision, so the form would be a
-          control the API refuses. */}
-      {packingForm && (
-        <div className="px-6 py-4">
-          <h4 className="mb-3 text-xs font-medium uppercase tracking-wide text-slate-600">
-            Packaging record
-          </h4>
-          {packingForm}
-        </div>
-      )}
     </section>
   );
 }
+
+/**
+ * What the formulation called for against what was actually drawn.
+ *
+ * ITS OWN COMPONENT so the tab above has something to name. It was inline in
+ * the card, above the packing form; the content is unchanged.
+ */
+function JobWorkBatchRecordTab({ batch }: { batch: JobWorkBatchView }) {
+  return (
+    <div className="pb-1">
+      <h4 className="text-xs font-medium tracking-wide text-slate-600">
+        Manufacturing &amp; Consumption
+      </h4>
+      <p className="mt-1 text-xs text-slate-500">
+        What the formulation called for against what was drawn from the principal’s consignment.
+        Anything beyond ±{batch.varianceThresholdPercent}% is flagged for review.
+      </p>
+
+      {batch.materialVariances.length === 0 ? (
+        <p className="mt-3 text-xs text-slate-500">
+          No active formulation behind this product, so there is nothing to compare against.
+        </p>
+      ) : (
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="border-b border-slate-200 text-[10px] tracking-wide text-slate-500">
+                <th scope="col" className="py-2 pr-4 font-medium">
+                  Material
+                </th>
+                <th scope="col" className="py-2 pr-4 font-medium">
+                  Kind
+                </th>
+                <th scope="col" className="py-2 pr-4 text-right font-medium">
+                  Planned
+                </th>
+                <th scope="col" className="py-2 pr-4 text-right font-medium">
+                  Issued
+                </th>
+                <th scope="col" className="py-2 text-right font-medium">
+                  Variance
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {batch.materialVariances.map((variance) => (
+                <tr key={variance.item.id} className={variance.flagged ? 'bg-amber-50/60' : ''}>
+                  <td className="py-2 pr-4">
+                    <span className="font-mono text-slate-700">{variance.item.code}</span>{' '}
+                    <span className="text-slate-600">{variance.item.name}</span>
+                  </td>
+                  <td className="py-2 pr-4 text-slate-600">
+                    {JOB_WORK_MATERIAL_KIND_LABELS[variance.kind]}
+                  </td>
+                  <td className="py-2 pr-4 text-right">
+                    <Quantity value={variance.quantityPlanned} uom={variance.item.uom} />
+                  </td>
+                  <td className="py-2 pr-4 text-right">
+                    <Quantity value={variance.quantityIssued} uom={variance.item.uom} />
+                  </td>
+                  <td className="py-2 text-right">
+                    <span
+                      className={`tabular-nums ${
+                        variance.flagged ? 'font-semibold text-amber-800' : 'text-slate-600'
+                      }`}
+                    >
+                      {variance.variancePercent}%
+                    </span>
+                    {variance.flagged && (
+                      <span className="ml-2 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-900">
+                        review
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 function Figure({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -973,26 +979,16 @@ function YieldVariance({ batch }: { batch: JobWorkBatchView }) {
 /** The queue at the job-work quality gate. */
 export function JobWorkPendingReleaseList({
   batches,
+  people,
   formFor,
 }: {
   batches: JobWorkBatchView[];
+  /** Colleagues, for the Created By filter. */
+  people: readonly PersonOption[];
   /** The release form for a batch, built by the server component above. */
   formFor: Record<string, ReactNode>;
 }) {
-  const searchText = useCallback(
-    (batch: JobWorkBatchView) =>
-      [
-        batch.batchNumber,
-        batch.productionOrderNumber,
-        batch.jobWorkOrderNumber,
-        batch.principalName,
-        batch.product.code,
-        batch.product.name,
-      ].join(' '),
-    [],
-  );
-
-  const view = useRegisterView({ rows: batches, searchText });
+  const view = useJobWorkRegisterView({ rows: batches });
 
   const [deciding, setDeciding] = useState<JobWorkBatchView | null>(null);
 
@@ -1008,20 +1004,27 @@ export function JobWorkPendingReleaseList({
   return (
     <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
       <RegisterToolbar
-        title="Awaiting a decision"
+        title="Awaiting a Decision"
         query={view.query}
         onQuery={view.setQuery}
         placeholder="Search batch, order, principal or product…"
         noun="batches"
+        // NO STATUS CONTROL: this tab IS a status. Everything on it is awaiting
+        // a decision, so a dropdown would have one option that changes nothing
+        // and four that empty the list.
+        fields={serverCreatedFilters(people)}
+        fieldValues={view.fieldValues}
+        onField={view.setField}
+        onClearFields={view.clearFields}
         shown={view.filtered.length}
         total={view.total}
       />
 
       {view.filtered.length === 0 ? (
         <p className="px-6 py-8 text-sm text-slate-600">
-          {batches.length === 0
-            ? 'Nothing is waiting at the gate.'
-            : 'No batch matches that search.'}
+          {view.isFiltered
+            ? 'No batch awaiting a decision matches those filters.'
+            : 'Nothing is waiting at the gate.'}
         </p>
       ) : (
         <div className="table-scroll overflow-x-auto">
@@ -1100,7 +1103,12 @@ export function JobWorkPendingReleaseList({
                         onClick={() => setDeciding(batch)}
                         className="whitespace-nowrap rounded-md bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white shadow-sm transition hover:bg-slate-800"
                       >
-                        Decide
+                        {/* RELEASE, not Decide. The dialog it opens still
+                            offers all three verdicts — release, hold, reject —
+                            because the decision is genuinely three-way; what
+                            changed is the name of the act somebody came to
+                            this row to perform. */}
+                        Release
                       </button>
                     </td>
                   </tr>
@@ -1166,20 +1174,15 @@ export function JobWorkPendingReleaseList({
  * to sell — it is made from the principal's material and returned to them — so
  * what this reports is what is cleared for dispatch under Outward dispatch.
  */
-export function JobWorkReleasedTable({ batches }: { batches: JobWorkBatchView[] }) {
-  const searchText = useCallback(
-    (batch: JobWorkBatchView) =>
-      [
-        batch.batchNumber,
-        batch.product.code,
-        batch.product.name,
-        batch.principalName,
-        batch.principalBrandName,
-      ].join(' '),
-    [],
-  );
-
-  const view = useRegisterView({ rows: batches, searchText });
+export function JobWorkReleasedTable({
+  batches,
+  people,
+}: {
+  batches: JobWorkBatchView[];
+  /** Colleagues, for the Created By filter. */
+  people: readonly PersonOption[];
+}) {
+  const view = useJobWorkRegisterView({ rows: batches });
 
   return (
     <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -1189,15 +1192,21 @@ export function JobWorkReleasedTable({ batches }: { batches: JobWorkBatchView[] 
         onQuery={view.setQuery}
         placeholder="Search batch, product or principal…"
         noun="batches"
+        // NO STATUS CONTROL: every row here is released, which is what the tab
+        // means.
+        fields={serverCreatedFilters(people)}
+        fieldValues={view.fieldValues}
+        onField={view.setField}
+        onClearFields={view.clearFields}
         shown={view.filtered.length}
         total={view.total}
       />
 
       {view.filtered.length === 0 ? (
         <p className="px-6 py-8 text-sm text-slate-600">
-          {batches.length === 0
-            ? 'No batch released yet.'
-            : 'No batch matches that search.'}
+          {view.isFiltered
+            ? 'No released batch matches those filters.'
+            : 'No batch released yet.'}
         </p>
       ) : (
         <div className="table-scroll overflow-x-auto">
@@ -1255,28 +1264,18 @@ export function JobWorkReleasedTable({ batches }: { batches: JobWorkBatchView[] 
 }
 
 /** Decisions already made, searchable and filtered by verdict. */
-export function JobWorkDecidedTable({ batches }: { batches: JobWorkBatchView[] }) {
-  const searchText = useCallback(
-    (batch: JobWorkBatchView) =>
-      [
-        batch.batchNumber,
-        batch.productionOrderNumber,
-        batch.principalName,
-        batch.product.code,
-        batch.releaseDecidedBy,
-        batch.releaseNotes,
-      ]
-        .filter(Boolean)
-        .join(' '),
-    [],
-  );
-
-  const matchesFilter = useCallback(
-    (batch: JobWorkBatchView, value: string) => batch.releaseStatus === value,
-    [],
-  );
-
-  const view = useRegisterView({ rows: batches, searchText, matchesFilter });
+export function JobWorkDecidedTable({
+  batches,
+  people,
+}: {
+  batches: JobWorkBatchView[];
+  /** Colleagues, for the Created By filter. */
+  people: readonly PersonOption[];
+}) {
+  // THE VERDICT WRITES ITS OWN URL KEY. All three Batch Release tabs share one
+  // address bar, and the other two are fixed status slices; a verdict written
+  // as `status` would have emptied them.
+  const view = useJobWorkRegisterView({ rows: batches, statusKey: 'verdict' });
 
   return (
     <div className="overflow-hidden rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -1295,15 +1294,19 @@ export function JobWorkDecidedTable({ batches }: { batches: JobWorkBatchView[] }
         filterOptions={BATCH_RELEASE_STATUSES.filter((status) => status !== 'PENDING').map(
           (status) => ({ value: status, label: BATCH_RELEASE_STATUS_LABELS[status] }),
         )}
+        fields={serverCreatedFilters(people, 'Decided date')}
+        fieldValues={view.fieldValues}
+        onField={view.setField}
+        onClearFields={view.clearFields}
         shown={view.filtered.length}
         total={view.total}
       />
 
       {view.filtered.length === 0 ? (
         <p className="px-6 py-8 text-sm text-slate-600">
-          {batches.length === 0
-            ? 'No batch has been through the gate yet.'
-            : 'No decision matches that search.'}
+          {view.isFiltered
+            ? 'No decision matches those filters.'
+            : 'No batch has been through the gate yet.'}
         </p>
       ) : (
         <div className="table-scroll overflow-x-auto">

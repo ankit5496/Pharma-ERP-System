@@ -18,11 +18,12 @@ import type {
   PayablesReport,
   BomSummary,
   ProductionPlanSummary,
-  ReorderCheckResult,
   ItemInventory,
   ItemStockPosition,
   ItemSummary,
-  LowStockItem,
+  AutoRequisitionOutcome,
+  RequiredStockLine,
+  StockReservationSummary,
   PartySummary,
   PartyType,
   Paginated,
@@ -68,7 +69,8 @@ import { MastersService } from './masters.service';
 import { PaymentsService } from './payments.service';
 import { PurchaseOrdersService } from './purchase-orders.service';
 import { QcService } from './qc.service';
-import { ReorderService } from './reorder.service';
+import { PeopleService } from './people.service';
+import { RequiredStockService } from './required-stock.service';
 import { RequisitionsService } from './requisitions.service';
 import { SettingsService } from './settings.service';
 import { StockService } from './stock.service';
@@ -111,8 +113,11 @@ export class ProcurementController {
     private readonly qc: QcService,
     private readonly invoices: InvoicesService,
     private readonly payments: PaymentsService,
-    private readonly reorder: ReorderService,
+    // Trailing underscore: the class already has a  METHOD, and
+    // a property of the same name would shadow it.
+    private readonly requiredStock_: RequiredStockService,
     private readonly settings: SettingsService,
+    private readonly peopleService: PeopleService,
     private readonly tenantContext: TenantContextService,
   ) {}
 
@@ -143,18 +148,33 @@ export class ProcurementController {
    * shown, because being unable to raise a document must not stop the screen
    * reporting the shortage — the error is logged where it can be diagnosed.
    */
-  @Get('low-stock')
-  @SkipAudit('Read-only. The requisitions the check raises are audited individually.')
-  async lowStock(): Promise<LowStockItem[]> {
-    await this.reconcileReorders('the low-stock list');
+  @Get('required-stock')
+  @SkipAudit('Read-only. The requisitions Auto raises are audited individually.')
+  async requiredStock(): Promise<RequiredStockLine[]> {
+    await this.reconcileRequirements('the Required stock list');
 
-    return this.stock.lowStockItems();
+    return this.requiredStock_.lines();
   }
 
   @Get('stock')
   @SkipAudit('Read-only.')
   async stockPositions(): Promise<ItemStockPosition[]> {
     return this.stock.stockPositions();
+  }
+
+  /**
+   * Which sales order each held drum is held for.
+   *
+   * Separate from the stock position, which reports the TOTALS: this answers
+   * "who is this one for", which is the question a store asks when a drum is
+   * on the shelf and somebody wants it for something else.
+   */
+  @Get('stock/reservations')
+  @SkipAudit('Read-only.')
+  async stockReservations(
+    @Query('salesOrderId') salesOrderId?: string,
+  ): Promise<StockReservationSummary[]> {
+    return this.stock.reservations(salesOrderId);
   }
 
   /**
@@ -175,6 +195,22 @@ export class ProcurementController {
   @SkipAudit('Read-only.')
   async ledger(@Query('itemId') itemId?: string): Promise<StockLedgerRow[]> {
     return this.stock.ledger(itemId);
+  }
+
+  /**
+   * Colleagues, for a "created by" filter to offer.
+   *
+   * ONE ENDPOINT FOR BOTH MODULES. Procure-to-Pay and Job Work ask the same
+   * question of the same table, and the filter control is shared, so a second
+   * route would be a second answer free to disagree with this one.
+   *
+   * It lives on this controller because `PeopleService` does; nothing about it
+   * is procurement-specific.
+   */
+  @Get('people')
+  @SkipAudit('Read-only lookup for the created-by filter.')
+  async people(): Promise<{ id: string; name: string }[]> {
+    return this.peopleService.list();
   }
 
   // -------------------------------------------------------------------------
@@ -229,16 +265,15 @@ export class ProcurementController {
   /**
    * Consumes usable stock, FEFO.
    *
-   * A real inventory operation — an issue, a breakage, a count correction —
-   * and the thing that makes the reorder trigger observable before Production
-   * exists. Runs the reorder check straight afterwards, in the same request,
-   * so a movement that crosses the level raises its requisition immediately
-   * rather than waiting for someone to open a screen.
+   * A real inventory operation — an issue, a breakage, a count correction.
+   * Runs the Auto pass straight afterwards, in the same request, so a movement
+   * that leaves a sales order short raises its requisition immediately rather
+   * than waiting for somebody to open a screen.
    */
   @Post('stock/consume')
   @Auditable('StockLot')
   @HttpCode(HttpStatus.CREATED)
-  async consumeStock(@Body() dto: ConsumeStockDto): Promise<ReorderCheckResult> {
+  async consumeStock(@Body() dto: ConsumeStockDto): Promise<AutoRequisitionOutcome> {
     await this.stock.consumeStock(
       dto.itemId,
       parsePositive(dto.quantity, 'Quantity'),
@@ -246,32 +281,26 @@ export class ProcurementController {
       this.tenantContext.getUserId(),
     );
 
-    return this.runReorderCheck();
+    return this.runAutoRequisitions();
   }
 
   /**
-   * Runs the reorder check on demand. Idempotent.
+   * Raises a requisition for every sales-order shortage that has none, on
+   * demand. Idempotent.
    *
-   * Raises nothing when the company has automatic creation switched off — the
-   * result says so, so the caller can distinguish "nothing was short" from
-   * "the system is not allowed to raise these".
+   * Writes nothing when the company has Auto creation switched off — the result
+   * says so, so the caller can distinguish "nothing was short" from "the system
+   * is not allowed to raise these".
+   *
+   * THE PATH KEEPS ITS OLD NAME so that anything already calling it — a
+   * scheduler, a script — carries on working. What changed is what it does:
+   * requirements now come from sales orders, not from reorder levels.
    */
   @Post('reorder-check')
   @SkipAudit('The requisitions it raises are audited individually.')
   @HttpCode(HttpStatus.CREATED)
-  async runReorderCheck(): Promise<ReorderCheckResult> {
-    const outcome = await this.reorder.run();
-
-    const created = await Promise.all(
-      outcome.createdIds.map((id) => this.requisitions.findOne(id)),
-    );
-
-    return {
-      created,
-      skipped: outcome.skipped,
-      autoCreationEnabled: outcome.autoCreationEnabled,
-      checkedAt: new Date().toISOString(),
-    };
+  async runAutoRequisitions(): Promise<AutoRequisitionOutcome> {
+    return this.requiredStock_.autoRaise();
   }
 
   // -------------------------------------------------------------------------
@@ -305,27 +334,26 @@ export class ProcurementController {
     // Switching it off raises nothing, by the same call: run() reads the
     // setting itself and writes nothing when it is false.
     if (settings.autoRequisitionEnabled) {
-      await this.reconcileReorders('the auto-creation switch');
+      await this.reconcileRequirements('the Auto creation switch');
     }
 
     return settings;
   }
 
   /**
-   * Runs the reorder check, and does not let its failure become the caller's.
+   * Runs the Auto pass, and does not let its failure become the caller's.
    *
    * The caller here is a screen load or a settings save; neither should fail
    * because a requisition could not be raised. The error is logged with what
    * triggered it so the failure is diagnosable rather than silent — what must
-   * not happen is reporting success and writing nothing, which is the bug this
-   * whole change exists to fix.
+   * not happen is reporting success and writing nothing.
    */
-  private async reconcileReorders(trigger: string): Promise<void> {
+  private async reconcileRequirements(trigger: string): Promise<void> {
     try {
-      await this.reorder.run();
+      await this.requiredStock_.autoRaise();
     } catch (error) {
       this.logger.error(
-        `Automatic reorder check failed, triggered by ${trigger}: ${
+        `The Auto requisition pass failed, triggered by ${trigger}: ${
           error instanceof Error ? error.message : String(error)
         }`,
         error instanceof Error ? error.stack : undefined,

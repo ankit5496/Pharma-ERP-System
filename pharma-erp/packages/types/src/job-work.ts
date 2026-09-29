@@ -25,8 +25,8 @@ export const BILLING_MODELS = ['OWN_PROCUREMENT', 'PURE_CONVERSION'] as const;
 export type BillingModel = (typeof BILLING_MODELS)[number];
 
 export const BILLING_MODEL_LABELS: Record<BillingModel, string> = {
-  OWN_PROCUREMENT: 'Own-procurement',
-  PURE_CONVERSION: 'Pure conversion',
+  OWN_PROCUREMENT: 'Own Procurement',
+  PURE_CONVERSION: 'Pure Conversion',
 };
 
 /** The long form, for a form field where the distinction has to be explained. */

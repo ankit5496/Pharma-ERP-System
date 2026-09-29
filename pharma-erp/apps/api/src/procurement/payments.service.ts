@@ -68,6 +68,7 @@ export class PaymentsService {
     };
 
     if (query.vendorId) where.vendorId = query.vendorId;
+    if (query.raisedById) where.recordedById = query.raisedById;
 
     const between = dateRange(query.dateFrom, query.dateTo);
 

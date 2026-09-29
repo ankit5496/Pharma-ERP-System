@@ -1,7 +1,7 @@
 import { Prisma } from '@pharma-erp/database';
 import type { ItemSummary, JobWorkMaterialKind } from '@pharma-erp/types';
 
-import { toItemSummary } from '../production/production.mappers';
+import { toItemSummary } from './production.mappers';
 
 /**
  * A TRANSACTION CLIENT, NOT THE SCOPED ONE, and that is the point.
@@ -19,8 +19,14 @@ import { toItemSummary } from '../production/production.mappers';
 export type RecipeReader = Prisma.TransactionClient;
 
 /**
- * What a job-work batch of a given size needs, from the formulation and the
- * pack specification.
+ * What a run of a given size needs, from the formulation and the pack
+ * specification.
+ *
+ * SHARED, and deliberately not owned by any one module. Job work asks it what a
+ * batch needs before a production order may be raised and again when comparing
+ * what was drawn; Procure-to-Pay asks it what a sales order needs before
+ * deciding what to buy. Three copies of this arithmetic would eventually
+ * disagree, and the disagreement would read as a stock error.
  *
  * A FUNCTION RATHER THAN A METHOD ON EITHER SERVICE, because both of them need
  * the same answer and neither owns it: the production order checks the
@@ -56,6 +62,8 @@ export interface ProductRecipe {
     lines: { quantityPer: Prisma.Decimal; item: Prisma.ItemGetPayload<object> }[];
   } | null;
   packaging: {
+    /** The pack presentation, e.g. "10x10 blister". For the record, not the maths. */
+    packVariant: string;
     unitsPerPack: Prisma.Decimal;
     lines: {
       itemId: string;
@@ -105,7 +113,11 @@ export async function loadRecipes(
             ? { version: bom.version, outputQuantity: bom.outputQuantity, lines: bom.lines }
             : null,
           packaging: packaging
-            ? { unitsPerPack: packaging.unitsPerPack, lines: packaging.lines }
+            ? {
+                packVariant: packaging.packVariant,
+                unitsPerPack: packaging.unitsPerPack,
+                lines: packaging.lines,
+              }
             : null,
         },
       ];

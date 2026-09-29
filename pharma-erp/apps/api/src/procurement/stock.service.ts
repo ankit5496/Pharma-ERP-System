@@ -5,19 +5,19 @@ import type {
   InventoryStatus,
   ItemInventory,
   ItemStockPosition,
-  LowStockItem,
   StockLedgerRow,
+  StockReservationSummary,
 } from '@pharma-erp/types';
 
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
-import { ZERO, pendingOn, positiveDifference, qty } from './decimal.util';
+import { ZERO, qty } from './decimal.util';
 import { ITEM_SELECT, LOT_SELECT, collectIds, toItemSummary, toStockLotSummary } from './mappers';
 import { PeopleService } from './people.service';
 
 /**
- * Stock positions, the low-stock trigger, and the ledger.
+ * Stock positions and the ledger.
  *
  * The rule this service exists to enforce is business rule 7: only QC-accepted
  * material counts as usable. Every "how much do we have" question here answers
@@ -52,79 +52,17 @@ export class StockService {
   }
 
   /**
-   * Raw materials whose usable stock has fallen below their reorder level.
+   * THE LOW-STOCK LIST USED TO LIVE HERE, and it is gone on purpose.
    *
-   * This is the trigger for the whole Procure-to-Pay flow: `available < reorder`.
-   * Restricted to RAW_MATERIAL and PACKAGING because finished goods are made,
-   * not bought, and would otherwise sit permanently in the buyer's queue.
+   * It compared each item's usable stock against a reorder level typed on the
+   * item master, which answers "are we low on this?" — a question about the
+   * shelf. What a buyer actually needs is "can we make what we have promised?",
+   * and only a sales order can answer that. RequiredStockService does, from the
+   * order's finished product and its formulation.
+   *
+   *  above survives and is what that service reads.
    */
-  async lowStockItems(): Promise<LowStockItem[]> {
-    const [items, usable, quarantine, openRequisitions, orderLines] = await Promise.all([
-      this.prisma.scoped.item.findMany({
-        where: {
-          deletedAt: null,
-          type: { in: ['RAW_MATERIAL', 'PACKING_MATERIAL', 'SEMI_FINISHED'] },
-        },
-        select: ITEM_SELECT,
-        orderBy: [{ name: 'asc' }],
-      }),
-      this.usableStockByItem('USABLE'),
-      this.usableStockByItem('QUARANTINE'),
-      // Items already being dealt with. Shown rather than hidden, flagged so a
-      // buyer does not raise a second requisition for the same shortage.
-      this.prisma.scoped.purchaseRequisition.findMany({
-        where: { deletedAt: null, status: { in: ['OPEN', 'APPROVED'] } },
-        select: { itemId: true },
-        distinct: ['itemId'],
-      }),
-      // And the next stage of the same story: converted to an order, which is
-      // still outstanding until the goods arrive. A requisition leaves OPEN the
-      // moment it becomes an order, so the query above stops seeing it.
-      this.prisma.scoped.purchaseOrderLine.findMany({
-        where: {
-          purchaseOrder: { deletedAt: null, status: { notIn: ['DRAFT', 'CANCELLED'] } },
-        },
-        select: {
-          itemId: true,
-          quantity: true,
-          quantityReceived: true,
-          quantityCancelled: true,
-        },
-      }),
-    ]);
 
-    const openByItem = new Set(openRequisitions.map((row) => row.itemId));
-
-    // Only lines with something still to come; a fully received line is settled
-    // and its stock is already counted in `usable`.
-    const onOrderByItem = new Set(
-      orderLines.filter((line) => pendingOn(line).greaterThan(0)).map((line) => line.itemId),
-    );
-
-    return items
-      .map((item) => {
-        const available = usable.get(item.id) ?? ZERO;
-        const reorderLevel = new Prisma.Decimal(item.reorderLevel ?? 0);
-
-        return {
-          item: toItemSummary(item),
-          available,
-          reorderLevel,
-          quarantined: quarantine.get(item.id) ?? ZERO,
-          hasOpenRequisition: openByItem.has(item.id),
-          hasOpenPurchaseOrder: onOrderByItem.has(item.id),
-        };
-      })
-      .filter((row) => row.available.lessThan(row.reorderLevel))
-      .map((row) => ({
-        item: row.item,
-        availableStock: qty(row.available),
-        quarantineStock: qty(row.quarantined),
-        shortfall: qty(positiveDifference(row.reorderLevel, row.available)),
-        hasOpenRequisition: row.hasOpenRequisition,
-        hasOpenPurchaseOrder: row.hasOpenPurchaseOrder,
-      }));
-  }
 
   /** Every item's position, with its usable lots in FEFO order. */
   /**
@@ -218,7 +156,7 @@ export class StockService {
   }
 
   async stockPositions(): Promise<ItemStockPosition[]> {
-    const [items, lots] = await Promise.all([
+    const [items, lots, reserved] = await Promise.all([
       this.prisma.scoped.item.findMany({
         where: { deletedAt: null },
         select: ITEM_SELECT,
@@ -232,6 +170,7 @@ export class StockService {
         // conservative order, since an unknown expiry might be the soonest.
         orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { createdAt: 'asc' }],
       }),
+      this.reservedByItem(),
     ]);
 
     return items.map((item) => {
@@ -241,18 +180,100 @@ export class StockService {
           .filter((lot) => lot.status === status)
           .reduce((total, lot) => total.plus(lot.quantityAvailable), ZERO);
 
-      const available = sumWhere('USABLE');
+      const usable = sumWhere('USABLE');
+
+      // HELD, BUT ONLY AS FAR AS THERE IS STOCK TO HOLD. A reservation cannot
+      // exceed what is usable — material consumed or rejected after the hold
+      // was placed would otherwise make free stock negative, which is not a
+      // fact about any shelf.
+      const held = Prisma.Decimal.min(reserved.get(item.id) ?? ZERO, usable);
 
       return {
         item: toItemSummary(item),
-        availableStock: qty(available),
+        totalStock: qty(
+          own.reduce((total, lot) => total.plus(lot.quantityAvailable), ZERO),
+        ),
+        availableStock: qty(usable),
+        reservedStock: qty(held),
+        freeStock: qty(usable.sub(held)),
         quarantineStock: qty(sumWhere('QUARANTINE')),
         rejectedStock: qty(sumWhere('REJECTED')),
         onHoldStock: qty(sumWhere('ON_HOLD')),
-        belowReorderLevel: available.lessThan(new Prisma.Decimal(item.reorderLevel ?? 0)),
         fefoLots: own.filter((lot) => lot.status === 'USABLE').map(toStockLotSummary),
       };
     });
+  }
+
+  /**
+   * How much of each item is held for a sales order, as a map.
+   *
+   * LIVE HOLDS ONLY — `releasedAt` null. A released reservation is history: it
+   * is kept so "who held this drum in March" can be answered, and counting it
+   * would keep material locked away forever.
+   *
+   * ON USABLE LOTS ONLY. A hold against a lot that was later rejected is not a
+   * claim on usable stock, and netting it off would hide the shortage the
+   * rejection just created.
+   */
+  async reservedByItem(): Promise<Map<string, Prisma.Decimal>> {
+    const rows = await this.prisma.scoped.stockReservation.findMany({
+      where: { releasedAt: null, stockLot: { status: 'USABLE' } },
+      select: { quantity: true, stockLot: { select: { itemId: true } } },
+    });
+
+    const byItem = new Map<string, Prisma.Decimal>();
+
+    for (const row of rows) {
+      const itemId = row.stockLot.itemId;
+
+      byItem.set(itemId, (byItem.get(itemId) ?? ZERO).plus(row.quantity));
+    }
+
+    return byItem;
+  }
+
+  /**
+   * Every hold, newest first — live ones and the history of released ones.
+   *
+   * RELEASED HOLDS ARE RETURNED TOO. They are why a drum stopped being
+   * somebody's, and "who held this in March, and why did it stop" is an audit
+   * question the live set cannot answer.
+   */
+  async reservations(salesOrderId?: string): Promise<StockReservationSummary[]> {
+    const rows = await this.prisma.scoped.stockReservation.findMany({
+      where: salesOrderId ? { salesOrderId } : {},
+      select: {
+        id: true,
+        quantity: true,
+        reference: true,
+        createdAt: true,
+        releasedAt: true,
+        releasedReason: true,
+        salesOrderId: true,
+        stockLot: { select: { lotNumber: true, item: { select: ITEM_SELECT } } },
+        salesOrder: {
+          select: { orderNumber: true, customer: { select: { name: true } } },
+        },
+        // The finished product, off the order line rather than copied.
+        salesOrderItem: { select: { item: { select: ITEM_SELECT } } },
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      lotNumber: row.stockLot.lotNumber,
+      item: toItemSummary(row.stockLot.item),
+      quantity: qty(row.quantity),
+      salesOrderId: row.salesOrderId,
+      salesOrderNumber: row.salesOrder.orderNumber,
+      customerName: row.salesOrder.customer.name,
+      finishedProduct: toItemSummary(row.salesOrderItem.item),
+      reference: row.reference,
+      createdAt: row.createdAt.toISOString(),
+      releasedAt: row.releasedAt?.toISOString() ?? null,
+      releasedReason: row.releasedReason,
+    }));
   }
 
   /** The stock ledger, newest first. */
@@ -264,6 +285,8 @@ export class StockService {
         entryType: true,
         quantityDelta: true,
         affectsUsableStock: true,
+        resultingStatus: true,
+        storageLocation: true,
         reference: true,
         notes: true,
         createdAt: true,
@@ -275,12 +298,28 @@ export class StockService {
         stockLot: {
           select: { lotNumber: true, vendorBatchNumber: true, expiryDate: true },
         },
+        // THE DECISION THAT CAUSED IT — the verdict, who made it and when.
+        // Read through the QcResult rather than copied onto the entry, so the
+        // ledger and the QC record cannot disagree about one inspection.
+        qcResult: {
+          select: {
+            decision: true,
+            testReference: true,
+            inspectedById: true,
+            inspectedAt: true,
+          },
+        },
       },
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
       take: limit,
     });
 
-    const people = await this.people.load(collectIds(...rows.map((row) => row.createdById)));
+    const people = await this.people.load(
+      collectIds(
+        ...rows.map((row) => row.createdById),
+        ...rows.map((row) => row.qcResult?.inspectedById ?? null),
+      ),
+    );
 
     return rows.map((row) => ({
       // BigInt does not survive JSON.stringify; the id is an identifier here,
@@ -295,6 +334,16 @@ export class StockService {
       entryType: row.entryType,
       quantityDelta: qty(row.quantityDelta),
       affectsUsableStock: row.affectsUsableStock,
+      resultingStatus: row.resultingStatus,
+      storageLocation: row.storageLocation,
+      qcDecision: row.qcResult
+        ? {
+            decision: row.qcResult.decision,
+            testReference: row.qcResult.testReference,
+            inspectedBy: people.get(row.qcResult.inspectedById) ?? null,
+            inspectedAt: row.qcResult.inspectedAt.toISOString(),
+          }
+        : null,
       reference: row.reference,
       notes: row.notes,
       createdBy: row.createdById ? (people.get(row.createdById) ?? null) : null,
@@ -403,5 +452,27 @@ export class StockService {
     });
 
     return aggregate._sum.quantityAvailable ?? ZERO;
+  }
+
+  /**
+   * Usable stock LESS what is held for a sales order.
+   *
+   * THE FIGURE A PURCHASING DECISION IS MADE ON. Usable stock answers "what
+   * may be dispensed"; this answers "what could a NEW order draw on", and the
+   * two differ by exactly the material somebody has already spoken for.
+   */
+  async freeStockForItem(itemId: string): Promise<Prisma.Decimal> {
+    const usable = await this.usableStockForItem(itemId);
+
+    const held = await this.prisma.scoped.stockReservation.aggregate({
+      where: { releasedAt: null, stockLot: { itemId, status: 'USABLE' } },
+      _sum: { quantity: true },
+    });
+
+    const reserved = held._sum.quantity ?? ZERO;
+
+    // Floored: a hold larger than what is left is stale rather than negative
+    // stock, and the reconciliation that clears it is not this read's job.
+    return Prisma.Decimal.max(usable.sub(reserved), ZERO);
   }
 }

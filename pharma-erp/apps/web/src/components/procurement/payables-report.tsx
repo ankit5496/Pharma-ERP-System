@@ -21,7 +21,7 @@ import { EmptyState, ErrorState, Money, Panel, Pill, TableWrap, Td, Th,
 export function PayablesReportPanel({ result }: { result: ApiResult<PayablesReport> }) {
   return (
     <Panel
-      title="Outstanding payables"
+      title="Outstanding Payables"
       subtitle="By vendor, aged from the due date. Only approved invoices with a balance appear."
       action={
         result.ok ? (

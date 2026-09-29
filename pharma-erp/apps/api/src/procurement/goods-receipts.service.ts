@@ -80,6 +80,9 @@ export class GoodsReceiptsService {
 
     if (query.vendorId) where.vendorId = query.vendorId;
     if (query.itemId) where.lines = { some: { itemId: query.itemId } };
+    // WHO BOOKED IT IN. `raisedById` is the filter's name across every
+    // register; the column it lands on is whatever this document calls it.
+    if (query.raisedById) where.receivedById = query.raisedById;
 
     const between = dateRange(query.dateFrom, query.dateTo);
 

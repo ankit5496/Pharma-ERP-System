@@ -55,9 +55,11 @@ export class JobWorkMaterialReceiptLineDto {
   @Matches(CALENDAR_DAY, { message: `manufacturingDate ${CALENDAR_DAY_MESSAGE}` })
   manufacturingDate?: string;
 
-  @IsOptional()
+  // REQUIRED. A drum with no expiry is one nobody can decide about later —
+  // FEFO cannot order it and the quality gate cannot judge it. The service
+  // says so in words; this is the shape check.
   @Matches(CALENDAR_DAY, { message: `expiryDate ${CALENDAR_DAY_MESSAGE}` })
-  expiryDate?: string;
+  expiryDate!: string;
 
   @IsOptional()
   @IsString()

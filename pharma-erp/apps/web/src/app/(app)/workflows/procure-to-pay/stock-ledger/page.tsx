@@ -2,8 +2,12 @@ import type { Metadata } from 'next';
 import {
   DEFAULT_PAGE_SIZE,
   PROCUREMENT_ROUTES,
+  QC_DECISION_LABELS,
+  STOCK_LOT_STATUS_LABELS,
   type ItemStockPosition,
+  type QcDecision,
   type StockLedgerRow,
+  type StockLotStatus,
 } from '@pharma-erp/types';
 
 import { FilterButton, FilterPanel, SearchBox } from '@/components/procurement/filter-bar';
@@ -34,7 +38,7 @@ import {
   toOptions,
 } from '@/lib/procurement';
 
-export const metadata: Metadata = { title: 'Raw material stock' };
+export const metadata: Metadata = { title: 'Raw Material Stock' };
 export const dynamic = 'force-dynamic';
 
 /**
@@ -95,7 +99,7 @@ export default async function StockLedgerPage({
   return (
     <div className="space-y-6">
       <Panel
-        title="Stock by batch"
+        title="Stock by Batch"
         subtitle="Usable batches in first-expiry-first-out order — the order production must pick in."
         action={
           <>
@@ -127,7 +131,7 @@ export default async function StockLedgerPage({
       </Panel>
 
       <Panel
-        title="Stock ledger"
+        title="Stock Ledger"
         subtitle={
           ledger.ok
             ? `${ledger.data.length} movement${ledger.data.length === 1 ? '' : 's'}, newest first`
@@ -154,7 +158,9 @@ export default async function StockLedgerPage({
                     <Th>Expiry</Th>
                     <Th>Movement</Th>
                     <Th align="right">Quantity</Th>
-                    <Th>Usable stock</Th>
+                    <Th>Status</Th>
+                    <Th>Location</Th>
+                    <Th>QC decision</Th>
                     <Th>Source</Th>
                   </tr>
                 </thead>
@@ -197,10 +203,26 @@ function StockByItem({ position }: { position: ItemStockPosition }) {
           <p className="font-mono text-xs text-slate-500">{item.code}</p>
         </div>
 
+{/* THE SIX FIGURES, AND THEY ARE NOT THE SAME FIGURE.
+            FREE leads, because it is the one a purchasing decision is made on:
+            usable stock less what is already held for a sales order. "Usable"
+            beside it is what MAY be dispensed, held or not — the two differ by
+            exactly the material somebody has spoken for, and reading only the
+            larger one is how a drum gets promised twice. */}
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="font-semibold text-slate-900">
-            <Qty value={position.availableStock} uom={item.uom} /> usable
+            <Qty value={position.freeStock} uom={item.uom} /> free
           </span>
+
+          {position.reservedStock !== '0' && (
+            <span className="text-slate-500">
+              of <Qty value={position.availableStock} uom={item.uom} /> usable ·{' '}
+              <Pill tone="info">
+                {position.reservedStock} {item.uom} reserved
+              </Pill>
+            </span>
+          )}
+
           {position.quarantineStock !== '0' && (
             <Pill tone="warn">
               {position.quarantineStock} {item.uom} awaiting QC
@@ -216,7 +238,6 @@ function StockByItem({ position }: { position: ItemStockPosition }) {
               {position.rejectedStock} {item.uom} rejected
             </Pill>
           )}
-          {position.belowReorderLevel && <Pill tone="warn">Below reorder level</Pill>}
         </div>
       </div>
 
@@ -289,6 +310,28 @@ function StockByItem({ position }: { position: ItemStockPosition }) {
 }
 
 /** How each movement type reads to someone scanning the ledger. */
+/**
+ * A colour per bucket, so the ledger is scannable rather than readable.
+ *
+ * Rejected and held are BOTH danger-toned and deliberately distinguishable by
+ * their words alone: they have different consequences — one goes back to the
+ * vendor, the other may yet be released — and a reader must not have to guess
+ * which from a shade.
+ */
+const STATUS_TONES: Record<StockLotStatus, 'ok' | 'warn' | 'danger' | 'muted'> = {
+  USABLE: 'ok',
+  QUARANTINE: 'warn',
+  ON_HOLD: 'danger',
+  REJECTED: 'danger',
+  CONSUMED: 'muted',
+};
+
+const QC_TONES: Record<QcDecision, 'ok' | 'warn' | 'danger'> = {
+  ACCEPTED: 'ok',
+  ON_HOLD: 'warn',
+  REJECTED: 'danger',
+};
+
 const MOVEMENT_LABELS: Record<string, string> = {
   GRN_QUARANTINE: 'Received into quarantine',
   QC_ACCEPTED: 'QC accepted',
@@ -352,14 +395,58 @@ function LedgerRow({ entry }: { entry: StockLedgerRow }) {
       </Td>
 
       <Td>
-        {/* The distinction the whole quality gate rests on. A rejection is
-            recorded in full and still never touches usable stock. */}
-        {entry.affectsUsableStock ? (
-          <Pill tone={adds ? 'ok' : 'neutral'}>
-            {adds ? 'Added to usable' : 'Removed from usable'}
+        {/* WHICH BUCKET, and separately whether usable stock moved.
+            The two are different questions: a rejection and a hold both leave
+            usable stock alone and are not the same fact, which is why the
+            status is its own column rather than a flag. */}
+        {entry.resultingStatus ? (
+          <Pill tone={STATUS_TONES[entry.resultingStatus]}>
+            {STOCK_LOT_STATUS_LABELS[entry.resultingStatus]}
           </Pill>
         ) : (
-          <Pill tone="muted">Not usable stock</Pill>
+          <Pill tone="muted">—</Pill>
+        )}
+        <p className="mt-0.5 text-[11px] text-slate-500">
+          {entry.affectsUsableStock
+            ? adds
+              ? 'Added to usable'
+              : 'Removed from usable'
+            : 'Not usable stock'}
+        </p>
+      </Td>
+
+      <Td>
+        {/* WHERE THE DRUM IS. An inspector asks to be taken to it, and
+            "rejected, location unknown" is the answer nobody can give. */}
+        {entry.storageLocation ? (
+          <span className="text-[11px] text-slate-700">{entry.storageLocation}</span>
+        ) : (
+          <Blank />
+        )}
+      </Td>
+
+      <Td>
+        {/* THE DECISION, ITS MAKER AND ITS TIMESTAMP, read through the QC
+            record rather than copied onto the movement. */}
+        {entry.qcDecision ? (
+          <>
+            <Pill tone={QC_TONES[entry.qcDecision.decision]}>
+              {QC_DECISION_LABELS[entry.qcDecision.decision]}
+            </Pill>
+            <p className="mt-0.5 text-[11px] text-slate-600">
+              <Name>{entry.qcDecision.inspectedBy ?? 'Unknown'}</Name>
+            </p>
+            <p className="text-[11px] tabular-nums text-slate-500">
+              {entry.qcDecision.inspectedAt.slice(0, 10)}
+            </p>
+            {entry.qcDecision.testReference && (
+              <p className="font-mono text-[11px] text-slate-500">
+                <Code>{entry.qcDecision.testReference}</Code>
+              </p>
+            )}
+          </>
+        ) : (
+          <Blank />
         )}
       </Td>
 

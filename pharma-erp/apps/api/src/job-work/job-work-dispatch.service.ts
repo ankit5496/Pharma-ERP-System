@@ -18,6 +18,7 @@ import { fromIsoDate, toItemSummary, toIsoDate, todayUtc } from '../production/p
 import { TenantContextService } from '../tenant/tenant-context.service';
 
 import type { CreateJobWorkDispatchDto } from './dto/job-work-dispatch.dto';
+import { jobWorkListWhere, type JobWorkListQueryDto } from './job-work-list-query';
 import { JobWorkOrdersService, parseQuantity } from './job-work-orders.service';
 
 const ZERO = new Prisma.Decimal(0);
@@ -236,9 +237,38 @@ export class JobWorkDispatchService {
       }));
   }
 
-  async list(jobWorkOrderId?: string): Promise<JobWorkInvoiceView[]> {
+  /** The billing register, filtered in the database. */
+  async list(
+    jobWorkOrderId?: string,
+    query: JobWorkListQueryDto = {},
+  ): Promise<JobWorkInvoiceView[]> {
+    const search = query.search?.trim();
+
     const invoices = await this.prisma.scoped.jobWorkInvoice.findMany({
-      where: { deletedAt: null, ...(jobWorkOrderId ? { jobWorkOrderId } : {}) },
+      where: {
+        deletedAt: null,
+        ...(jobWorkOrderId ? { jobWorkOrderId } : {}),
+        // NO STATUS: a job-work invoice has no lifecycle of its own. It is
+        // raised by the dispatch that returns the batch and never amended, so
+        // there is nothing to filter by — the billing model is what a reader
+        // actually narrows this register with.
+        ...jobWorkListWhere(query),
+        ...(query.billingModel ? { billingModel: query.billingModel } : {}),
+        ...(query.principalId ? { jobWorkOrder: { principalId: query.principalId } } : {}),
+        ...(search
+          ? {
+              OR: [
+                { invoiceNumber: { contains: search, mode: 'insensitive' } },
+                { jobWorkOrder: { orderNumber: { contains: search, mode: 'insensitive' } } },
+                {
+                  jobWorkOrder: {
+                    principal: { name: { contains: search, mode: 'insensitive' } },
+                  },
+                },
+              ],
+            }
+          : {}),
+      },
       include: INVOICE_INCLUDE,
       orderBy: { createdAt: 'desc' },
     });

@@ -946,3 +946,69 @@ export async function createJobWorkDispatchAction(
       : '',
   );
 }
+
+/**
+ * Corrects a consignment that is still a draft.
+ *
+ * THE SAME PAYLOAD AS RECORDING ONE, deliberately: a correction restates the
+ * whole challan rather than patching a field, so the form that writes it is
+ * the form that wrote it in the first place and there is one shape to keep
+ * right. The API refuses anything past DRAFT.
+ */
+export async function updateJobWorkReceiptAction(
+  _state: ActionState,
+  form: FormData,
+): Promise<ActionState> {
+  const receiptId = text(form, 'receiptId');
+  const jobWorkOrderId = text(form, 'jobWorkOrderId');
+  const deliveryChallanNumber = text(form, 'deliveryChallanNumber');
+  const receiptDate = text(form, 'receiptDate');
+  const notes = text(form, 'notes');
+
+  if (!receiptId) return { status: 'error', message: 'No receipt was identified.' };
+  if (!deliveryChallanNumber) {
+    return { status: 'error', message: "Enter the principal's delivery challan number." };
+  }
+  if (!receiptDate) return { status: 'error', message: 'Enter the date on the challan.' };
+
+  const lines = readReceiptLines(form);
+
+  if ('message' in lines) return { status: 'error', message: lines.message };
+
+  if (lines.rows.length === 0) {
+    return {
+      status: 'error',
+      message:
+        'Enter the quantity received for at least one material. A receipt with no material on ' +
+        'it is not a receipt — cancel it instead.',
+    };
+  }
+
+  const result = await apiFetch<JobWorkMaterialReceiptView>(
+    `/api/v1/job-work/material-receipts/${receiptId}`,
+    {
+      method: 'PATCH',
+      authenticated: true,
+      json: {
+        jobWorkOrderId,
+        deliveryChallanNumber,
+        receiptDate,
+        ...(notes ? { notes } : {}),
+        lines: lines.rows,
+      },
+    },
+  );
+
+  revalidateFlow();
+
+  const saved = result.ok ? (result.data as JobWorkMaterialReceiptView) : null;
+
+  return toState(
+    result,
+    saved
+      ? `${saved.receiptNumber} corrected: ${saved.lines.length} material${
+          saved.lines.length === 1 ? '' : 's'
+        } on challan ${deliveryChallanNumber}, quarantined until it is approved.`
+      : '',
+  );
+}
