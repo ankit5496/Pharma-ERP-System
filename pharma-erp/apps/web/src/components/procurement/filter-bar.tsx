@@ -597,28 +597,49 @@ export function FilterPanel({
           )}
 
           {showDates && (
-            <>
+            // ONE RANGE, ONE ROW. These used to be two independent cells of the
+            // outer grid, so whichever column From landed in decided whether To
+            // followed it or dropped to the next line — on Purchase Invoices,
+            // with four controls above them, it dropped. A range read down a
+            // column break is a range somebody has to reassemble.
+            //
+            // SPANS TWO CELLS and lays its own two out inside, so the pair
+            // stays together wherever the grid puts it. `flex-wrap` with a
+            // minimum width is the one concession: below about 20rem of cell
+            // the inputs would be narrower than the dates in them, and there
+            // they stack rather than truncate.
+            <div className="sm:col-span-2">
               {/* NAMED FOR THE DATE THEY ACTUALLY NARROW. "Date from" begs
                   the question — a record has a created date, a delivery date,
                   an expiry — and these two have always been the created one. */}
-              <Control label="Created date from">
-                <input
-                  type="date"
-                  value={draft.dateFrom ?? ''}
-                  onChange={(event) => set('dateFrom', event.target.value)}
-                  className="field h-10"
-                />
-              </Control>
+              <div className="flex flex-wrap items-start gap-x-4 gap-y-3">
+                <div className="min-w-[9.5rem] flex-1">
+                  <Control label="Created date from">
+                    <input
+                      type="date"
+                      value={draft.dateFrom ?? ''}
+                      // Bounded by each other, so a range cannot be entered
+                      // backwards in the first place.
+                      max={draft.dateTo || undefined}
+                      onChange={(event) => set('dateFrom', event.target.value)}
+                      className="field h-10"
+                    />
+                  </Control>
+                </div>
 
-              <Control label="Created date to">
-                <input
-                  type="date"
-                  value={draft.dateTo ?? ''}
-                  onChange={(event) => set('dateTo', event.target.value)}
-                  className="field h-10"
-                />
-              </Control>
-            </>
+                <div className="min-w-[9.5rem] flex-1">
+                  <Control label="Created date to">
+                    <input
+                      type="date"
+                      value={draft.dateTo ?? ''}
+                      min={draft.dateFrom || undefined}
+                      onChange={(event) => set('dateTo', event.target.value)}
+                      className="field h-10"
+                    />
+                  </Control>
+                </div>
+              </div>
+            </div>
           )}
         </div>
 

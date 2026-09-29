@@ -9,6 +9,10 @@ import type {
   JobWorkMaterialSufficiency,
   JobWorkOrderSummary,
   JobWorkProductionOrderView,
+  // The same lot register and the same ownership vocabulary the internal batch
+  // record uses. Shared rather than mirrored: a lot is a lot whoever owns it.
+  ProductionStockLot,
+  StockOwnership,
 } from '@pharma-erp/types';
 import { BILLING_MODEL_LABELS, JOB_WORK_MATERIAL_KIND_LABELS } from '@pharma-erp/types';
 
@@ -1209,10 +1213,33 @@ export type JobWorkPackSpecification = {
 export function RecordJobWorkPackingForm({
   batch,
   packSpecifications = [],
+  lots = [],
+  ownership = 'PRINCIPAL_OWNED',
 }: {
   batch: JobWorkBatchView;
   /** The product's active specifications. Empty for a product with none. */
   packSpecifications?: JobWorkPackSpecification[];
+  /**
+   * Stock on hand, for the lot each component is drawn from — US-MD-06.
+   *
+   * The packing record names the LOT, not merely the component: the recall
+   * trail runs from a carton lot to this batch, and without a lot on the line
+   * there is no trail. A recalled carton lot could not be traced to the batches
+   * it went into.
+   *
+   * The same register the internal batch record reads, and the same endpoint —
+   * a lot is a lot whoever owns it.
+   */
+  lots?: ProductionStockLot[];
+  /**
+   * Whose packaging this batch may consume, from its job work order's terms.
+   *
+   * PURE CONVERSION DRAWS THE PRINCIPAL'S; own procurement draws ours. The same
+   * rule the raw-material issue applies — offering the wrong bucket here would
+   * let a batch quietly consume the wrong party's cartons, which is a billing
+   * error as much as a stock one.
+   */
+  ownership?: StockOwnership;
 }) {
   const [state, action, pending] = useActionState(recordJobWorkPackingAction, IDLE);
 
@@ -1236,6 +1263,86 @@ export function RecordJobWorkPackingForm({
   const consumedFor = (itemId: string) =>
     batch.packagingConsumed.find((entry) => entry.itemId === itemId)?.quantityConsumed ?? '';
 
+  /** The lot recorded for a component last time, or '' if none was. */
+  const consumedLotFor = (itemId: string) =>
+    batch.packagingConsumed.find((entry) => entry.itemId === itemId)?.lotId ?? '';
+
+  /**
+   * The lot chosen for each component, keyed by item id.
+   *
+   * WHY STATE AND NOT `defaultValue`. An uncontrolled select takes its default
+   * once, at mount. Held that way, the saved lot only showed if its option
+   * happened to exist in that same pass — and the list is filtered, so a lot
+   * drawn down to nothing or since quarantined had no option to match and the
+   * control fell back to the first one, "No lot recorded". The record said one
+   * thing and the form another.
+   *
+   * SEEDED FROM THE RECORD, PER COMPONENT, so every line opens showing the lot
+   * it was saved with. `undefined` for a component nobody has touched means
+   * "whatever the record says" rather than "cleared", which is what lets the
+   * seed survive a re-render without overwriting a deliberate change.
+   */
+  const [lotChoices, setLotChoices] = useState<Record<string, string>>({});
+
+  const lotChoice = (itemId: string) => lotChoices[itemId] ?? consumedLotFor(itemId);
+
+  const chooseLot = (itemId: string, lotId: string) =>
+    setLotChoices((current) => ({ ...current, [itemId]: lotId }));
+
+  /**
+   * The lots a component may be drawn from.
+   *
+   * Filtered to this order's ownership bucket AND to stock that is actually
+   * usable — a quarantined carton is not packaging material yet, whoever owns
+   * it. Soonest to expire first, so the one to use is at the top.
+   *
+   * THE LOT ALREADY RECORDED IS ALWAYS AMONG THEM, even when it no longer
+   * passes those filters, and that is not a nicety. A carton lot drawn down to
+   * nothing by this very batch stops being "available" the moment the record is
+   * saved — so on reopening, the option would be gone, a select whose value
+   * matches no option falls back to the first, and the form would show "No lot
+   * recorded" for a line that names one. Saving from there would then write the
+   * reset back and destroy the recall trail. The same happens to a lot since
+   * quarantined, or one belonging to the other ownership bucket.
+   *
+   * It is marked when it is only there because it was chosen, so nobody reads
+   * it as stock they can still draw on.
+   */
+  const lotsFor = (itemId: string) => {
+    const eligible = lots
+      .filter(
+        (lot) =>
+          lot.item.id === itemId &&
+          lot.status === 'USABLE' &&
+          lot.ownership === ownership &&
+          Number(lot.quantityAvailable) > 0,
+      )
+      .sort((a, b) => (a.expiryDate ?? '9999').localeCompare(b.expiryDate ?? '9999'));
+
+    const recordedLot = consumedLotFor(itemId);
+
+    if (!recordedLot || eligible.some((lot) => lot.id === recordedLot)) return eligible;
+
+    const kept = lots.find((lot) => lot.id === recordedLot);
+
+    return [
+      // FIRST, so it is the one on screen when the picker is shut.
+      kept
+        ? { ...kept, recordedOnly: true }
+        : // Not in the register at all. An option is still rendered, carrying
+          // the id, so the selection holds and a save preserves it.
+          {
+            id: recordedLot,
+            lotNumber: 'Lot already recorded',
+            quantityAvailable: '',
+            expiryDate: null,
+            item: { uom: '' },
+            recordedOnly: true,
+          },
+      ...eligible,
+    ];
+  };
+
   /**
    * Whether packing has been recorded. `packedQuantity` is the signal because
    * it is the one field the record cannot exist without — rejects, the variant
@@ -1253,6 +1360,17 @@ export function RecordJobWorkPackingForm({
    * than the default state.
    */
   const [editing, setEditing] = useState(false);
+
+  /**
+   * Back to what the record says whenever a different record is being shown.
+   *
+   * The component is remounted per batch, so this is really about the switch
+   * between the saved record and the form: opening Edit must show the stored
+   * lots, not whatever was last picked and abandoned by Cancel.
+   */
+  useEffect(() => {
+    if (!editing) setLotChoices({});
+  }, [editing]);
 
   /** For Cancel on a first entry, which clears the boxes rather than closing. */
   const formRef = useRef<HTMLFormElement>(null);
@@ -1441,6 +1559,21 @@ export function RecordJobWorkPackingForm({
             Packaging consumed
           </legend>
 
+          {/* THREE COLUMNS, THE SAME ON EVERY ROW. This was a wrapping flex
+              row where the quantity box was as wide as the lot picker and the
+              material name got whatever was left — so the numbers did not line
+              up, and a long lot number pushed the row out of shape.
+
+              A grid instead: the material takes the space, the picker is fixed
+              so every one is the same width and they align down the column, and
+              the quantity is narrow because it holds a number. The header names
+              them once rather than a label per row. */}
+          <div className="grid grid-cols-[minmax(0,1fr)_14rem_6rem] items-center gap-x-3 pb-1 text-[10px] font-medium uppercase tracking-wide text-slate-500">
+            <span>Material</span>
+            <span>Packaging lot</span>
+            <span className="text-right">Quantity</span>
+          </div>
+
           <div className="space-y-2">
             {specification.components.map((component, index) => (
               // Keyed by specification as well as component, so switching
@@ -1448,16 +1581,56 @@ export function RecordJobWorkPackingForm({
               // than carrying them over on a shared component.
               <div
                 key={`${specification.id}-${component.id}`}
-                className="flex flex-wrap items-end gap-3"
+                className="grid grid-cols-[minmax(0,1fr)_14rem_6rem] items-center gap-x-3"
               >
                 <input type="hidden" name={`component.${index}.itemId`} value={component.id} />
 
-                <div className="min-w-0 flex-1">
+                <div className="min-w-0">
                   <span className="font-mono text-xs text-slate-700">{component.code}</span>{' '}
                   <span className="text-sm text-slate-600">{component.name}</span>
                 </div>
 
-                <div className="w-40">
+                {/* WHICH LOT IT CAME OUT OF. Optional, because not every
+                    packing material is lot-tracked and a record naming the
+                    carton without its lot is still better than no record — but
+                    offered on every line, because a trail that depends on
+                    somebody remembering to ask for it is not a trail.
+
+                    CONTROLLED, NOT `defaultValue`. An uncontrolled select reads
+                    its default once at mount, so the saved lot only appeared if
+                    the option list happened to be ready in that same pass —
+                    which is exactly the race that showed "No lot recorded"
+                    against a line that had one. Held in state, the selection is
+                    whatever the record says until somebody changes it. */}
+                <div className="min-w-0">
+                  <label htmlFor={`jwp-lot-${batch.id}-${index}`} className="sr-only">
+                    {component.code} lot
+                  </label>
+                  <select
+                    id={`jwp-lot-${batch.id}-${index}`}
+                    name={`component.${index}.lotId`}
+                    value={lotChoice(component.id)}
+                    onChange={(event) => chooseLot(component.id, event.target.value)}
+                    // `truncate` on a select: a long lot number is cut with an
+                    // ellipsis rather than widening the column and pushing the
+                    // quantity off the row.
+                    className={`${FIELD} truncate`}
+                  >
+                    <option value="">
+                      {lotsFor(component.id).length === 0 ? 'No lot on hand' : 'No lot recorded'}
+                    </option>
+                    {lotsFor(component.id).map((lot) => (
+                      <option key={lot.id} value={lot.id}>
+                        {lot.lotNumber}
+                        {lot.quantityAvailable ? ` — ${lot.quantityAvailable} ${lot.item.uom}` : ''}
+                        {lot.expiryDate ? ` · exp ${lot.expiryDate}` : ''}
+                        {'recordedOnly' in lot && lot.recordedOnly ? ' · recorded' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
                   <label htmlFor={`jwp-consumed-${batch.id}-${index}`} className="sr-only">
                     {component.code} consumed
                   </label>
@@ -1472,10 +1645,12 @@ export function RecordJobWorkPackingForm({
                     name={`component.${index}.quantityConsumed`}
                     defaultValue={consumedFor(component.id)}
                     inputMode="decimal"
-                    placeholder={`0 ${component.uom}`}
+                    placeholder="0"
                     pattern={QUANTITY_PATTERN}
                     title="A positive number, up to 3 decimal places"
-                    className={FIELD}
+                    // Right-aligned and tabular so the figures line up down the
+                    // column rather than each starting wherever its digits do.
+                    className={`${FIELD} text-right tabular-nums`}
                   />
                 </div>
               </div>
@@ -1510,10 +1685,10 @@ export function RecordJobWorkPackingForm({
       </p>
 
       {/* THE REQUISITION FORM'S FOOTER: a rule across the width, Cancel at the
-          left, the primary action at the right. It used to put Record packing
-          first and Cancel beside it, both hard left — the opposite order to
-          every dialog on these screens, on the one form where the primary
-          action writes a GMP record.
+          left, Save at the right. It used to put the primary action first and
+          Cancel beside it, both hard left — the opposite order to every dialog
+          on these screens, on the one form where the primary action writes a
+          GMP record.
 
           CANCEL DOES DIFFERENT THINGS IN THE TWO STATES, and both are real.
           Amending, it abandons the correction and returns to the record. On a
@@ -1530,7 +1705,12 @@ export function RecordJobWorkPackingForm({
           formRef.current?.reset();
         }}
       >
-        <SubmitButton pendingLabel="Recording…">Record packing</SubmitButton>
+        {/* SAVE, not "Record packing". The button says what it does to the
+            form it sits under, and every other form on these screens saves.
+            Naming the document instead — "Record packing" on the packing form,
+            "Record decision" on the decision form — made each one a different
+            verb for the same act. */}
+        <SubmitButton pendingLabel="Saving…">Save</SubmitButton>
       </FormFooter>
       </form>
     </>

@@ -424,6 +424,33 @@ export interface RequiredStockLine {
   materialType: RequiredMaterialKind;
   material: ItemSummary;
 
+  /**
+   * What the formulation calls for, before overage — US-MD-03.
+   *
+   * Sales order quantity x the formulation's per-unit requirement, and nothing
+   * else. Kept beside the final figure so a requisition for 21 kg against a
+   * formulation that says 20 can explain itself on the screen rather than in
+   * somebody's head.
+   */
+  baseRequiredQuantity: string;
+
+  /**
+   * The Default Overage % this material was grossed up by, from the BOM.
+   *
+   * FROM MASTER DATA, NEVER TYPED. It is the formulation's own figure — the
+   * line's own allowance where it sets one, the BOM's default where it does
+   * not — and there is no field anywhere in the requisition flow that lets
+   * somebody enter or override it. Zero where the formulation asks for none.
+   */
+  overagePercent: string;
+
+  /**
+   * What to buy: the base plus its overage.
+   *
+   * THIS is what the shortfall is measured against and what a requisition is
+   * raised for. Ordering the base would buy a batch that comes up short by
+   * exactly what the process spoils.
+   */
   requiredQuantity: string;
   availableQuantity: string;
   shortfallQuantity: string;

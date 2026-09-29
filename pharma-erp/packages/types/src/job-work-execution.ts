@@ -953,7 +953,20 @@ export interface JobWorkBatchView {
    * on a correction rather than asking for them again — the same reason the
    * internal batch record returns its own.
    */
-  packagingConsumed: { itemId: string; quantityConsumed: string }[];
+  packagingConsumed: {
+    itemId: string;
+    quantityConsumed: string;
+    /**
+     * The stock lot the component came out of — US-MD-06's recall trail.
+     *
+     * Null where the packing material is not lot-tracked, or where the line was
+     * recorded before a lot was asked for. Returned so an amendment shows back
+     * the lot that was chosen: without it the picker reopened empty, and saving
+     * from there replaced the row with a lot-less one — losing the trail the
+     * first entry recorded.
+     */
+    lotId: string | null;
+  }[];
 
   /**
    * What the formulation called for against what was actually drawn.
