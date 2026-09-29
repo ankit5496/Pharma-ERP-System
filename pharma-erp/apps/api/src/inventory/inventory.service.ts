@@ -48,9 +48,11 @@ interface HeldFor {
  *     still open, against sales orders that are not cancelled. Cancelling an
  *     order does not yet release its allocations, so they are excluded here
  *     rather than shown as holding stock for an order that no longer exists.
+ *   - Raw and packing material held for the sales order it was bought for
+ *     (`stock_reservations`, set at incoming QC): live holds on usable lots,
+ *     the same rule Procure-to-Pay's stock figures use.
  *   - A job-work principal's material, held for the order it arrived on.
- * Company-owned raw and packing material has no such link, so it is Free until
- * US-INV-06 tags it.
+ * Material with neither link is Free.
  */
 @Injectable()
 export class InventoryService {
@@ -64,7 +66,7 @@ export class InventoryService {
       ...(query.itemType ? { type: query.itemType as ItemType } : {}),
     };
 
-    const [lots, finishedLots, allocations] = await Promise.all([
+    const [lots, finishedLots, allocations, materialHolds] = await Promise.all([
       this.prisma.scoped.stockLot.findMany({
         where: {
           status: { in: ['USABLE', 'QUARANTINE', 'ON_HOLD'] },
@@ -111,9 +113,33 @@ export class InventoryService {
           salesOrder: { select: { id: true, orderNumber: true } },
         },
       }),
+      // Raw and packing material held for the sales order it was bought for,
+      // set at incoming QC. Same rule as StockService.reservedByItem — live
+      // holds on usable lots — so this screen and Procure-to-Pay agree.
+      this.prisma.scoped.stockReservation.findMany({
+        where: { releasedAt: null, stockLot: { status: 'USABLE' } },
+        select: {
+          stockLotId: true,
+          quantity: true,
+          salesOrder: { select: { id: true, orderNumber: true } },
+        },
+      }),
     ]);
 
-    const reservationsByBatch = groupReservations(allocations);
+    const reservationsByBatch = holdsBySalesOrder(
+      allocations.map((allocation) => ({
+        key: allocation.batchId,
+        quantity: allocation.quantityAllocated.minus(allocation.quantityDispatched),
+        salesOrder: allocation.salesOrder,
+      })),
+    );
+    const holdsByLot = holdsBySalesOrder(
+      materialHolds.map((hold) => ({
+        key: hold.stockLotId,
+        quantity: hold.quantity,
+        salesOrder: hold.salesOrder,
+      })),
+    );
     const now = new Date();
 
     const rows: Row[] = [
@@ -128,7 +154,7 @@ export class InventoryService {
           status: lot.status as StockBatchStatus,
           principalOwned: lot.ownership === 'PRINCIPAL_OWNED',
           available: lot.quantityAvailable,
-          reservations: principalHold(lot),
+          reservations: [...principalHold(lot), ...(holdsByLot.get(lot.id) ?? [])],
           item: lot.item,
           now,
         }),
@@ -208,34 +234,35 @@ function principalHold(lot: {
   ];
 }
 
-/** Open allocations per batch, summed per sales order, net of dispatch. */
-function groupReservations(
-  allocations: {
-    batchId: string;
-    quantityAllocated: Prisma.Decimal;
-    quantityDispatched: Prisma.Decimal;
+/**
+ * Holds per batch (or lot), summed per sales order. Used for finished-goods
+ * allocations (net of dispatch) and raw/packing material holds alike, so one
+ * order holding a batch on several lines reads as one reservation.
+ */
+function holdsBySalesOrder(
+  holds: {
+    key: string;
+    quantity: Prisma.Decimal;
     salesOrder: { id: string; orderNumber: string };
   }[],
 ) {
-  const byBatch = new Map<string, Map<string, { number: string; quantity: Prisma.Decimal }>>();
+  const byKey = new Map<string, Map<string, { number: string; quantity: Prisma.Decimal }>>();
 
-  for (const allocation of allocations) {
-    const remaining = allocation.quantityAllocated.minus(allocation.quantityDispatched);
+  for (const hold of holds) {
+    if (hold.quantity.lessThanOrEqualTo(0)) continue;
 
-    if (remaining.lessThanOrEqualTo(0)) continue;
+    const orders = byKey.get(hold.key) ?? new Map();
+    const existing = orders.get(hold.salesOrder.id);
 
-    const orders = byBatch.get(allocation.batchId) ?? new Map();
-    const existing = orders.get(allocation.salesOrder.id);
-
-    orders.set(allocation.salesOrder.id, {
-      number: allocation.salesOrder.orderNumber,
-      quantity: existing ? existing.quantity.plus(remaining) : remaining,
+    orders.set(hold.salesOrder.id, {
+      number: hold.salesOrder.orderNumber,
+      quantity: existing ? existing.quantity.plus(hold.quantity) : hold.quantity,
     });
-    byBatch.set(allocation.batchId, orders);
+    byKey.set(hold.key, orders);
   }
 
   return new Map(
-    [...byBatch].map(([batchId, orders]) => [
+    [...byKey].map(([batchId, orders]) => [
       batchId,
       [...orders].map(([orderId, order]): HeldFor => ({
         kind: 'SALES_ORDER',

@@ -11,9 +11,10 @@
  *
  * RESERVATION IS READ, NOT DECIDED. A batch counts as reserved only where the
  * data already ties it to an order: Order-to-Cash allocation against a sales
- * order (net of dispatch), or a job-work principal's material received against
- * one job-work order. Company-owned raw and packing material has no such link
- * today, so it is Free here — see US-INV-06 for tagging it at receipt.
+ * order (net of dispatch), raw or packing material held at incoming QC for the
+ * sales order it was bought for (`stock_reservations`), or a job-work
+ * principal's material received against one job-work order. Anything else is
+ * Free.
  *
  * Quantities are decimal strings, as everywhere else in the API.
  */
@@ -43,7 +44,8 @@ export const EXPIRING_WITHIN_OPTIONS = [30, 60, 90, 180] as const;
 /**
  * What a batch is held for.
  *
- * `SALES_ORDER` comes from Order-to-Cash allocation, net of dispatch.
+ * `SALES_ORDER` comes from Order-to-Cash allocation, net of dispatch, or —
+ * for raw and packing material — from a live hold set at incoming QC.
  * `JOB_WORK_ORDER` is a principal's own material, received against one
  * job-work order and usable only for it.
  */
