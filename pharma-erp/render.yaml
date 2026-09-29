@@ -8,6 +8,10 @@
 # apps/server/src/index.ts and docs/Service-Merge-Plan-Web-API.docx for why.
 # Deploy with Render → New → Blueprint, pointed at this repository.
 #
+# Configured for Render's FREE plan (service and database). See the notes on
+# each `plan:` key for the limits, and on `startCommand` for where migrations
+# run instead of preDeployCommand.
+#
 # BEFORE the first deploy succeeds you must do two manual things — see
 # "Deploying to Render" in the README for the walkthrough:
 #
@@ -37,7 +41,9 @@ databases:
   - name: pharma-erp-main-db
     databaseName: pharma_erp_main_db
     user: pharma_erp_main_db_user
-    plan: basic-256mb
+    # Free tier: 1 GB storage, one free database per workspace, and it EXPIRES
+    # 30 days after creation unless upgraded to a paid plan (e.g. basic-256mb).
+    plan: free
     postgresMajorVersion: '16'
     ipAllowList: [] # only reachable from inside Render's network
 
@@ -48,7 +54,10 @@ services:
   - type: web
     name: pharma-erp
     runtime: node
-    plan: starter
+    # Free tier: 512 MB RAM, no shell, no preDeployCommand, and the instance
+    # spins down after 15 minutes idle (the next request waits ~1 minute).
+    # Switch to `starter` if the process is killed for running out of memory.
+    plan: free
     region: oregon # keep the database and this service in one region
     branch: main
     # The project lives in a subfolder of the repository, so every command runs
@@ -67,11 +76,13 @@ services:
     # build then fails with "Command "turbo" not found" before a single package
     # builds. --prod=false forces devDependencies in regardless of NODE_ENV.
     buildCommand: corepack enable && pnpm install --frozen-lockfile --prod=false && pnpm turbo run build --filter=@pharma-erp/api --filter=@pharma-erp/web --filter=@pharma-erp/server
-    startCommand: node apps/server/dist/index.js
-    # Migrations run once per deploy, before the new instance takes traffic.
-    # Requires a paid instance type; on the free tier, run `pnpm db:migrate:deploy`
-    # from a shell against MIGRATION_DATABASE_URL instead.
-    preDeployCommand: pnpm --filter @pharma-erp/database db:migrate:deploy
+    # Migrations run at start-up, before the server binds its port: the free tier
+    # has no preDeployCommand. They run at runtime rather than in the build
+    # because the running instance is what reaches the database's internal URL
+    # (MIGRATION_DATABASE_URL). `prisma migrate deploy` is a no-op when nothing
+    # is pending, so each cold start pays only a few seconds for it. On a paid
+    # plan, move this back to `preDeployCommand`.
+    startCommand: pnpm --filter @pharma-erp/database db:migrate:deploy && node apps/server/dist/index.js
     healthCheckPath: /health/ready
     autoDeploy: true
     envVars:
