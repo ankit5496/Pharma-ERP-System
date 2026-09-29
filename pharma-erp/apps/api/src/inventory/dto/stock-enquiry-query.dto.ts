@@ -1,9 +1,27 @@
 import { Type } from 'class-transformer';
-import { IsIn, IsInt, IsOptional, IsString, IsUUID, Max, MaxLength, Min } from 'class-validator';
+import {
+  ArrayMaxSize,
+  ArrayMinSize,
+  ArrayUnique,
+  IsArray,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Matches,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 import {
+  MAX_EXPIRY_ALERT_DAYS,
+  MAX_EXPIRY_ALERT_WINDOWS,
+  MIN_EXPIRY_ALERT_DAYS,
   RESERVATION_STATES,
   STOCK_BATCH_STATUSES,
+  type NearExpiryQuery,
   type ReservationState,
   type StockBatchStatus,
   type StockEnquiryQuery,
@@ -52,4 +70,43 @@ export class StockEnquiryQueryDto implements StockEnquiryQuery {
   @Min(1)
   @Max(3650)
   expiringWithin?: number;
+}
+
+export class NearExpiryQueryDto implements NearExpiryQuery {
+  @IsOptional()
+  @IsUUID()
+  itemId?: string;
+
+  @IsOptional()
+  @IsString()
+  @trim()
+  @MaxLength(120)
+  search?: string;
+
+  /** Checked against this company's own windows by the service. */
+  @IsOptional()
+  @Matches(/^(EXPIRED|WITHIN_\d{1,3})$/, { message: 'bucket must be EXPIRED or WITHIN_<days>' })
+  bucket?: string;
+}
+
+/**
+ * The near-expiry windows, in days. Bounds mirror
+ * `tenants_expiry_alert_days_sane`, so a refusal is a sentence, not a
+ * constraint violation.
+ */
+export class UpdateExpiryAlertsDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(MAX_EXPIRY_ALERT_WINDOWS)
+  @ArrayUnique({ message: 'alertDays must not repeat a window' })
+  @IsInt({ each: true, message: 'each alert window must be a whole number of days' })
+  @Min(MIN_EXPIRY_ALERT_DAYS, {
+    each: true,
+    message: `each alert window must be at least ${MIN_EXPIRY_ALERT_DAYS} day`,
+  })
+  @Max(MAX_EXPIRY_ALERT_DAYS, {
+    each: true,
+    message: `each alert window must be at most ${MAX_EXPIRY_ALERT_DAYS} days`,
+  })
+  alertDays!: number[];
 }

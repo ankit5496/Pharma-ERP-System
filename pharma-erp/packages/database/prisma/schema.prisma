@@ -142,6 +142,15 @@ model Tenant {
   /// number.
   batchNumberPrefix String @default("B") @map("batch_number_prefix") @db.VarChar(8)
 
+  /// The near-expiry alert windows, in days (US-INV-03).
+  ///
+  /// A column rather than a constant for the same reason as the licence lead
+  /// time: the criterion says "configurable, not hard-coded", and how early
+  /// slow stock needs flagging is a commercial call — a product that moves
+  /// weekly needs less warning than one sold in annual tenders. Stored in any
+  /// order; readers sort it. 90/60/30 is the specified default.
+  expiryAlertDays Int[] @default([90, 60, 30]) @map("expiry_alert_days")
+
   createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
   /// Soft delete. A tenant is never physically removed — its records are
