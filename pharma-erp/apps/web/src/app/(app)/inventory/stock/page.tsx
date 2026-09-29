@@ -16,7 +16,7 @@ import { FilterButton, FilterPanel, SearchBox } from '@/components/procurement/f
 import { EmptyState, ErrorState, Panel } from '@/components/procurement/ui';
 import { apiFetch } from '@/lib/api';
 
-export const metadata: Metadata = { title: 'Stock Enquiry · Dashboard & Reports' };
+export const metadata: Metadata = { title: 'Stock Enquiry · Reports' };
 
 /** The URL keys the API accepts; anything else in the URL stays in the browser. */
 const FORWARDED = [
