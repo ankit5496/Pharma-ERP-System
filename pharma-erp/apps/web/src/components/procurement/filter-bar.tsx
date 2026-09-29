@@ -32,6 +32,11 @@ const FILTER_KEYS = [
   'principalId',
   'billingModel',
   'role',
+  // Inventory: what kind of item, whether a batch is held for an order, and
+  // how soon it expires.
+  'itemType',
+  'reservation',
+  'expiringWithin',
   'dateFrom',
   'dateTo',
 ] as const;
@@ -248,6 +253,9 @@ export function FilterPanel({
   principals,
   billingModels,
   roles,
+  itemTypes,
+  reservations,
+  expiringWithin,
   showDates = true,
   searchableLookups = true,
 }: {
@@ -263,6 +271,12 @@ export function FilterPanel({
   billingModels?: readonly FilterOption[];
   /** User settings: the role a person was assigned. */
   roles?: readonly FilterOption[];
+  /** Inventory: raw material, packing material, finished good. */
+  itemTypes?: readonly FilterOption[];
+  /** Inventory: reserved, partially reserved, free. */
+  reservations?: readonly FilterOption[];
+  /** Inventory: day counts, e.g. "Within 30 days". */
+  expiringWithin?: readonly FilterOption[];
   showDates?: boolean;
   /** Renders the record lookups — vendor, item, requisition — as typeable. */
   /**
@@ -507,6 +521,36 @@ export function FilterPanel({
               options={roles}
               allLabel="Any role"
               onChange={(value) => set('role', value)}
+            />
+          )}
+
+          {itemTypes && itemTypes.length > 0 && (
+            <Select
+              label="Item type"
+              value={draft.itemType ?? ''}
+              options={itemTypes}
+              allLabel="Any type"
+              onChange={(value) => set('itemType', value)}
+            />
+          )}
+
+          {reservations && reservations.length > 0 && (
+            <Select
+              label="Reservation"
+              value={draft.reservation ?? ''}
+              options={reservations}
+              allLabel="Reserved or free"
+              onChange={(value) => set('reservation', value)}
+            />
+          )}
+
+          {expiringWithin && expiringWithin.length > 0 && (
+            <Select
+              label="Expiring"
+              value={draft.expiringWithin ?? ''}
+              options={expiringWithin}
+              allLabel="Any expiry"
+              onChange={(value) => set('expiringWithin', value)}
             />
           )}
 

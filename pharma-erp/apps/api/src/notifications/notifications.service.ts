@@ -1,7 +1,7 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 
 import {
-  LICENCE_ALERT_HREF,
+  LICENCE_REGISTER_HREF,
   LICENCE_TYPE_LABELS,
   LICENCE_VISIBLE_TO,
   type LicenceSummary,
@@ -158,6 +158,6 @@ function toLicenceNotification(licence: LicenceSummary): Notification {
     severity: expired ? 'critical' : 'warning',
     title: expired ? `${label} has expired` : `${label} expires soon`,
     message,
-    href: LICENCE_ALERT_HREF,
+    href: LICENCE_REGISTER_HREF,
   };
 }

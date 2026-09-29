@@ -450,7 +450,17 @@ export class RequisitionsService {
       reorderLevelAtRequest:
         row.reorderLevelAtRequest === null ? null : qty(row.reorderLevelAtRequest),
       requiredQuantity: qty(row.requiredQuantity),
-      triggerType: row.triggerType,
+      // NARROWED, because the database enum is WIDER than this one and always
+      // will be. `PRODUCTION_SHORTFALL` was added for US-MD-07, which has since
+      // been withdrawn; PostgreSQL cannot remove a value from an enum without
+      // recreating the type and rewriting every requisition row, which is not a
+      // trade worth making for a label nothing writes.
+      //
+      // Safe because nothing can produce one: no row carries it (verified when
+      // the feature was withdrawn), no code path sets it, and the form offers
+      // only the two values below. Should one ever appear, it reads as MANUAL —
+      // which is what a requisition with no automatic source actually is.
+      triggerType: row.triggerType === 'PRODUCTION_SHORTFALL' ? 'MANUAL' : row.triggerType,
       productionPlan: row.productionPlan ? toProductionPlanSummary(row.productionPlan) : null,
       preferredVendor: row.preferredVendor,
       // THE DEMAND IT SERVES, read back through the order rather than copied.

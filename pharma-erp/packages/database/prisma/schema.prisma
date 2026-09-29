@@ -1175,6 +1175,19 @@ enum PackagingLevel {
 enum RequisitionTriggerType {
   AUTO_REORDER
   MANUAL
+
+  /// WITHDRAWN, and declared only so this enum matches the database.
+  ///
+  /// Added for US-MD-07, which has since been withdrawn along with the table it
+  /// wrote. PostgreSQL cannot remove a value from an enum without recreating
+  /// the type and rewriting every requisition that uses it, which is not a
+  /// trade worth making against a live table for a label nothing writes.
+  ///
+  /// NOTHING SETS THIS. No row carries it, no code path produces one, and the
+  /// shared `RequisitionTriggerType` in @pharma-erp/types deliberately does not
+  /// list it — the API narrows it to MANUAL on the way out. Removing the line
+  /// here would leave the schema claiming a database that does not exist.
+  PRODUCTION_SHORTFALL
 }
 
 enum ProductionPlanStatus {

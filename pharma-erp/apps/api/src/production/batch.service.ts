@@ -26,7 +26,7 @@ import {
   todayUtc,
   type ItemRow,
 } from './production.mappers';
-import { ProductionService } from './production.service';
+import { effectiveOverage, ProductionService, requiredWithOverage } from './production.service';
 
 const ZERO = new Prisma.Decimal(0);
 
@@ -199,6 +199,8 @@ export class BatchService {
           'check the counts, or correct the yield on the manufacturing record.',
       );
     }
+
+    await this.assertPackingMatchesSpecification(batch.productionOrderId, dto);
 
     await this.prisma.transaction(async (tx) => {
       const record = await tx.batchPackingRecord.upsert({
@@ -391,6 +393,102 @@ export class BatchService {
   }
 
   /**
+   * US-PROD-04: "Packing Materials Consumed ... checked against the Packaging
+   * Requirement Master."
+   *
+   * The form already offers only the components on the specification, so this
+   * refuses what a form cannot reach: a direct API call, or a stale page whose
+   * specification was edited after it loaded. Two things are checked.
+   *
+   * THE PACK VARIANT MUST BE ONE THIS PRODUCT HAS. `packVariant` is a free
+   * string on the DTO — it is the name of a presentation, not an enum, because
+   * tenants define their own. That makes a typo ("10x10 cartn") silently
+   * recordable, and a batch labelled with a pack that does not exist cannot be
+   * reconciled against the specification it was supposedly packed to.
+   *
+   * EVERY COMPONENT MUST BE ON THAT SPECIFICATION. A carton belonging to a
+   * different product's pack is not a packing error to warn about; it is a
+   * record that would send an investigator to the wrong material on a recall.
+   *
+   * WHAT IS DELIBERATELY NOT CHECKED: that every MANDATORY line is present.
+   * Packing is recorded in one pass here, but the record is amendable until the
+   * quality gate, and refusing a partial entry would make it impossible to save
+   * progress. The master's own `requirement` column distinguishes blocking from
+   * advisory, and the gate is the place that decides a batch is complete.
+   *
+   * Outside the transaction: it only reads, and a refusal should happen before
+   * anything is written rather than by rolling back.
+   */
+  private async assertPackingMatchesSpecification(
+    productionOrderId: string,
+    dto: RecordPackingDto,
+  ): Promise<void> {
+    const variant = dto.packVariant?.trim();
+    const consumptions = dto.consumptions ?? [];
+
+    // Nothing asserted about the pack: no specification to check it against.
+    if (!variant && consumptions.length === 0) return;
+
+    const order = await this.prisma.scoped.productionOrder.findFirst({
+      where: { id: productionOrderId },
+      select: { productId: true },
+    });
+
+    if (!order) throw new NotFoundException('That work order does not exist.');
+
+    const specifications = await this.prisma.scoped.packagingRequirement.findMany({
+      where: { productId: order.productId, isActive: true, deletedAt: null },
+      select: { packVariant: true, lines: { select: { itemId: true } } },
+    });
+
+    // A product with no active specification at all. Raising a work order
+    // already refuses this, so reaching it means one was deactivated mid-batch
+    // — the packing in hand is still a fact worth recording, and the quality
+    // gate is where an unspecified pack should be argued about.
+    if (specifications.length === 0) return;
+
+    const matched = variant
+      ? specifications.find((specification) => specification.packVariant === variant)
+      : specifications.length === 1
+        ? specifications[0]
+        : undefined;
+
+    if (variant && !matched) {
+      const known = specifications.map((s) => s.packVariant).join(', ');
+
+      throw new BadRequestException(
+        `"${variant}" is not a pack variant on this product's packaging specification. ` +
+          `Recorded variants are: ${known}.`,
+      );
+    }
+
+    // Several specifications and no variant naming which: the components
+    // cannot be attributed to one of them, so there is nothing to check
+    // against. The variant is optional on the DTO and stays that way.
+    if (!matched) return;
+
+    const permitted = new Set(matched.lines.map((line) => line.itemId));
+    const unexpected = consumptions.filter((consumption) => !permitted.has(consumption.itemId));
+
+    if (unexpected.length > 0) {
+      const names = await this.prisma.scoped.item.findMany({
+        where: { id: { in: unexpected.map((consumption) => consumption.itemId) } },
+        select: { code: true, name: true },
+      });
+
+      const listed = names.length
+        ? names.map((item) => `${item.name} (${item.code})`).join(', ')
+        : unexpected.map((consumption) => consumption.itemId).join(', ');
+
+      throw new BadRequestException(
+        `${listed} ${names.length === 1 ? 'is' : 'are'} not on the packaging specification ` +
+          `for ${matched.packVariant}. Record only the components that specification lists, ` +
+          'or amend the specification in Master Data first.',
+      );
+    }
+  }
+
+  /**
    * Planned versus actual consumption, per material.
    *
    * "Planned" is the BOM scaled to the order; "issued" is what the FEFO run
@@ -398,15 +496,26 @@ export class BatchService {
    * with a different fill, or when the BOM was scaled to a quantity that does
    * not divide evenly — small variances are normal, which is exactly why a
    * threshold exists rather than an equality check.
+   *
+   * PLANNED INCLUDES OVERAGE, through the same helper the issue plan uses.
+   * Without it the two sides of the comparison are computed on different rules:
+   * material is ISSUED at the overage-adjusted figure, so measuring it against
+   * the bare BOM quantity reports a variance exactly equal to the overage on
+   * every line — normal, intended wastage flagged as a deviation on every
+   * batch, which is how a variance flag stops meaning anything.
    */
   private async materialVariances(batch: {
     plannedQuantity: Prisma.Decimal;
     productionOrderId: string;
     productionOrder: {
       plannedQuantity: Prisma.Decimal;
-      bom: {
+      bom: BomOverageSource & {
         outputQuantity: Prisma.Decimal;
-        lines: { itemId: string; quantityPer: Prisma.Decimal; item: ItemLike }[];
+        lines: (BomLineOverageSource & {
+          itemId: string;
+          quantityPer: Prisma.Decimal;
+          item: ItemLike;
+        })[];
       };
     };
   }): Promise<BatchMaterialVariance[]> {
@@ -425,7 +534,11 @@ export class BatchService {
     );
 
     return batch.productionOrder.bom.lines.map((line) => {
-      const planned = new Prisma.Decimal(line.quantityPer).mul(scale).toDecimalPlaces(3);
+      const planned = requiredWithOverage(
+        line.quantityPer,
+        scale,
+        effectiveOverage(line, batch.productionOrder.bom),
+      );
       const actual = new Prisma.Decimal(issuedByItem.get(line.itemId) ?? ZERO);
 
       // Guard the divide: a planned quantity of zero cannot occur (the CHECK
@@ -540,6 +653,15 @@ export class BatchService {
  */
 type ItemLike = ItemRow;
 
+/**
+ * The overage columns, named by what the helpers in `production.service` need
+ * rather than restated at each use. Derived from those helpers' own parameters,
+ * so a change to either signature surfaces here as a type error instead of a
+ * silently divergent copy.
+ */
+type BomOverageSource = Parameters<typeof effectiveOverage>[1];
+type BomLineOverageSource = Parameters<typeof effectiveOverage>[0];
+
 interface BatchWithIncludes {
   id: string;
   batchNumber: string;
@@ -563,9 +685,13 @@ interface BatchWithIncludes {
     orderNumber: string;
     plannedQuantity: Prisma.Decimal;
     product: ItemLike;
-    bom: {
+    bom: BomOverageSource & {
       outputQuantity: Prisma.Decimal;
-      lines: { itemId: string; quantityPer: Prisma.Decimal; item: ItemLike }[];
+      lines: (BomLineOverageSource & {
+        itemId: string;
+        quantityPer: Prisma.Decimal;
+        item: ItemLike;
+      })[];
     };
   };
 }
