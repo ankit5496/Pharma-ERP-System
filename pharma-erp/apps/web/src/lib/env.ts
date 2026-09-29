@@ -6,7 +6,14 @@
  * Hand-rolled rather than schema-library-based on purpose: this runs in the
  * client bundle too, and there is no reason to ship a validator to the browser
  * for two variables.
+ *
+ * Server-only in practice: browser code must use `browserApiBase()` from
+ * ./api-url instead, because the module-level validation below throws when
+ * neither variable reaches the bundle — which is the merged deployment's
+ * normal state, since it sets only the runtime API_URL.
  */
+
+import { hasScheme, withDefaultScheme } from './api-url';
 
 interface WebEnv {
   /** Base URL of the API, no trailing slash. */
@@ -56,9 +63,8 @@ function readApiUrl(): string {
   const source = process.env.API_URL ? 'API_URL' : 'NEXT_PUBLIC_API_URL';
 
   let trimmed = raw.trim().replace(/\/+$/, '');
-  const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed);
 
-  if (!hasScheme) {
+  if (!hasScheme(trimmed)) {
     // A missing scheme is tolerated ONLY for NEXT_PUBLIC_API_URL, because
     // Render's Blueprint `fromService` exposes a service's address as `host` — a
     // hostname with no scheme ("pharma-erp-api.onrender.com"), and no property
@@ -84,9 +90,7 @@ function readApiUrl(): string {
     }
 
     // localhost must NOT be upgraded to https: a local API serves plain http.
-    const isLoopback = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(trimmed);
-
-    trimmed = `${isLoopback ? 'http' : 'https'}://${trimmed}`;
+    trimmed = withDefaultScheme(trimmed);
   }
 
   let parsed: URL;

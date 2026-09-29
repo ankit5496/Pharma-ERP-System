@@ -2,7 +2,9 @@
 
 import { useEffect, useState } from 'react';
 
-import { env } from './env';
+// Not ./env: it throws at load when NEXT_PUBLIC_API_URL is absent from the
+// bundle, which crashed the sign-in pages on the merged deployment.
+import { browserApiBase } from './api-url';
 
 /**
  * How long to hold a single wake request open.
@@ -48,7 +50,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 async function probeApi(): Promise<boolean> {
   try {
-    const response = await fetch(`${env.apiUrl}/health/ready`, {
+    const response = await fetch(`${browserApiBase()}/health/ready`, {
       cache: 'no-store',
       // The probe needs no session, and omitting cookies keeps this a simple
       // CORS request against an endpoint that requires no authentication.
