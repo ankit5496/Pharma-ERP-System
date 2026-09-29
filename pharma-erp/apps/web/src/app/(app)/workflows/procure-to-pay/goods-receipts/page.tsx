@@ -25,11 +25,11 @@ import {
   fetchReceivableOrders,
   fetchVendors,
   toListQuery,
-  toOptions,
+  toOptions,  fetchPeopleOptions,
 } from '@/lib/procurement';
 import { requireSession } from '@/lib/session';
 
-export const metadata: Metadata = { title: 'Goods receipts' };
+export const metadata: Metadata = { title: 'Goods Receipts' };
 export const dynamic = 'force-dynamic';
 
 const QC_FILTERS = [
@@ -59,12 +59,14 @@ export default async function GoodsReceiptsPage({
   const preselectedOrderId =
     typeof params.purchaseOrderId === 'string' ? params.purchaseOrderId : undefined;
 
-  const [user, receipts, receivable, vendors, items] = await Promise.all([
+  const [user, receipts, receivable, vendors, items, people] = await Promise.all([
     requireSession(),
     fetchGoodsReceipts(query),
     fetchReceivableOrders(),
     fetchVendors(),
     fetchItems(),
+    // Colleagues, for the Created By filter. One lookup, shared with Job Work.
+    fetchPeopleOptions(),
   ]);
 
   const isFiltered = Object.values(query).some(Boolean);
@@ -72,7 +74,7 @@ export default async function GoodsReceiptsPage({
   return (
     <div className="space-y-6">
       <Panel
-        title="Goods receipts"
+        title="Goods Receipts"
         subtitle={
           receipts.ok
             ? `${receipts.data.total} receipt${receipts.data.total === 1 ? '' : 's'}`
@@ -104,6 +106,7 @@ export default async function GoodsReceiptsPage({
       >
         <FilterPanel
           statuses={QC_FILTERS}
+          raisedBy={people}
           vendors={vendors.ok ? toOptions(vendors.data) : []}
           items={items.ok ? toOptions(items.data) : []}
         />

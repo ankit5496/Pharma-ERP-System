@@ -69,6 +69,7 @@ export class InvoicesService {
 
     if (query.vendorId) where.vendorId = query.vendorId;
     if (query.itemId) where.lines = { some: { itemId: query.itemId } };
+    if (query.raisedById) where.recordedById = query.raisedById;
 
     const between = dateRange(query.dateFrom, query.dateTo);
 

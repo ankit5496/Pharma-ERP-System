@@ -357,7 +357,8 @@ export interface CreateJobWorkMaterialReceiptRequest {
   batchNumber: string;
   receivedQuantity: string;
   manufacturingDate?: string;
-  expiryDate?: string;
+  /** REQUIRED: every drum received has to carry one. Today or later. */
+  expiryDate: string;
   notes?: string;
 }
 
@@ -984,10 +985,10 @@ export const JOB_WORK_PRODUCTION_STAGES = [
 export type JobWorkProductionStage = (typeof JOB_WORK_PRODUCTION_STAGES)[number];
 
 export const JOB_WORK_PRODUCTION_STAGE_LABELS: Record<JobWorkProductionStage, string> = {
-  'production-orders': 'Production orders',
-  'material-issue': 'Material issue',
-  'batch-record': 'Batch record',
-  'batch-release': 'Batch release',
+  'production-orders': 'Production Orders',
+  'material-issue': 'Material Issue',
+  'batch-record': 'Batch Record',
+  'batch-release': 'Batch Release',
 };
 
 export interface JobWorkRegisterRow {

@@ -32,6 +32,11 @@ const FILTER_KEYS = [
   'principalId',
   'billingModel',
   'role',
+  // Inventory: what kind of item, whether a batch is held for an order, and
+  // how soon it expires.
+  'itemType',
+  'reservation',
+  'expiringWithin',
   'dateFrom',
   'dateTo',
 ] as const;
@@ -248,6 +253,9 @@ export function FilterPanel({
   principals,
   billingModels,
   roles,
+  itemTypes,
+  reservations,
+  expiringWithin,
   showDates = true,
   searchableLookups = true,
 }: {
@@ -263,6 +271,12 @@ export function FilterPanel({
   billingModels?: readonly FilterOption[];
   /** User settings: the role a person was assigned. */
   roles?: readonly FilterOption[];
+  /** Inventory: raw material, packing material, finished good. */
+  itemTypes?: readonly FilterOption[];
+  /** Inventory: reserved, partially reserved, free. */
+  reservations?: readonly FilterOption[];
+  /** Inventory: day counts, e.g. "Within 30 days". */
+  expiringWithin?: readonly FilterOption[];
   showDates?: boolean;
   /** Renders the record lookups — vendor, item, requisition — as typeable. */
   /**
@@ -510,6 +524,36 @@ export function FilterPanel({
             />
           )}
 
+          {itemTypes && itemTypes.length > 0 && (
+            <Select
+              label="Item type"
+              value={draft.itemType ?? ''}
+              options={itemTypes}
+              allLabel="Any type"
+              onChange={(value) => set('itemType', value)}
+            />
+          )}
+
+          {reservations && reservations.length > 0 && (
+            <Select
+              label="Reservation"
+              value={draft.reservation ?? ''}
+              options={reservations}
+              allLabel="Reserved or free"
+              onChange={(value) => set('reservation', value)}
+            />
+          )}
+
+          {expiringWithin && expiringWithin.length > 0 && (
+            <Select
+              label="Expiring"
+              value={draft.expiringWithin ?? ''}
+              options={expiringWithin}
+              allLabel="Any expiry"
+              onChange={(value) => set('expiringWithin', value)}
+            />
+          )}
+
           {vendors && vendors.length > 0 && (
             <Select
               label="Vendor"
@@ -532,9 +576,18 @@ export function FilterPanel({
             />
           )}
 
+          {/* CREATED BY, which is what it has always filtered on.
+
+              It used to read "Raised by", from Procure-to-Pay, where a
+              requisition IS raised. The same panel now sits over consignments,
+              dispensing records and batches, none of which anybody raises — so
+              on most screens the label named an act that does not happen there,
+              and a reader looking for who entered a record had to guess that
+              this was it. The URL key stays `raisedById`: it is an identifier,
+              and renaming it would break every link already shared. */}
           {raisedBy && raisedBy.length > 0 && (
             <Select
-              label="Raised by"
+              label="Created by"
               searchable={searchableLookups}
               value={draft.raisedById ?? ''}
               options={raisedBy}
@@ -545,7 +598,10 @@ export function FilterPanel({
 
           {showDates && (
             <>
-              <Control label="Date from">
+              {/* NAMED FOR THE DATE THEY ACTUALLY NARROW. "Date from" begs
+                  the question — a record has a created date, a delivery date,
+                  an expiry — and these two have always been the created one. */}
+              <Control label="Created date from">
                 <input
                   type="date"
                   value={draft.dateFrom ?? ''}
@@ -554,7 +610,7 @@ export function FilterPanel({
                 />
               </Control>
 
-              <Control label="Date to">
+              <Control label="Created date to">
                 <input
                   type="date"
                   value={draft.dateTo ?? ''}
@@ -591,20 +647,31 @@ export function FilterPanel({
 
 /** One cell of the grid: a label above a full-width control. */
 function Control({ label, children }: { label: string; children: ReactNode }) {
-  const id = useId();
+  const generated = useId();
   const ref = useRef<HTMLDivElement>(null);
 
-  // The label is bound by id to whichever control the caller passed, so a cell
-  // does not need to know whether it wraps an input, a select or a date.
+  // WHICHEVER ID THE CONTROL ENDS UP WITH, the label points at THAT one.
+  //
+  // This used to assign the generated id and give up if the control already
+  // had one — which is exactly the case for every searchable filter, since
+  // those pass an id of their own for their listbox wiring. The label was then
+  // bound to an id nothing carried: clicking "Created by" did nothing, and a
+  // screen reader announced an unlabelled combobox. So the binding goes the
+  // other way round when the control has already named itself.
+  const [boundTo, setBoundTo] = useState(generated);
+
   useEffect(() => {
     const control = ref.current?.querySelector('input, select');
 
-    if (control && !control.id) control.id = id;
-  }, [id]);
+    if (!control) return;
+
+    if (control.id) setBoundTo(control.id);
+    else control.id = generated;
+  }, [generated]);
 
   return (
     <div ref={ref}>
-      <label htmlFor={id} className="mb-1 block text-xs font-medium text-slate-600">
+      <label htmlFor={boundTo} className="mb-1 block text-xs font-medium text-slate-600">
         {label}
       </label>
       {children}
@@ -632,7 +699,11 @@ function Select({
     <Control label={label}>
       {searchable ? (
         <SearchableSelect
-          id={`filter-${label.replace(/W+/g, '-').toLowerCase()}`}
+          // ONE MISSING BACKSLASH. This matched the letter W and nothing
+          // else, so a two-word label produced an id with a SPACE in it —
+          // "filter-created by" — which breaks the label's `for`, and with it
+          // clicking the label to reach the control.
+          id={`filter-${label.replace(/\W+/g, '-').toLowerCase()}`}
           options={options}
           value={value}
           onChange={onChange}

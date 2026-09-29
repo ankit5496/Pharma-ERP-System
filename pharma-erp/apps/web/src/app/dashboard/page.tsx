@@ -201,7 +201,7 @@ function LicenceAlertPanel({ alert }: { alert: LicenceAlert }) {
         aria-labelledby="licence-alert"
         className="mb-8 rounded-lg border border-slate-200 bg-white px-6 py-4 shadow-sm"
       >
-        <h2 id="licence-alert" className="scroll-mt-48 text-sm font-semibold text-slate-900">
+        <h2 id="licence-alert" className="text-sm font-semibold text-slate-900">
           Licences
         </h2>
         <p className="mt-1 text-sm text-slate-600">
@@ -230,8 +230,7 @@ function LicenceAlertPanel({ alert }: { alert: LicenceAlert }) {
         <div>
           <h2
             id="licence-alert"
-            // Clears the sticky header when the bell links here by #licence-alert.
-            className={`scroll-mt-48 text-sm font-semibold ${critical ? 'text-red-900' : 'text-amber-900'}`}
+            className={`text-sm font-semibold ${critical ? 'text-red-900' : 'text-amber-900'}`}
           >
             {critical
               ? `${expired.length} ${expired.length === 1 ? 'licence has' : 'licences have'} expired`
@@ -487,12 +486,23 @@ function Widget({ widget }: { widget: StatWidget }) {
     );
   }
 
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4">
+  const body = (
+    <>
       <p className="text-xs uppercase tracking-wide text-slate-500">{widget.label}</p>
       <p className="mt-1 text-2xl font-semibold tabular-nums text-slate-900">{widget.value}</p>
       {widget.detail && <p className="mt-1 text-xs text-slate-500">{widget.detail}</p>}
-    </div>
+    </>
+  );
+
+  return widget.href ? (
+    <Link
+      href={widget.href}
+      className="block rounded-lg border border-slate-200 bg-white p-4 transition hover:border-slate-300 hover:shadow-sm"
+    >
+      {body}
+    </Link>
+  ) : (
+    <div className="rounded-lg border border-slate-200 bg-white p-4">{body}</div>
   );
 }
 

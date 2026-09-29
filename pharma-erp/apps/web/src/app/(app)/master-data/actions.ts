@@ -614,12 +614,15 @@ export async function saveBomAction(
     lines.push({
       itemId: value,
       quantityPer,
-      // An unticked checkbox is absent from FormData entirely, which is how a
-      // form spells false. Packing lines carry no checkbox at all, so they
-      // arrive undefined and the API defaults them to mandatory.
-      ...(match[1] === 'raw'
-        ? { isMandatory: formData.get(`${prefix}.isMandatory`) !== null }
-        : {}),
+      // `isMandatory` IS NOT SENT. The form no longer asks — see the note in
+      // bom-master-form.tsx — so every line arrives undefined and the column
+      // keeps its DEFAULT TRUE, which is what every existing line already
+      // holds.
+      //
+      // Reading it from FormData here would be actively wrong now: an absent
+      // checkbox is indistinguishable from an unticked one, so the old
+      // expression would send false for every raw material on the form and
+      // rewrite the whole formulation on the first save.
       ...(manufacturingStage ? { manufacturingStage } : {}),
       // OMITTED WHEN BLANK, not sent as "0": blank means "use the
       // formulation's default", and sending zero would store "no overage on

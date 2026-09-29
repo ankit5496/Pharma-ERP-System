@@ -21,6 +21,21 @@ export class RecordQcDecisionDto implements RecordQcDecisionRequest {
   @MaxLength(64)
   testReference?: string;
 
+  /**
+   * Where the material is being put, in the store's own words.
+   *
+   * Optional, and defaulted by the service from the verdict — approved store,
+   * quarantine, rejected store — because the three have to be physically
+   * separate and nobody should have to type that every time. Sent when a site
+   * names its areas differently, or when a particular drum goes somewhere
+   * specific.
+   */
+  @IsOptional()
+  @IsString()
+  @trim()
+  @MaxLength(120)
+  storageLocation?: string;
+
   @IsOptional()
   @IsString()
   @trim()

@@ -3,8 +3,6 @@
 import { useState } from 'react';
 
 import {
-  PACKAGING_LEVELS,
-  PACKAGING_LEVEL_LABELS,
   type ItemSummary,
   type ProductionPlanSummary,
 } from '@pharma-erp/types';
@@ -52,8 +50,6 @@ export function RequisitionForm({
    */
   const [itemId, setItemId] = useState(state.values?.itemId ?? '');
   const [planId, setPlanId] = useState('');
-  const [productId, setProductId] = useState('');
-  const [componentId, setComponentId] = useState('');
 
   /** An item as a lookup row: the code is what people search by. */
   const itemOption = (item: ItemSummary) => ({
@@ -61,13 +57,6 @@ export function RequisitionForm({
     label: item.name,
     hint: item.code,
   });
-
-  // Split by type rather than offering every item everywhere: a finished
-  // product is what the material is FOR, a packaging component is part of the
-  // pack, and letting either list offer an API is how wrong data gets entered
-  // by people moving quickly.
-  const finishedGoods = items.filter((item) => item.type === 'FINISHED_GOOD');
-  const packagingItems = items.filter((item) => item.type === 'PACKING_MATERIAL');
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -110,24 +99,30 @@ export function RequisitionForm({
               />
             </Field>
 
+            {/* NO DEFAULT. It used to fall back to the item's reorder quantity
+                when left blank — a figure with no relationship to what anybody
+                had ordered. Requirements come from sales orders now, and a
+                person raising one by hand knows how much they want. */}
             <Field
               label="Requested quantity"
               htmlFor="pr-qty"
               required
-              hint="Blank uses the item's configured reorder quantity."
+              hint="How much to buy."
             >
               <input
                 id="pr-qty"
                 name="requiredQuantity"
                 inputMode="decimal"
+                required
                 defaultValue={state.values?.requiredQuantity ?? ''}
                 className="field-sm w-full"
               />
             </Field>
 
             {/* Fixed, not chosen. A requisition raised on this form is MANUAL
-                by definition; AUTO_REORDER belongs to the system and letting
-                a person select it would put a false trigger in the trail. */}
+                by definition; Auto belongs to the system — it raises them from
+                sales-order shortages — and letting a person select it would put
+                a false trigger in the trail. */}
             <Field label="Trigger type" htmlFor="pr-trigger">
               <input
                 id="pr-trigger"
@@ -171,102 +166,19 @@ export function RequisitionForm({
               />
             </Field>
 
-            <Field
-              label="Finished product"
-              htmlFor="pr-product"
-              hint={
-                finishedGoods.length === 0
-                  ? 'No finished goods in the item master. Leave blank.'
-                  : 'Optional — from the item master.'
-              }
-            >
-              <SearchableSelect
-                id="pr-product"
-                name="finishedProductId"
-                options={finishedGoods.map(itemOption)}
-                value={productId}
-                onChange={setProductId}
-                emptyLabel="Not specified"
-                disabled={finishedGoods.length === 0}
-              />
-            </Field>
+            {/* THE PACKAGING FIELDS HAVE GONE, and their absence is the point.
+                Finished product, pack variant, packaging component, packaging
+                level, quantity per unit and a mandatory flag described a
+                PRODUCT's packaging on a form that requests the purchase of one
+                material. They belong to the Packaging Requirement master,
+                which is where they are maintained and where the Required stock
+                calculation reads them from.
 
-            <Field label="Pack variant" htmlFor="pr-variant" hint="e.g. 10x10 blister.">
-              <input
-                id="pr-variant"
-                name="packVariant"
-                maxLength={128}
-                defaultValue={state.values?.packVariant ?? ''}
-                className="field-sm w-full"
-              />
-            </Field>
+                What the material is FOR still travels, and better: a
+                requisition Auto raised carries its sales order, and the
+                finished product is read back through that order line. */}
           </Section>
 
-          <Section title="Packaging">
-            <Field
-              label="Packaging component"
-              htmlFor="pr-component"
-              hint={
-                packagingItems.length === 0
-                  ? 'No packing materials in the item master. Leave blank.'
-                  : 'Optional — from the item master.'
-              }
-            >
-              <SearchableSelect
-                id="pr-component"
-                name="packagingComponentId"
-                options={packagingItems.map(itemOption)}
-                value={componentId}
-                onChange={setComponentId}
-                emptyLabel="Not specified"
-                disabled={packagingItems.length === 0}
-              />
-            </Field>
-
-            <Field label="Packaging level" htmlFor="pr-level">
-              <select
-                id="pr-level"
-                name="packagingLevel"
-                defaultValue=""
-                className="field-sm w-full"
-              >
-                <option value="">Not specified</option>
-                {PACKAGING_LEVELS.map((level) => (
-                  <option key={level} value={level}>
-                    {PACKAGING_LEVEL_LABELS[level]}
-                  </option>
-                ))}
-              </select>
-            </Field>
-
-            <Field
-              label="Quantity per unit/batch"
-              htmlFor="pr-per"
-              hint="The rate this requirement was worked out from."
-            >
-              <input
-                id="pr-per"
-                name="quantityPerUnit"
-                inputMode="decimal"
-                defaultValue={state.values?.quantityPerUnit ?? ''}
-                className="field-sm w-full"
-              />
-            </Field>
-
-            {/* Mandatory is the default, and the safe reading: a component
-                marked optional can be dropped from an order. */}
-            <Field label="Mandatory or optional" htmlFor="pr-mandatory">
-              <select
-                id="pr-mandatory"
-                name="isMandatory"
-                defaultValue="true"
-                className="field-sm w-full"
-              >
-                <option value="true">Mandatory</option>
-                <option value="false">Optional</option>
-              </select>
-            </Field>
-          </Section>
 
           <Field label="Notes" htmlFor="pr-notes">
             <input

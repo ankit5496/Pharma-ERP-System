@@ -7,13 +7,17 @@ import { useFormStatus } from 'react-dom';
 import { ActionMessage, useAction } from './form-kit';
 
 /**
- * Auto Creation — whether the system may raise requisitions by itself.
+ * Auto — whether the system may raise requisitions by itself.
  *
- * ON, an item whose usable stock falls below its reorder level gets an
- * AUTO_REORDER requisition raised for it, for the item's configured reorder
- * quantity, with no author because the system raised it. OFF, the same
- * shortage is still detected and still reported on the low-stock list — it
- * simply produces no document, and somebody raises one on the form instead.
+ * ON, a material a live sales order needs more of than is free gets a
+ * requisition raised for it, FOR THE SHORTFALL, with no author because the
+ * system raised it. OFF, the same shortage is still worked out and still
+ * reported on the Required stock tab — it simply produces no document, and
+ * somebody raises one on the form instead.
+ *
+ * THE QUANTITY IS THE SHORTFALL, not a reorder quantity off the item master.
+ * That is the change this switch now governs: it used to order a fixed figure
+ * with no relationship to what anybody had ordered.
  *
  * A FORM, NOT A CHECKBOX THAT SAVES ON CHANGE. The setting governs whether the
  * system creates records on its own, so it is worth one deliberate press
@@ -36,7 +40,7 @@ export function AutoCreationToggle({ enabled }: { enabled: boolean }) {
   return (
     <div className="flex flex-col items-end gap-1.5">
       <form action={action} className="flex items-center gap-2">
-        <span className="text-xs font-medium text-slate-600">Auto Creation</span>
+        <span className="text-xs font-medium text-slate-600">Auto</span>
 
         {/* The NEW value, not the current one — pressing the switch is a
             request to change it. */}

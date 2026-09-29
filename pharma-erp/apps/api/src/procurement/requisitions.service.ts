@@ -19,7 +19,7 @@ import { AuditService } from '../common/audit/audit.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantContextService } from '../tenant/tenant-context.service';
 
-import { parsePositive, positiveDifference, qty } from './decimal.util';
+import { parsePositive, qty } from './decimal.util';
 import type { CreateRequisitionDto, UpdateRequisitionDto } from './dto/requisition.dto';
 import { dateRange, paginate } from './filters.util';
 import {
@@ -35,10 +35,15 @@ import { StockService } from './stock.service';
 
 const REQUISITION_INCLUDE = {
   item: { select: ITEM_SELECT },
-  finishedProduct: { select: ITEM_SELECT },
-  packagingComponent: { select: ITEM_SELECT },
+  // THE FINISHED PRODUCT COMES OFF THE SALES ORDER LINE, not off a column of
+  // its own — one fact, in the place that owns it.
+  salesOrderItem: { select: { item: { select: ITEM_SELECT } } },
   preferredVendor: { select: { id: true, name: true } },
   productionPlan: { include: PRODUCTION_PLAN_INCLUDE },
+  // The order the shortage came from, for the trail. Only what is shown —
+  // the product and quantity are already on the requisition, and pulling the
+  // whole order to draw one line would be a page of JSON per row.
+  salesOrder: { select: { id: true, orderNumber: true, customer: { select: { name: true } } } },
   purchaseOrderLines: {
     select: { purchaseOrder: { select: { id: true, number: true, status: true } } },
   },
@@ -186,17 +191,16 @@ export class RequisitionsService {
 
     if (!item) throw new NotFoundException('Item not found.');
 
-    // Defaults to the item's configured reorder quantity, and stays editable.
-    const requiredQuantity =
-      dto.requiredQuantity === undefined || dto.requiredQuantity === ''
-        ? new Prisma.Decimal(item.reorderQuantity ?? 0)
-        : parsePositive(dto.requiredQuantity, 'Required quantity');
-
-    if (requiredQuantity.lessThanOrEqualTo(0)) {
-      throw new BadRequestException(
-        `Enter a quantity: ${item.code} has no reorder quantity configured to default from.`,
-      );
+    // REQUIRED, AND NOT DEFAULTED. It used to fall back to the item master's
+    // reorder quantity — a fixed figure with no relationship to what anybody
+    // had ordered, which is the whole reason requirements now come from sales
+    // orders instead. A person raising one by hand knows how much they want;
+    // guessing on their behalf produced documents nobody could justify.
+    if (dto.requiredQuantity === undefined || dto.requiredQuantity === '') {
+      throw new BadRequestException(`Enter how much of ${item.code} to buy.`);
     }
+
+    const requiredQuantity = parsePositive(dto.requiredQuantity, 'Required quantity');
 
     if (dto.productionPlanId) {
       await this.requireProductionPlan(dto.productionPlanId);
@@ -206,22 +210,11 @@ export class RequisitionsService {
       await this.requireVendor(dto.preferredVendorId);
     }
 
-    // Both resolved through the tenant-scoped client, which is what stops a
-    // requisition citing another company's item master.
-    if (dto.finishedProductId) {
-      await this.requireItem(dto.finishedProductId, 'Finished product');
-    }
-
-    if (dto.packagingComponentId) {
-      await this.requireItem(dto.packagingComponentId, 'Packaging component');
-    }
-
-    const quantityPerUnit =
-      dto.quantityPerUnit === undefined || dto.quantityPerUnit === ''
-        ? null
-        : parsePositive(dto.quantityPerUnit, 'Quantity per unit');
-
-    const stockAtRequest = await this.stock.usableStockForItem(dto.itemId);
+    // WHAT IS FREE, not what is usable. Usable stock includes material already
+    // reserved for another sales order, and a requisition that recorded that
+    // as its starting position would be justifying itself with a figure it
+    // could not actually draw on.
+    const stockAtRequest = await this.stock.freeStockForItem(dto.itemId);
 
     const created = await this.prisma.transaction(async (tx) => {
       const number = await this.numbering.next(tx, tenantId, 'PR');
@@ -232,7 +225,9 @@ export class RequisitionsService {
           number,
           itemId: dto.itemId,
           stockAtRequest,
-          reorderLevelAtRequest: item.reorderLevel ?? 0,
+          // NULL, NOT ZERO. A requisition raised by hand has no threshold
+          // behind it, and a zero here would read as a real one.
+          reorderLevelAtRequest: null,
           requiredQuantity,
           triggerType: 'MANUAL',
           productionPlanId: dto.productionPlanId ?? null,
@@ -241,16 +236,8 @@ export class RequisitionsService {
           requiredByDate: dto.requiredByDate ? new Date(dto.requiredByDate) : null,
           status: 'OPEN',
           notes: dto.notes ?? null,
-
-          finishedProductId: dto.finishedProductId ?? null,
-          packVariant: dto.packVariant || null,
-          packagingComponentId: dto.packagingComponentId ?? null,
-          packagingLevel: dto.packagingLevel ?? null,
-          quantityPerUnit,
-          // Mandatory unless explicitly said otherwise: treating an
-          // unspecified component as optional invites it to be left off an
-          // order.
-          isMandatory: dto.isMandatory ?? true,
+          // NO PACKAGING FIELDS. They describe a product's pack, not a request
+          // to buy one material — see CreateRequisitionDto for the whole note.
         },
         include: REQUISITION_INCLUDE,
       });
@@ -457,23 +444,34 @@ export class RequisitionsService {
       number: row.number,
       item: toItemSummary(row.item),
       stockAtRequest: qty(row.stockAtRequest),
-      reorderLevelAtRequest: qty(row.reorderLevelAtRequest),
-      shortfallAtRequest: qty(
-        positiveDifference(
-          new Prisma.Decimal(row.reorderLevelAtRequest),
-          new Prisma.Decimal(row.stockAtRequest),
-        ),
-      ),
+      // NULL ON EVERYTHING RAISED SINCE requirements began coming from sales
+      // orders. Kept for the ones raised before, which still carry the level
+      // that justified them — see the column's own note.
+      reorderLevelAtRequest:
+        row.reorderLevelAtRequest === null ? null : qty(row.reorderLevelAtRequest),
       requiredQuantity: qty(row.requiredQuantity),
-      triggerType: row.triggerType,
+      // NARROWED, because the database enum is WIDER than this one and always
+      // will be. `PRODUCTION_SHORTFALL` was added for US-MD-07, which has since
+      // been withdrawn; PostgreSQL cannot remove a value from an enum without
+      // recreating the type and rewriting every requisition row, which is not a
+      // trade worth making for a label nothing writes.
+      //
+      // Safe because nothing can produce one: no row carries it (verified when
+      // the feature was withdrawn), no code path sets it, and the form offers
+      // only the two values below. Should one ever appear, it reads as MANUAL —
+      // which is what a requisition with no automatic source actually is.
+      triggerType: row.triggerType === 'PRODUCTION_SHORTFALL' ? 'MANUAL' : row.triggerType,
       productionPlan: row.productionPlan ? toProductionPlanSummary(row.productionPlan) : null,
       preferredVendor: row.preferredVendor,
-      finishedProduct: row.finishedProduct ? toItemSummary(row.finishedProduct) : null,
-      packVariant: row.packVariant,
-      packagingComponent: row.packagingComponent ? toItemSummary(row.packagingComponent) : null,
-      packagingLevel: row.packagingLevel,
-      quantityPerUnit: row.quantityPerUnit === null ? null : qty(row.quantityPerUnit),
-      isMandatory: row.isMandatory,
+      // THE DEMAND IT SERVES, read back through the order rather than copied.
+      salesOrder: row.salesOrder
+        ? {
+            id: row.salesOrder.id,
+            number: row.salesOrder.orderNumber,
+            customerName: row.salesOrder.customer.name,
+          }
+        : null,
+      finishedProduct: row.salesOrderItem ? toItemSummary(row.salesOrderItem.item) : null,
       // Null for an auto-reorder: the system raised it and the trail says so.
       requestedBy: row.requestedById ? (people.get(row.requestedById) ?? null) : null,
       requestedById: row.requestedById,

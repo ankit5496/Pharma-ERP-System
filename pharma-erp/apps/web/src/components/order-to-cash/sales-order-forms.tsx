@@ -16,11 +16,10 @@ import {
   cancelSalesOrderAction,
   createSalesOrderAction,
   nextSalesOrderNumberAction,
-  updateSalesOrderAction,
   type NewOrderLine,
 } from './actions';
 import { ConfirmDialog } from './confirm-dialog';
-import { EditDialog } from './edit-kit';
+import { EditSalesOrderForm } from './edit-sales-order-form';
 import { CustomerPanels, ProductPanel, Section } from './sales-order-panels';
 import { SearchableSelect } from './searchable-select';
 import { DialogFooter, useDialogClose } from './modal';
@@ -573,36 +572,18 @@ export function NewSalesOrderForm({
                       options={items.map((candidate) => ({
                         value: candidate.id,
                         label: candidate.name,
-                        hint: `${candidate.code} · ${candidate.availableQuantity} saleable`,
+                        hint: candidate.code,
                         keywords: candidate.code,
                       }))}
                     />
 
                     {item && (
                       <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
-                        <span
-                          title={
-                            `${item.quantityOnHand} on hand from released batches, ` +
-                            `${item.quantityReserved} already reserved for other orders.`
-                          }
-                        >
-                          <span
-                            className={
-                              item.availableQuantity === '0.000'
-                                ? 'font-semibold text-red-700'
-                                : undefined
-                            }
-                          >
-                            {item.availableQuantity} saleable
-                          </span>
-                          {/* Shown whenever stock is held: the batch-release
-                              screen reports on-hand, so without this the two
-                              screens disagree with no explanation. */}
-                          {item.quantityReserved !== '0.000' && (
-                            <> ({item.quantityOnHand} on hand − {item.quantityReserved} reserved)</>
-                          )}{' '}
-                          · GST {item.gstRatePercent ?? '0'}%
-                        </span>
+                        {/* The saleable quantity and the GST rate are shown in
+                            the picker's own list, against each product, so
+                            repeating them under the chosen one said the same
+                            thing twice. The badges below stay: they are
+                            refusals and controls, not figures. */}
                         {item.scheduleCategory !== 'NONE' && (
                           <Badge
                             tone="slate"
@@ -752,6 +733,16 @@ export function NewSalesOrderForm({
               <Total label="SGST Amount" value={totalsByHead.sgst} />
               <Total label="CGST Amount" value={totalsByHead.cgst} />
               <Total label="IGST Amount" value={totalsByHead.igst} />
+            </div>
+
+            {/* Their own grid, so they actually fill the line.
+                `auto-fit` collapses only tracks that are empty across the WHOLE
+                grid — with ten boxes above them every column is occupied, so
+                the last two sat in three columns' worth of space with a hole
+                beside them. On a grid of their own there is no third column to
+                leave empty, and the two stretch to the full width. */}
+            <div className="mt-4 grid gap-4 grid-cols-[repeat(auto-fit,minmax(20rem,1fr))]">
+              <Total label="Grand Total" value={preview.total} />
               <Total label="Round Off" value={preview.roundOff} />
             </div>
 
@@ -769,33 +760,22 @@ export function NewSalesOrderForm({
       {/* GRAND TOTAL, outside the section: it is the one figure somebody looks
           for before committing, and it should not be behind a heading that can
           be collapsed. */}
-      {/* The same grey as a read-only field, across the whole block: this is a
-          computed figure like the totals above it, not an input and not a
-          banner. It stays outside the Billing information section because it is
-          what somebody checks before committing, and that section can be
-          collapsed. */}
-      <div className="mt-4 flex flex-wrap items-baseline justify-between gap-3 rounded-lg border border-slate-200 bg-slate-100 px-5 py-4">
-        <p className="text-sm font-semibold uppercase tracking-wide text-slate-600">Grand Total</p>
-        <p className="text-2xl font-semibold tabular-nums text-slate-900">
-          {formatMoney(preview.total.toFixed(2))}
-        </p>
-      </div>
-
       {/* Last before the footer: notes about an order are written once its
           figures are settled, not before them. */}
-      <div className="mt-6">
-        <h4 className="text-sm font-semibold uppercase tracking-wide text-slate-900">Notes</h4>
-        <label htmlFor="so-notes" className="sr-only">
-          Notes
-        </label>
-        <textarea
-          id="so-notes"
-          rows={2}
-          maxLength={2000}
-          value={notes}
-          onChange={(event) => setNotes(event.target.value)}
-          className="field mt-3"
-        />
+      <div className="mt-4">
+        <Section title="Notes">
+          <label htmlFor="so-notes" className="sr-only">
+            Notes
+          </label>
+          <textarea
+            id="so-notes"
+            rows={3}
+            maxLength={2000}
+            value={notes}
+            onChange={(event) => setNotes(event.target.value)}
+            className="field"
+          />
+        </Section>
       </div>
 
       <DialogFooter className="flex gap-2">
@@ -972,23 +952,7 @@ export function SalesOrderRowActions({ order }: { order: SalesOrderListItem }) {
       )}
 
       {editing && (
-        <EditDialog
-          title={`Edit ${order.orderNumber}`}
-          description={order.customerName}
-          note="Lines and pricing are not edited here — changing them re-opens the credit gate. Cancel and raise a new order to re-price."
-          fields={[
-            { name: 'orderDate', label: 'Order date', value: order.orderDate, type: 'date' },
-            {
-              name: 'requestedDeliveryDate',
-              label: 'Requested delivery',
-              value: order.requestedDeliveryDate ?? '',
-              type: 'date',
-            },
-            { name: 'notes', label: 'Notes', value: '', wide: true },
-          ]}
-          onClose={() => setEditing(false)}
-          onSave={(patch) => updateSalesOrderAction(order.id, patch)}
-        />
+        <EditSalesOrderForm order={order} onClose={() => setEditing(false)} />
       )}
 
       {error && (

@@ -9,6 +9,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
 } from '@nestjs/common';
 
 import type { JobWorkAgreementSummary } from '@pharma-erp/types';
@@ -17,6 +18,7 @@ import { Roles } from '../auth/auth.decorators';
 import { SkipAudit } from '../common/audit/audit.decorators';
 
 import { CreateJobWorkAgreementDto, UpdateJobWorkAgreementDto } from './dto/job-work.dto';
+import { JobWorkListQueryDto } from './job-work-list-query';
 import { JobWorkService } from './job-work.service';
 
 /**
@@ -41,8 +43,8 @@ export class JobWorkController {
 
   @Get()
   @SkipAudit('Read-only master data.')
-  async list(): Promise<JobWorkAgreementSummary[]> {
-    return this.jobWork.list();
+  async list(@Query() query: JobWorkListQueryDto): Promise<JobWorkAgreementSummary[]> {
+    return this.jobWork.list(query);
   }
 
   /**

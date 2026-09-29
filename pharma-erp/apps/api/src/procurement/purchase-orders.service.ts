@@ -43,7 +43,16 @@ const PO_INCLUDE = {
   lines: {
     include: {
       item: { select: ITEM_SELECT },
-      requisition: { select: { id: true, number: true } },
+      // AND THE DEMAND BEHIND THE REQUISITION. Two levels rather than one,
+      // because the question a buyer asks of a purchase order is "who is this
+      // for", and the requisition alone cannot answer it.
+      requisition: {
+        select: {
+          id: true,
+          number: true,
+          salesOrder: { select: { id: true, orderNumber: true, customer: { select: { name: true } } } },
+        },
+      },
     },
     orderBy: { createdAt: 'asc' },
   },
@@ -125,6 +134,8 @@ export class PurchaseOrdersService {
     if (query.status) where.status = query.status as PurchaseOrderStatus;
     else where.status = { not: 'DRAFT' };
     if (query.vendorId) where.vendorId = query.vendorId;
+    if (query.raisedById) where.createdById = query.raisedById;
+
     const lineFilters: Prisma.PurchaseOrderLineWhereInput[] = [];
 
     if (query.itemId) lineFilters.push({ itemId: query.itemId });
@@ -856,7 +867,17 @@ export class PurchaseOrdersService {
         return {
           id: line.id,
           item: toItemSummary(line.item),
-          requisition: line.requisition,
+          requisition: line.requisition
+            ? { id: line.requisition.id, number: line.requisition.number }
+            : null,
+          // READ THROUGH THE REQUISITION, never stored on the order itself.
+          salesOrder: line.requisition?.salesOrder
+            ? {
+                id: line.requisition.salesOrder.id,
+                number: line.requisition.salesOrder.orderNumber,
+                customerName: line.requisition.salesOrder.customer.name,
+              }
+            : null,
           quantity: qty(quantity),
           rate: qty(line.rate),
           taxRatePercent: percent(line.taxRatePercent),

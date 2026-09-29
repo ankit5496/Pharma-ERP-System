@@ -61,11 +61,17 @@ const SALES_ORDER_FILTERS = [
 ] as const;
 
 const COLUMNS = [
-  'Order',
+  'Sales Order No.',
   'Customer',
   'Date',
-  col.right('Qty'),
-  col.right('Amount'),
+  'Product',
+  col.right('Quantity'),
+  col.right('SGST'),
+  col.right('CGST'),
+  col.right('IGST'),
+  col.right('Grand Total'),
+  col.right('Round Off'),
+  // Everything the table carried before, kept and moved right.
   'Licence check',
   'Credit check',
   'Status',
@@ -163,7 +169,7 @@ export async function SalesOrdersPanel({
             }
           />
         ) : (
-          <Table columns={COLUMNS}>
+          <Table columns={COLUMNS} minWidth="min-w-[96rem]">
             {paged.rows.map((order) => (
               <OrderRow key={order.id} order={order} />
             ))}
@@ -211,8 +217,27 @@ function OrderRow({ order }: { order: SalesOrderListItem }) {
           )}
         </Cell>
 
+        <Cell>
+          <p className="text-sm text-slate-800">{order.productSummary || '—'}</p>
+          <p className="mt-0.5 text-[11px] text-slate-500">
+            {order.itemCount} line{order.itemCount === 1 ? '' : 's'}
+          </p>
+        </Cell>
+
         <Cell align="right">
           <Quantity value={order.totalQuantity} />
+        </Cell>
+
+        <Cell align="right">
+          <Money value={order.sgstAmount} />
+        </Cell>
+
+        <Cell align="right">
+          <Money value={order.cgstAmount} />
+        </Cell>
+
+        <Cell align="right">
+          <Money value={order.igstAmount} />
         </Cell>
 
         <Cell align="right">
@@ -220,6 +245,10 @@ function OrderRow({ order }: { order: SalesOrderListItem }) {
           <p className="mt-0.5 text-[11px] text-slate-500">
             incl. <Money value={order.taxAmount} /> GST
           </p>
+        </Cell>
+
+        <Cell align="right">
+          <Money value={order.roundOff} />
         </Cell>
 
         <Cell>

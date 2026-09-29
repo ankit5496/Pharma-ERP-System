@@ -16,6 +16,7 @@ import {
   type UserRole,
 } from '@pharma-erp/types';
 
+import { ExpiryService } from '../inventory/expiry.service';
 import { LicencesService } from '../licences/licences.service';
 import { PackagingService } from '../packaging/packaging.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -36,8 +37,6 @@ const PENDING: Record<string, { label: string; module: string }> = {
   purchaseOrders: { label: 'Open purchase orders', module: 'purchase' },
   pendingGrns: { label: 'Awaiting GRN', module: 'purchase' },
   purchaseInvoices: { label: 'Unpaid purchase invoices', module: 'purchase' },
-  batches: { label: 'Batches in stock', module: 'inventory' },
-  expiringBatches: { label: 'Expiring within 90 days', module: 'inventory' },
   lowStock: { label: 'Below reorder level', module: 'inventory' },
   workOrders: { label: 'Open work orders', module: 'production' },
   inProduction: { label: 'In production', module: 'production' },
@@ -80,6 +79,7 @@ export class DashboardService {
     private readonly tenantContext: TenantContextService,
     private readonly licences: LicencesService,
     private readonly packaging: PackagingService,
+    private readonly expiry: ExpiryService,
   ) {}
 
   /**
@@ -185,6 +185,29 @@ export class DashboardService {
     return { leadDays: alertLeadDays, licences };
   }
 
+  /**
+   * One widget per near-expiry bucket — US-INV-03's dashboard. Each links to the
+   * report filtered to that bucket. Expired stock is shown even at zero: "none
+   * expired on the shelf" is the figure a store officer checks first.
+   */
+  private async nearExpiryWidgets(): Promise<{ alertDays: number[]; widgets: StatWidget[] }> {
+    const report = await this.expiry.report({});
+
+    return {
+      alertDays: report.alertDays,
+      widgets: report.buckets.map((bucket) => ({
+        ...ready(
+          `nearExpiry:${bucket.key}`,
+          bucket.key === 'EXPIRED' ? 'Expired, still in stock' : `Expiring in ${bucket.label}`,
+          bucket.batchCount,
+          'inventory',
+          bucket.batchCount === 1 ? 'batch' : 'batches',
+        ),
+        href: `/inventory/near-expiry?bucket=${bucket.key}`,
+      })),
+    };
+  }
+
   /** A role-appropriate framing, so the page does not greet everyone identically. */
   private headline(role: UserRole): string {
     switch (role) {
@@ -272,11 +295,13 @@ export class DashboardService {
     }
 
     if (allowed.has('inventory')) {
+      const expiry = await this.nearExpiryWidgets();
+
       sections.push({
         key: 'inventory',
         title: 'Inventory & batches',
-        note: 'Batch tracking is not built yet.',
-        widgets: [pending('batches'), pending('expiringBatches'), pending('lowStock')],
+        note: `Near-expiry batches by this company's windows (${expiry.alertDays.join(' / ')} days). Open one to see the batches.`,
+        widgets: [...expiry.widgets, pending('lowStock')],
       });
     }
 

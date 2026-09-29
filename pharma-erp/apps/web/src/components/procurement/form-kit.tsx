@@ -240,6 +240,37 @@ export function Field({
  * success would throw away a rejected form and everything typed into it — the
  * one thing a failed save must never do.
  */
+/**
+ * A value the system decided, shown but not editable.
+ *
+ * THE SHADED BOX IS THE WHOLE MESSAGE — the field is visibly not an input, so
+ * it needs no badge saying so.
+ *
+ * SHARED, because a read-only view is the same thing on every screen: a
+ * consignment, a required-stock line, a job work agreement. Three spellings of
+ * "a value you cannot change" is how three screens come to look like three
+ * products.
+ */
+export function Derived({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+}) {
+  return (
+    <div>
+      <span className="field-label">{label}</span>
+      <div className="mt-1.5 flex min-h-[2.5rem] flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+        <span className="text-sm font-medium text-slate-800">{value}</span>
+      </div>
+      {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
+    </div>
+  );
+}
+
 export function Disclosure({
   label,
   title,
@@ -252,6 +283,7 @@ export function Disclosure({
   minHeight,
   isOpen,
   onOpenChange,
+  disabledReason = null,
 }: {
   label: string;
   title: string;
@@ -281,6 +313,19 @@ export function Disclosure({
    */
   isOpen?: boolean;
   onOpenChange?: (open: boolean) => void;
+  /**
+   * WHY THE FORM CANNOT BE OPENED, which disables the trigger AND says so.
+   *
+   * A reason rather than a boolean, deliberately: a greyed-out button that
+   * offers no explanation is the most annoying control in any application,
+   * and the sentence is shown on hover and to assistive technology. Null means
+   * the form opens normally.
+   *
+   * IT IS A COURTESY, NOT THE ENFORCEMENT. The API refuses the same thing on
+   * its own terms; this only saves somebody from filling in a form that was
+   * always going to be rejected.
+   */
+  disabledReason?: string | null;
   children: (close: () => void) => ReactNode;
 }) {
   const controlled = isOpen !== undefined;
@@ -326,7 +371,10 @@ export function Disclosure({
         <button
           type="button"
           onClick={() => setOpen(true)}
-          className="h-9 whitespace-nowrap rounded-md bg-slate-900 px-3 text-sm font-medium text-white transition hover:bg-slate-800"
+          disabled={disabledReason !== null}
+          title={disabledReason ?? undefined}
+          aria-describedby={undefined}
+          className="h-9 whitespace-nowrap rounded-md bg-slate-900 px-3 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-500 disabled:hover:bg-slate-300"
         >
           {label}
         </button>

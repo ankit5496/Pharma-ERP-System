@@ -5,6 +5,8 @@ import type { BillingModel, JobWorkRegisterGroup, JobWorkRegisterRow } from '@ph
 
 import { PrismaService } from '../prisma/prisma.service';
 
+import { jobWorkOrderWhere, type JobWorkListQueryDto } from './job-work-list-query';
+
 const ZERO = new Prisma.Decimal(0);
 
 /**
@@ -45,10 +47,19 @@ export class JobWorkRegisterService {
    *
    * Four aggregate queries and one order listing, rather than N+1 per order:
    * the register is the one screen that reads every job-work order at once.
+   *
+   * THE FILTERS NARROW THE ORDER LISTING, and everything else follows from it:
+   * the four aggregates are keyed on the ids that survived, so a register
+   * filtered to one month totals that month. Filtering the GROUPS afterwards
+   * would have left each group's totals counting rows the reader can no longer
+   * see — a heading that says 4,000 kg received over a list showing 300.
+   *
+   * THE SAME WHERE CLAUSE THE ORDER LIST USES, so a search that finds an order
+   * on the Job Work Orders screen finds it here too.
    */
-  async register(principalId?: string): Promise<JobWorkRegisterGroup[]> {
+  async register(query: JobWorkListQueryDto = {}): Promise<JobWorkRegisterGroup[]> {
     const orders = await this.prisma.scoped.jobWorkOrder.findMany({
-      where: { deletedAt: null, ...(principalId ? { principalId } : {}) },
+      where: { deletedAt: null, ...jobWorkOrderWhere(query) },
       include: {
         principal: { select: { id: true, name: true } },
         agreement: { select: { id: true, agreementReference: true } },

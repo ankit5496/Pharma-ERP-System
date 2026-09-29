@@ -85,7 +85,7 @@ export const WORKFLOWS: readonly Workflow[] = [
     steps: [
       {
         key: 'sales-orders',
-        label: 'Sales orders',
+        label: 'Sales Orders',
         purpose: 'Orders received from a distributor, priced and confirmed.',
         state: 'ready',
       },
@@ -93,31 +93,30 @@ export const WORKFLOWS: readonly Workflow[] = [
   },
   {
     key: 'procure-to-pay',
-    label: 'Procure-to-Pay',
+    label: 'Procure to Pay',
     purpose:
-      'Manage the complete process of procuring raw materials, from identifying low stock through vendor payment.',
+      "Manage the complete process of procuring raw materials, from a sales order's material requirement through vendor payment.",
     steps: [
       {
         // FIRST, because it is where the work starts. Nothing in this workflow
-        // happens until something runs short, and a buyer opening the module
-        // wants to see what needs buying before seeing what has been asked
-        // for. It was a strip inside the requisitions screen; a shortage list
-        // is worth its own table.
-        key: 'low-stock',
-        label: 'Low stock',
+        // happens until a customer orders something, and a buyer opening the
+        // module wants to see what has to be bought before seeing what has
+        // been asked for.
+        key: 'required-stock',
+        label: 'Required Stock',
         purpose:
-          'Items whose usable stock has fallen below their reorder level, and what is already on order for them.',
+          "What live sales orders need, worked out from each finished product's formulation and pack specification, against what is free.",
         state: 'ready',
       },
       {
         key: 'requisitions',
-        label: 'Purchase requisitions',
+        label: 'Purchase Requisitions',
         purpose: 'Requests to buy, raised by hand or automatically when stock runs low.',
         state: 'ready',
       },
       {
         key: 'purchase-orders',
-        label: 'Purchase orders',
+        label: 'Purchase Orders',
         purpose: 'Approved requisitions placed on a vendor, with rates, tax and delivery terms.',
         state: 'ready',
       },
@@ -139,20 +138,20 @@ export const WORKFLOWS: readonly Workflow[] = [
         // what has since been consumed — read in the order the work actually
         // happens, it belongs here rather than at the end.
         key: 'stock-ledger',
-        label: 'Raw material stock',
+        label: 'Raw Material Stock',
         purpose:
           'Batch-wise raw material stock and every movement behind it, in first-expiry-first-out order.',
         state: 'ready',
       },
       {
         key: 'invoices',
-        label: 'Purchase invoices',
+        label: 'Purchase Invoices',
         purpose: 'Vendor invoices matched against the order and the receipt, with GST input tax.',
         state: 'ready',
       },
       {
         key: 'payments',
-        label: 'Vendor payments',
+        label: 'Vendor Payments',
         purpose: 'The payables ledger: what is outstanding, what is overdue, what has been paid.',
         state: 'ready',
       },
@@ -227,7 +226,7 @@ export const WORKFLOWS: readonly Workflow[] = [
     // Job Work still carry one, and `layout.tsx` already renders it only when
     // present.
     key: 'order-to-cash',
-    label: 'Order-to-Cash',
+    label: 'Order to Cash',
     steps: [
       {
         key: 'customers',
@@ -280,19 +279,24 @@ export const WORKFLOWS: readonly Workflow[] = [
       },
       {
         key: 'job-work-orders',
-        label: 'Job work orders',
+        label: 'Job Work Orders',
         purpose: 'What a principal has asked you to make, and on what terms.',
         state: 'ready',
       },
       {
         key: 'inward-materials',
-        label: 'Material received from principal',
+        // NAMED FOR WHAT THE STEP IS, not for what it holds. 'Material Received
+        // From Principal' is also a sub-tab of Material Issue — a read-only
+        // view of the consignment a dispensing officer can draw on — and two
+        // different screens under one name is a name that has stopped working.
+        // This is where a consignment is RECORDED; that one only shows it.
+        label: 'Inward Materials',
         purpose: 'Material supplied by the principal, held on their account rather than yours.',
         state: 'ready',
       },
       {
         key: 'quality-check',
-        label: 'Quality check',
+        label: 'Quality Check',
         purpose: 'Approving what a principal sent, before any of it may be issued.',
         state: 'ready',
       },
@@ -303,7 +307,7 @@ export const WORKFLOWS: readonly Workflow[] = [
         // steps until 2026-09-21; a principal's batch is followed from plan to
         // release in one place, so the navigation now says so.
         key: 'production-to-batch-release',
-        label: 'Production to batch release',
+        label: 'Production to Batch Release',
         purpose:
           'Manufacturing against the order and releasing the finished batch, kept separate ' +
           'from own-brand production.',
@@ -311,7 +315,7 @@ export const WORKFLOWS: readonly Workflow[] = [
       },
       {
         key: 'outward-dispatch',
-        label: 'Outward dispatch',
+        label: 'Outward Dispatch',
         purpose: 'Returning finished goods to the principal, with the batch documentation.',
         state: 'ready',
       },
@@ -323,7 +327,7 @@ export const WORKFLOWS: readonly Workflow[] = [
       },
       {
         key: 'register',
-        label: 'Job-work register',
+        label: 'Job Work Register',
         purpose:
           'Material received, consumed and dispatched per principal — derived from the ' +
           'transactions, never keyed in.',
