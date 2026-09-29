@@ -17,7 +17,7 @@
  */
 
 /** Stable key for each section. Also the URL segment where there is one. */
-export type SectionKey = 'master-data' | 'erp-data';
+export type SectionKey = 'master-data' | 'inventory' | 'erp-data';
 
 export interface AppSection {
   key: SectionKey;
@@ -44,6 +44,13 @@ export const APP_SECTIONS: readonly AppSection[] = [
     purpose: 'The registers the rest of the system refers to.',
     href: '/master-data',
     owns: ['/master-data'],
+  },
+  {
+    key: 'inventory',
+    label: 'Inventory',
+    purpose: 'Stock on hand, batch by batch, with expiry and reservation.',
+    href: '/inventory',
+    owns: ['/inventory'],
   },
   {
     key: 'erp-data',

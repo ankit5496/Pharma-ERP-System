@@ -4,6 +4,7 @@ export * from './dashboard';
 export * from './display';
 export * from './datasets';
 export * from './health';
+export * from './inventory';
 export * from './job-work';
 export * from './job-work-execution';
 export * from './licences';
