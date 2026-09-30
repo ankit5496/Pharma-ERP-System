@@ -47,8 +47,18 @@ export function LoadError({ error }: { error: string }) {
  * number arrives as "100000.000" and printing that everywhere buries the
  * meaningful digits.
  */
-export function Quantity({ value, uom }: { value: string | null; uom?: string }) {
-  if (value === null) return <span className="text-slate-300">—</span>;
+export function Quantity({ value, uom }: { value: string | null | undefined; uom?: string }) {
+  // UNDEFINED COUNTS AS ABSENT, not as a programming error to crash on.
+  //
+  // This guarded `null` alone, so a figure the API did not send — a field
+  // renamed on one side of the wire and not the other, say — reached
+  // `value.includes` and took the whole page down with it. A batch record is
+  // exactly the screen where that is worst: the reader loses the record rather
+  // than one number in it.
+  //
+  // The type now admits undefined too, so the compiler stops promising a value
+  // is there when only a shared interface says so.
+  if (value === null || value === undefined) return <span className="text-slate-300">—</span>;
 
   const trimmed = value.includes('.') ? value.replace(/\.?0+$/, '') : value;
   const grouped = Number(trimmed).toLocaleString('en-IN', { maximumFractionDigits: 3 });
