@@ -3,7 +3,15 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { Prisma } from '@pharma-erp/database';
 import type {
   CheckResult,
+  DispatchStatus,
+  FulfilmentStage,
   OrderCheckResult,
+  SalesOrderTrace,
+  TraceBatch,
+  TraceGoodsReceipt,
+  TracePurchaseOrder,
+  TraceRequisition,
+  TraceWorkOrder,
   SalesOrderDetail,
   SalesOrderItemView,
   SalesOrderListItem,
@@ -14,7 +22,6 @@ import type {
 import { PrismaService } from '../../prisma/prisma.service';
 import { NumberingService } from '../../procurement/numbering.service';
 import { TenantContextService } from '../../tenant/tenant-context.service';
-import { AllocationService } from '../allocation/allocation.service';
 import { licencesOnFile } from '../customers/licences-on-file';
 
 import type { CreateSalesOrderDto, UpdateSalesOrderDto } from './dto/sales-order.dto';
@@ -39,9 +46,6 @@ export class SalesOrdersService {
     private readonly prisma: PrismaService,
     private readonly tenantContext: TenantContextService,
     private readonly numbering: NumberingService,
-    // Reused, never reimplemented: the sellable-stock rule and FEFO both live
-    // in AllocationService, and a second copy here would be a second answer.
-    private readonly allocation: AllocationService,
   ) {}
 
   async list(search?: string): Promise<SalesOrderListItem[]> {
@@ -104,6 +108,199 @@ export class SalesOrdersService {
     return toDetail(order, await this.sellerStateCode());
   }
 
+  /**
+   * Everything that has happened to fill one order — US-SAL-08.
+   *
+   * READ-ONLY AND DERIVED. No trace record is written and none exists: this
+   * walks relationships that are already there, in the direction the business
+   * already works in.
+   *
+   *   sales order → purchase requisitions raised for it
+   *                → the purchase order lines that satisfied them
+   *                → those orders' goods receipts
+   *   sales order → work orders raised for it (US-PROD-01)
+   *                → their batches (the BMR) and packing records (the BPR)
+   *   sales order → allocations and despatches
+   *
+   * Four reads rather than one deep `include`: the procurement and production
+   * chains share no join, and asking for them separately keeps each query flat
+   * enough for the database to use its indexes. They do not depend on each
+   * other, so they run together.
+   */
+  async trace(salesOrderId: string): Promise<SalesOrderTrace> {
+    const order = await this.prisma.scoped.salesOrder.findFirst({
+      where: { id: salesOrderId, deletedAt: null },
+      include: { customer: true },
+    });
+
+    if (!order) throw new NotFoundException('Sales order not found.');
+
+    const [requisitions, workOrders, allocations, dispatches] = await Promise.all([
+      this.prisma.scoped.purchaseRequisition.findMany({
+        where: { salesOrderId, deletedAt: null },
+        include: {
+          item: { select: { code: true, name: true } },
+          // How a requisition became an order: the PO LINE cites it. There is
+          // no requisition-to-order column, and inventing one would duplicate a
+          // link the procurement flow already maintains.
+          purchaseOrderLines: {
+            include: {
+              purchaseOrder: {
+                include: {
+                  vendor: { select: { name: true } },
+                  goodsReceipts: {
+                    where: { deletedAt: null },
+                    include: { lines: { select: { id: true } } },
+                    orderBy: { receiptDate: 'asc' },
+                  },
+                },
+              },
+            },
+          },
+        },
+        orderBy: { createdAt: 'asc' },
+      }),
+
+      this.prisma.scoped.productionOrder.findMany({
+        where: { salesOrderId, deletedAt: null },
+        include: {
+          product: { select: { code: true, name: true } },
+          batches: {
+            where: { deletedAt: null },
+            include: { packingRecord: true },
+            orderBy: { createdAt: 'asc' },
+          },
+        },
+        orderBy: { createdAt: 'asc' },
+      }),
+
+      this.prisma.scoped.batchAllocation.findMany({
+        where: { salesOrderId, status: { in: ['ALLOCATED', 'PARTIALLY_DISPATCHED'] } },
+        select: { quantityAllocated: true },
+      }),
+
+      this.prisma.scoped.dispatch.findMany({
+        where: { salesOrderId, deletedAt: null },
+        include: { salesInvoice: { select: { invoiceNumber: true } } },
+        orderBy: { dispatchDate: 'asc' },
+      }),
+    ]);
+
+    // ---- Procurement -------------------------------------------------------
+    // One purchase order can cover several of this sale's requisitions, and one
+    // requisition can be split across orders. Collected through maps so each
+    // order and each receipt is listed once, with the requisitions it covers.
+    const traceRequisitions: TraceRequisition[] = requisitions.map((requisition) => ({
+      id: requisition.id,
+      number: requisition.number,
+      itemCode: requisition.item.code,
+      itemName: requisition.item.name,
+      quantity: requisition.requiredQuantity.toFixed(3),
+      status: requisition.status,
+      raisedOn: toIsoDate(requisition.createdAt),
+    }));
+
+    const purchaseOrders = new Map<string, TracePurchaseOrder & { requisitionNumbers: string[] }>();
+    const goodsReceipts = new Map<string, TraceGoodsReceipt>();
+
+    for (const requisition of requisitions) {
+      for (const line of requisition.purchaseOrderLines) {
+        const po = line.purchaseOrder;
+        const existing = purchaseOrders.get(po.id);
+
+        if (existing) {
+          if (!existing.requisitionNumbers.includes(requisition.number)) {
+            existing.requisitionNumbers.push(requisition.number);
+          }
+        } else {
+          purchaseOrders.set(po.id, {
+            id: po.id,
+            number: po.number,
+            vendorName: po.vendor.name,
+            status: po.status,
+            orderedOn: toIsoDate(po.poDate),
+            requisitionNumbers: [requisition.number],
+          });
+
+          for (const receipt of po.goodsReceipts) {
+            goodsReceipts.set(receipt.id, {
+              id: receipt.id,
+              number: receipt.number,
+              purchaseOrderNumber: po.number,
+              vendorName: po.vendor.name,
+              receivedOn: toIsoDate(receipt.receiptDate),
+              lineCount: receipt.lines.length,
+            });
+          }
+        }
+      }
+    }
+
+    // ---- Production --------------------------------------------------------
+    // The BMR is the batch and the BPR is its packing record — the names the
+    // Production screens use. Reported as the batch's own fields rather than as
+    // separate rows, because separate rows would imply tables that do not exist.
+    const traceWorkOrders: TraceWorkOrder[] = workOrders.map((workOrder) => ({
+      id: workOrder.id,
+      number: workOrder.orderNumber,
+      productCode: workOrder.product.code,
+      productName: workOrder.product.name,
+      plannedQuantity: workOrder.plannedQuantity.toFixed(3),
+      status: workOrder.status,
+      batches: workOrder.batches.map(
+        (batch): TraceBatch => ({
+          id: batch.id,
+          batchNumber: batch.batchNumber,
+          manufacturedOn: toIsoDate(batch.manufacturedOn),
+          actualQuantity: batch.actualQuantity?.toFixed(3) ?? null,
+          expiryDate: toIsoDate(batch.expiryDate),
+          packedQuantity: batch.packingRecord?.packedQuantity.toFixed(3) ?? null,
+          packedOn: batch.packingRecord ? toIsoDate(batch.packingRecord.packedOn) : null,
+          packVariant: batch.packingRecord?.packVariant ?? null,
+          releaseStatus: batch.releaseStatus,
+          releasedOn: batch.releaseDecidedAt ? toIsoDate(batch.releaseDecidedAt) : null,
+        }),
+      ),
+    }));
+
+    const allocatedQuantity = allocations.reduce(
+      (sum, allocation) => sum.add(allocation.quantityAllocated),
+      new Prisma.Decimal(0),
+    );
+
+    const { stage, stageReason } = deriveStage({
+      orderStatus: order.status,
+      requisitions: traceRequisitions,
+      purchaseOrders: [...purchaseOrders.values()],
+      workOrders: traceWorkOrders,
+      allocationCount: allocations.length,
+      dispatches: dispatches.map((dispatch) => dispatch.status),
+    });
+
+    return {
+      salesOrderId: order.id,
+      orderNumber: order.orderNumber,
+      customerName: order.customer.name,
+      orderStatus: order.status as SalesOrderStatus,
+      stage,
+      stageReason,
+      requisitions: traceRequisitions,
+      purchaseOrders: [...purchaseOrders.values()],
+      goodsReceipts: [...goodsReceipts.values()],
+      workOrders: traceWorkOrders,
+      allocationCount: allocations.length,
+      allocatedQuantity: allocatedQuantity.toFixed(3),
+      dispatches: dispatches.map((dispatch) => ({
+        id: dispatch.id,
+        dispatchNumber: dispatch.dispatchNumber,
+        dispatchDate: toIsoDate(dispatch.dispatchDate),
+        status: dispatch.status as DispatchStatus,
+        totalQuantity: dispatch.totalQuantity.toFixed(3),
+        invoiceNumber: dispatch.salesInvoice?.invoiceNumber ?? null,
+      })),
+    };
+  }
+
   async create(dto: CreateSalesOrderDto): Promise<SalesOrderDetail> {
     const tenantId = this.tenantContext.requireTenantId();
     // The acting user comes from the request context, never from the body: a
@@ -137,44 +334,23 @@ export class SalesOrdersService {
     }
 
     // ------------------------------------------------------------------
-    // Sellable-stock gate, BEFORE anything is written.
+    // NO SELLABLE-STOCK GATE HERE — ON PURPOSE.
     // ------------------------------------------------------------------
-    // Refusing here rather than after creating means a rejected order leaves no
-    // trace and no number consumed from the sequence. Demand is summed PER ITEM
-    // first: two lines for the same product compete for the same batches, and
-    // checking them separately would pass a pair that together cannot be filled.
-    const demandByItem = new Map<string, Prisma.Decimal>();
-
-    for (const line of dto.items) {
-      demandByItem.set(
-        line.itemId,
-        (demandByItem.get(line.itemId) ?? new Prisma.Decimal(0)).add(
-          new Prisma.Decimal(line.quantityOrdered),
-        ),
-      );
-    }
-
-    // Checked CONCURRENTLY. Each item is an independent question, and the
-    // database is remote — a sequential loop pays the round trip once per line,
-    // which on a ten-line order is most of a second of pure waiting.
-    const availability = await Promise.all(
-      [...demandByItem].map(async ([itemId, requested]) => ({
-        itemId,
-        requested,
-        available: await this.allocation.availableForItem(itemId),
-      })),
-    );
-
-    for (const { itemId, requested, available } of availability) {
-      if (requested.greaterThan(available)) {
-        const item = byId.get(itemId)!;
-
-        throw new BadRequestException(
-          `Cannot create order: ${trimQuantity(requested)} units of ${item.code} requested, ` +
-            `but only ${trimQuantity(available)} units are currently available from released batches.`,
-        );
-      }
-    }
+    // An order is what the CUSTOMER HAS ASKED FOR. Refusing to record it
+    // because the shelf is short today threw the demand away: the order left no
+    // trace, so nothing told production or purchasing that it had been wanted,
+    // and the customer had to ask again once stock arrived.
+    //
+    // Availability is a question for ALLOCATION, which is where stock is
+    // actually committed and where the answer is still true when it is acted
+    // on. AllocationService.plan() reports the shortfall per line — nothing on
+    // the shelf, all of it reserved elsewhere, or simply not enough — and
+    // commit() refuses rather than half-reserving, leaving this order intact
+    // and allocatable as soon as stock is released.
+    //
+    // Deliberately not duplicated here: a second copy of the rule would be a
+    // second answer, and this one would be read before the write and be stale
+    // by the time anyone allocated against it.
 
     const created = await this.prisma.transaction(async (tx) => {
       const orderNumber = await this.numbering.next(tx, tenantId, 'SO');
@@ -807,11 +983,104 @@ function toScheduleCategory(classification: string): ScheduleCategory {
 }
 
 /**
- * Quantities for a human: "20" rather than "20.000", "2.5" kept as "2.5".
- * Formatting for the refusal message only; the stored value is untouched.
+ * WHICH STAGE THE ORDER IS AT, read off the records rather than stored.
+ *
+ * Tested from the far end backwards, because the latest thing that has happened
+ * is the answer: stock that has shipped is not "in production" merely because
+ * another work order for the same order is still open. Every test uses a status
+ * this application already writes — no new status was invented for this view.
+ *
+ * WHAT THE DATA CANNOT SAY. The story's four stages assume the chain has begun.
+ * An order with nothing raised against it is reported NOT_STARTED rather than
+ * "awaiting material", which would claim somebody is waiting on a purchase
+ * nobody has asked for; and a cancelled order is reported as cancelled rather
+ * than placed somewhere in a pipeline it has left.
  */
-function trimQuantity(value: Prisma.Decimal): string {
-  return value.toDecimalPlaces(3).toString();
+function deriveStage(input: {
+  orderStatus: string;
+  requisitions: readonly TraceRequisition[];
+  purchaseOrders: readonly TracePurchaseOrder[];
+  workOrders: readonly TraceWorkOrder[];
+  allocationCount: number;
+  dispatches: readonly string[];
+}): { stage: FulfilmentStage; stageReason: string } {
+  if (input.orderStatus === 'CANCELLED') {
+    return { stage: 'CANCELLED', stageReason: 'The order has been cancelled.' };
+  }
+
+  const shipped = input.dispatches.filter(
+    (status) => status === 'DISPATCHED' || status === 'DELIVERED',
+  ).length;
+
+  if (shipped > 0) {
+    return {
+      stage: 'DISPATCHED',
+      stageReason:
+        shipped === 1
+          ? 'One despatch has left against this order.'
+          : `${shipped} despatches have left against this order.`,
+    };
+  }
+
+  if (input.allocationCount > 0) {
+    return {
+      stage: 'READY_TO_DISPATCH',
+      stageReason: `Stock is reserved against this order on ${input.allocationCount} ${
+        input.allocationCount === 1 ? 'batch' : 'batches'
+      }, and nothing has shipped yet.`,
+    };
+  }
+
+  // In production covers the whole span from material issued to a batch sitting
+  // released but not yet allocated — the goods exist, they are simply not
+  // reserved to the order yet.
+  const inProduction = input.workOrders.filter((workOrder) =>
+    ['MATERIAL_ISSUED', 'IN_PROGRESS', 'PACKED', 'UNDER_TEST', 'CLOSED'].includes(
+      workOrder.status,
+    ),
+  );
+
+  if (inProduction.length > 0) {
+    const released = inProduction.some((workOrder) =>
+      workOrder.batches.some((batch) => batch.releaseStatus === 'RELEASED'),
+    );
+
+    return {
+      stage: released ? 'READY_TO_DISPATCH' : 'IN_PRODUCTION',
+      stageReason: released
+        ? 'A batch has been released by the quality gate and is waiting to be allocated.'
+        : `Work order ${inProduction[0]!.number} is ${inProduction[0]!.status
+            .toLowerCase()
+            .replace(/_/g, ' ')}.`,
+    };
+  }
+
+  const waiting = input.workOrders.filter((workOrder) =>
+    ['PLANNED', 'READY_TO_START'].includes(workOrder.status),
+  );
+
+  if (waiting.length > 0 || input.requisitions.length > 0 || input.purchaseOrders.length > 0) {
+    const openRequisitions = input.requisitions.filter(
+      (requisition) => requisition.status === 'OPEN' || requisition.status === 'APPROVED',
+    ).length;
+
+    return {
+      stage: 'AWAITING_MATERIAL',
+      stageReason: openRequisitions
+        ? `${openRequisitions} purchase ${
+            openRequisitions === 1 ? 'requisition is' : 'requisitions are'
+          } still open.`
+        : waiting.length > 0
+          ? `Work order ${waiting[0]!.number} has not started.`
+          : 'Material has been ordered and production has not started.',
+    };
+  }
+
+  return {
+    stage: 'NOT_STARTED',
+    stageReason:
+      'Nothing has been raised against this order yet \u2014 no requisition, no work order, no reservation.',
+  };
 }
 
 /**

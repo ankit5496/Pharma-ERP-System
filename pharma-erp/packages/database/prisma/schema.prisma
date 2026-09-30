@@ -215,6 +215,7 @@ model Tenant {
   batches               Batch[]
   packingRecords        BatchPackingRecord[]
   packagingConsumptions BatchPackagingConsumption[]
+  materialConsumptions  BatchMaterialConsumption[]
   finishedGoodsLots     FinishedGoodsLot[]
   customerLicences      CustomerLicence[]
   partyDeliveryAddresses PartyDeliveryAddress[]
@@ -513,6 +514,13 @@ enum JobWorkReceiptStatus {
 
 enum ProductionOrderStatus {
   PLANNED
+  /// US-PROD-06. Every required material is on hand; the batch may begin.
+  ///
+  /// A SEPARATE STATE FROM PLANNED because under the order-driven model a work
+  /// order's existence and its ability to start are two different things. The
+  /// old model assumed stock was already on the shelf, so the distinction had
+  /// nowhere to appear.
+  READY_TO_START
   MATERIAL_ISSUED
   IN_PROGRESS
   PACKED
@@ -590,6 +598,21 @@ model ProductionOrder {
 
   status ProductionOrderStatus @default(PLANNED)
 
+  /// The sales order this batch is being made for — US-PROD-01.
+  ///
+  /// NULLABLE, though the story calls it mandatory, because three kinds of work
+  /// order exist and only one has a customer behind it: own-brand against a
+  /// confirmed order, JOB WORK for a principal (whose counterparty is
+  /// `jobWorkOrderId` below, and who has no sales order at all), and every
+  /// order raised before this field existed. A required column would refuse the
+  /// last two. "Cannot be created independently of one" is enforced in the
+  /// service, which can ask which kind of order this is; a constraint cannot.
+  ///
+  /// The `production_orders_one_counterparty` CHECK keeps this and
+  /// `jobWorkOrderId` mutually exclusive — a batch is made for a customer or
+  /// for a principal, and which one decides who owns the material.
+  salesOrderId String? @map("sales_order_id") @db.Uuid
+
   // ---------------------------------------------------------------------------
   // Job work — US-JW-03
   // ---------------------------------------------------------------------------
@@ -626,6 +649,7 @@ model ProductionOrder {
   createdBy User?  @relation("ProductionOrderCreatedBy", fields: [createdById], references: [id], onDelete: Restrict)
 
   jobWorkOrder JobWorkOrder? @relation(fields: [jobWorkOrderId], references: [id], onDelete: Restrict)
+  salesOrder   SalesOrder?   @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
 
   issues  MaterialIssue[]
   batches Batch[]
@@ -635,6 +659,8 @@ model ProductionOrder {
   /// "What has been made against this job-work order" — the register's
   /// consumption and dispatch columns both start here.
   @@index([tenantId, jobWorkOrderId])
+  /// The same question asked of a customer order: what is being made for it.
+  @@index([tenantId, salesOrderId])
   @@map("production_orders")
 }
 
@@ -780,6 +806,8 @@ model Batch {
 
   packingRecord    BatchPackingRecord?
   finishedGoodsLot FinishedGoodsLot?
+  /// What each raw material actually went in — US-PROD-03.
+  materialConsumptions BatchMaterialConsumption[]
 
   allocations       BatchAllocation[]
   salesInvoiceItems SalesInvoiceItem[]
@@ -852,6 +880,65 @@ model BatchPackingRecord {
 /// packed quantity; this table records what was actually used. The two differ
 /// in normal operation — that difference is packing wastage — so the expected
 /// figure is computed, never stored here.
+/// What each raw material actually went into a batch — US-PROD-03.
+///
+/// ISSUED IS NOT CONSUMED, and the batch record needs the second. Material is
+/// returned to store, spilt, or a drum is opened and only part of it used; the
+/// variance grid used to compare the formulation against what the FEFO run
+/// dispensed, which answers "what did we give the floor" rather than "what went
+/// in". A yield investigation and a recall both ask the latter.
+///
+/// Shaped like BatchPackagingConsumption below, which records the same thing on
+/// the packing side. Two tables because a packing consumption hangs off the
+/// PACKING RECORD and this hangs off the BATCH — recorded at different moments,
+/// by different people.
+///
+/// A batch with no rows here is legitimate: everything recorded before this
+/// existed has none, and the variance grid falls back to the issued figure.
+model BatchMaterialConsumption {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @map("tenant_id") @db.Uuid
+
+  batchId String @map("batch_id") @db.Uuid
+
+  /// The raw material. An Item of type RAW_MATERIAL, checked by the service —
+  /// a CHECK constraint cannot read another table.
+  itemId String @map("item_id") @db.Uuid
+
+  quantityConsumed Decimal @map("quantity_consumed") @db.Decimal(14, 3)
+
+  /// The lot it came out of, where one was recorded. Nullable for the same
+  /// reason the packing table's is: a consumption that cannot name its lot is
+  /// worth more than no record of the consumption.
+  lotId String? @map("lot_id") @db.Uuid
+
+  notes String? @db.VarChar(255)
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  tenant Tenant    @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  batch  Batch     @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  item   Item      @relation("BatchMaterialConsumed", fields: [itemId], references: [id], onDelete: Restrict)
+  lot    StockLot? @relation("BatchMaterialConsumedLot", fields: [lotId], references: [id], onDelete: Restrict)
+
+  /// ONE LINE PER MATERIAL PER LOT, enforced by a unique index the schema
+  /// cannot express: it is functional, over
+  /// `(batch_id, item_id, COALESCE(lot_id, nil uuid))`, because `lotId` is
+  /// nullable and NULLs do not compare equal — two null-lot rows for one
+  /// material would otherwise both be allowed. See migration
+  /// 20260929030000_batch_material_consumption_per_lot.
+  ///
+  /// Per LOT rather than per material because a material is routinely drawn
+  /// from two lots on one order: a drum runs out and FEFO opens the next.
+  /// Summing them would store one lot id and discard the other, and a recall
+  /// reading this table would be told the wrong answer.
+  @@index([batchId, itemId])
+  /// The reverse question a recall asks: which batches consumed this material?
+  @@index([tenantId, itemId])
+  @@map("batch_material_consumptions")
+}
+
 model BatchPackagingConsumption {
   id       String @id @default(uuid()) @db.Uuid
   tenantId String @map("tenant_id") @db.Uuid
@@ -906,15 +993,32 @@ model FinishedGoodsLot {
   /// Copied from the batch so the FEFO index lives on this table alone.
   expiryDate        DateTime @map("expiry_date") @db.Date
 
+  /// The order this stock was MADE FOR — US-PROD-05.
+  ///
+  /// Copied from the work order at release rather than joined through it, for
+  /// the same reason `expiryDate` above is copied: this is the record of why
+  /// the batch exists, and it must survive the work order being amended.
+  ///
+  /// A TAG, NOT A HOLD. Who may actually ship this stock is decided by
+  /// `BatchAllocation`, which carries quantities and despatch state. Nothing
+  /// reads this column to decide entitlement — two tables claiming the same
+  /// finished goods would be two answers to one question.
+  ///
+  /// Null on job work, and on every lot released before the column existed.
+  salesOrderId String? @map("sales_order_id") @db.Uuid
+
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Restrict)
-  batch  Batch  @relation(fields: [batchId], references: [id], onDelete: Restrict)
-  item   Item   @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Restrict)
+  batch      Batch       @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  item       Item        @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  salesOrder SalesOrder? @relation(fields: [salesOrderId], references: [id], onDelete: Restrict)
 
   /// FEFO for despatch, mirroring the index on stock_lots.
   @@index([tenantId, itemId, expiryDate])
+  /// "What was made for this order, and is any of it still here?"
+  @@index([tenantId, salesOrderId])
   @@map("finished_goods_lots")
 }
 
@@ -1381,6 +1485,8 @@ model Item {
   packagingRequirements     PackagingRequirement[]      @relation("PackagingRequirementProduct")
   packagingRequirementLines PackagingRequirementLine[]  @relation("PackagingRequirementComponent")
   packagingConsumptions     BatchPackagingConsumption[] @relation("BatchPackagingComponent")
+  /// As a raw material a batch consumed — US-PROD-03.
+  materialConsumptions      BatchMaterialConsumption[]  @relation("BatchMaterialConsumed")
 
   requisitions                PurchaseRequisition[] @relation("RequisitionItem")
   requisitionsAsFinishedGood  PurchaseRequisition[] @relation("RequisitionFinishedProduct")
@@ -3008,6 +3114,8 @@ model StockLot {
   /// on MaterialIssueLine.lot.
   issueLines            MaterialIssueLine[]
   packagingConsumptions BatchPackagingConsumption[]
+  /// As the lot a batch's raw material came out of — US-PROD-03.
+  materialConsumptions  BatchMaterialConsumption[] @relation("BatchMaterialConsumedLot")
 
   @@unique([tenantId, lotNumber])
   /// The FEFO index: usable lots of an item, earliest expiry first.
@@ -3460,6 +3568,10 @@ model SalesOrder {
   items         SalesOrderItem[]
   allocations   BatchAllocation[]
   dispatches    Dispatch[]
+  /// What is being manufactured for this order — US-PROD-01.
+  productionOrders ProductionOrder[]
+  /// What has been manufactured for it and released — US-PROD-05.
+  finishedGoodsLots FinishedGoodsLot[]
   salesInvoices SalesInvoice[]
   salesReturns  SalesReturn[]
 

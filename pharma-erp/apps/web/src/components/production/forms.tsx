@@ -8,6 +8,7 @@ import type {
   ProductionStockLot,
   StockOwnership,
   WorkOrderFeasibility,
+  WorkOrderSalesOrderOption,
 } from '@pharma-erp/types';
 import { formatDateDMY } from '@pharma-erp/types';
 
@@ -17,6 +18,7 @@ import { SavedDialog } from '@/components/saved-dialog';
 
 import {
   checkWorkOrderFeasibilityAction,
+  workOrderSalesOrderOptionsAction,
   createProductionOrderAction,
   issueMaterialAction,
   issuePlanAction,
@@ -27,6 +29,7 @@ import {
   releaseBatchAction,
   type ActionResult,
 } from '@/app/(app)/workflows/production-actions';
+import { FormFooter, SubmitButton } from '@/components/procurement/form-kit';
 import { useIsInsideRegister, useReportSaved } from '@/components/production/register';
 
 import { ExpiryHint, Quantity } from './shared';
@@ -125,6 +128,29 @@ const FIELD =
   'mt-1.5 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900';
 
 const LABEL = 'block text-xs font-medium tracking-wide text-slate-600';
+
+/**
+ * A control inside a Packaging Consumed row.
+ *
+ * NOT `FIELD`, and the two differences are the whole fix.
+ *
+ * NO TOP MARGIN. `FIELD` carries `mt-1.5` for a control sitting under its own
+ * label. These sit in a grid row whose headings are column headers above the
+ * table, so that margin only pushed every control down away from the material
+ * name beside it.
+ *
+ * AN EXPLICIT HEIGHT. Left to the browser, a <select> and an <input> with
+ * identical padding come out different heights — 39px against 38px — because a
+ * select's intrinsic content box is not a text box's. One pixel is enough to
+ * see when the two sit side by side down a column, and no amount of matching
+ * padding fixes it. Fixing the box does.
+ *
+ * `w-full` INSIDE A FIXED GRID TRACK is what makes every row the same width:
+ * the column decides, not the longest option text, so choosing a lot with a
+ * long number cannot widen the control or shift the quantity beside it.
+ */
+const ROW_FIELD =
+  'block h-10 w-full min-w-0 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900';
 
 /**
  * An asterisk carries the meaning; the text makes it audible.
@@ -317,7 +343,8 @@ function FeasibilityGrid({
       {!data.canRaise && (
         <p className="border-t border-inherit px-4 py-2.5 text-xs text-red-800">
           Only stock released by incoming QC counts — quarantined and rejected lots are not
-          available to production. Raise a purchase requisition, or reduce the batch size.
+          available to production, and neither is stock held for another order. Receive the
+          shortfall first; the required-stock screen in Procure-to-Pay shows what is on order.
         </p>
       )}
     </div>
@@ -345,6 +372,18 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
   // happened to sort first.
   const [productId, setProductId] = useState('');
   const [quantity, setQuantity] = useState('');
+
+  /**
+   * The sales order this batch is being made for — US-PROD-01.
+   *
+   * Under the order-driven model a work order exists to fill a confirmed
+   * order, and the API refuses one without it. The options depend on the
+   * product, so they are fetched when a product is chosen rather than up
+   * front — the list for "no product" would be the whole register.
+   */
+  const [salesOrderId, setSalesOrderId] = useState('');
+  const [salesOrderOptions, setSalesOrderOptions] = useState<WorkOrderSalesOrderOption[]>([]);
+  const [loadingOrders, setLoadingOrders] = useState(false);
   const [feasibility, setFeasibility] = useState<{
     checking: boolean;
     error: string | null;
@@ -367,10 +406,44 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
     };
   }, []);
 
-  // Debounced, because this fires on every keystroke in the quantity box and
-  // each call is a database round trip. 400ms is long enough that typing
-  // "100000" asks once rather than six times, and short enough that the answer
-  // arrives before anyone reaches for Save.
+  /**
+   * The orders this product could be made for — US-PROD-01.
+   *
+   * NOT DEBOUNCED, unlike the feasibility check below: this fires on a picker
+   * change rather than on every keystroke, so it happens once per choice.
+   *
+   * The previous choice is CLEARED whenever the product changes. An order that
+   * was valid for the old product is almost certainly not on the new one, and
+   * a stale id left in a hidden input would be refused by the API with a
+   * message about a product mismatch that nobody could act on.
+   */
+  useEffect(() => {
+    setSalesOrderId('');
+    setSalesOrderOptions([]);
+
+    if (!productId) return;
+
+    let cancelled = false;
+
+    setLoadingOrders(true);
+
+    void workOrderSalesOrderOptionsAction(productId)
+      .then((options) => {
+        if (!cancelled) setSalesOrderOptions(options);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingOrders(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [productId]);
+
+  // Debounced. The quantity is no longer typed — it follows the chosen order —
+  // so this now fires once per picker change rather than per keystroke, and the
+  // delay costs little. Kept because the product and the order can both be
+  // changed in quick succession, and each call is a database round trip.
   useEffect(() => {
     if (!productId || !quantity.trim()) {
       setFeasibility({ checking: false, error: null, data: null });
@@ -411,11 +484,22 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
     );
   }
 
-  // Disabled only on a KNOWN failure. While the check is in flight, or if it
-  // could not run at all, the button stays live and the server decides — a form
-  // that locks itself because a preview call failed is a form nobody can use
-  // when the preview endpoint is down.
-  const blockedByStock = feasibility.data !== null && !feasibility.data.canRaise;
+  /**
+   * Short of material — which no longer STOPS an own-brand work order.
+   *
+   * The revised US-PROD-01 makes a shortage a plan rather than a refusal: the
+   * order is raised as PLANNED, the requirement is what tells procurement to
+   * buy, and US-PROD-06's gate on the material issue is what stops anybody
+   * dispensing stock that is not there. So this now changes what the button
+   * SAYS, not whether it works.
+   *
+   * The grid below still shows exactly what is short, so nobody raises one
+   * without seeing it.
+   */
+  const shortOfMaterial = feasibility.data !== null && !feasibility.data.canRaise;
+
+  /** The chosen order, for the note under Quantity when the two diverge. */
+  const chosenOrder = salesOrderOptions.find((option) => option.salesOrderId === salesOrderId);
 
   return (
     <form action={action} className="space-y-4 px-6 py-5">
@@ -435,53 +519,121 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
         </div>
       </div>
 
-      <div className="grid items-end gap-4 sm:grid-cols-3">
-        <div className="sm:col-span-2">
-          <label htmlFor="productId" className={LABEL}>
-            Product
-            <RequiredMark />
-          </label>
-          {/* Searchable, and offering the newest few before anything is typed:
-              the item register grows without limit, and the product somebody
-              is raising a work order for is often one just added.
+      {/* PRODUCT, THEN ORDER, THEN QUANTITY — the order the decision is
+          actually made in under US-PROD-01.
 
-              It opens on NO product. `emptyLabel` gives it a row to sit on and
-              a word for the state — without one the box would be blank with no
-              way back to it once a product had been picked. */}
-          <SearchableSelect
-            id="productId"
-            options={productOptions}
-            emptyLabel="--None--"
-            value={productId}
-            onChange={setProductId}
-            // Matches the Quantity input beside it; see the note on the work
-            // order field in RecordBatchForm.
-            className={FIELD}
-          />
-          <input type="hidden" name="productId" value={productId} />
-        </div>
+          Quantity used to sit beside Product, above the Sales Order picker.
+          That put a box you type into ABOVE the field that overwrites it:
+          choosing an order silently replaced whatever had just been entered,
+          which is the kind of thing people work around rather than report.
 
-        <div>
-          <label htmlFor="plannedQuantity" className={LABEL}>
-            Quantity
-            <RequiredMark />
-          </label>
-          <input
-            id="plannedQuantity"
-            name="plannedQuantity"
-            required
-            inputMode="decimal"
-            placeholder="100000"
-            value={quantity}
-            onChange={(event) => setQuantity(event.target.value)}
-            // Sent as a string all the way to the Decimal column; see the note
-            // at the top of packages/types/src/production.ts.
-            pattern="\d{1,11}(\.\d{1,3})?"
-            title="A positive number, up to 3 decimal places"
-            className={FIELD}
-          />
-        </div>
+          Each field now depends only on the ones above it. The product filters
+          the orders; the order sets the quantity. */}
+      <div>
+        <label htmlFor="productId" className={LABEL}>
+          Product
+          <RequiredMark />
+        </label>
+        {/* Searchable, and offering the newest few before anything is typed:
+            the item register grows without limit, and the product somebody
+            is raising a work order for is often one just added.
+
+            It opens on NO product. `emptyLabel` gives it a row to sit on and
+            a word for the state — without one the box would be blank with no
+            way back to it once a product had been picked. */}
+        <SearchableSelect
+          id="productId"
+          options={productOptions}
+          emptyLabel="--None--"
+          value={productId}
+          onChange={setProductId}
+          className={FIELD}
+        />
+        <input type="hidden" name="productId" value={productId} />
+        <p className="mt-1 text-xs text-slate-500">
+          What is being made. It decides which orders can be filled below.
+        </p>
       </div>
+
+      {/* US-PROD-01: the order this batch is being made for.
+
+          AFTER the product, because the options depend on it and a picker that
+          is empty until something above it is chosen reads as broken when it
+          comes first. A row of its own rather than a third column: an order
+          line carries a customer, a quantity and a date, and none of that fits
+          beside two other fields. */}
+      <div>
+        <label htmlFor="salesOrderId" className={LABEL}>
+          Sales Order
+          <RequiredMark />
+        </label>
+
+        <SearchableSelect
+          id="salesOrderId"
+          options={salesOrderOptions.map((option) => ({
+            value: option.salesOrderId,
+            label: `${option.orderNumber} — ${option.customerName}`,
+            // What is still owed, which is the figure the batch size takes.
+            hint: `${option.quantityOutstanding} outstanding`,
+          }))}
+          emptyLabel={
+            !productId
+              ? 'Choose a product first'
+              : loadingOrders
+                ? 'Looking for orders…'
+                : salesOrderOptions.length === 0
+                  ? 'No open order needs this product'
+                  : '--None--'
+          }
+          value={salesOrderId}
+          onChange={(value) => {
+            setSalesOrderId(value);
+
+            // THE BATCH SIZE FOLLOWS THE ORDER — US-PROD-01's "Batch Size now
+            // defaults from the Sales Order line quantity rather than being
+            // freely typed". The OUTSTANDING figure, not the ordered one: an
+            // order half covered by an earlier work order needs the remainder,
+            // and defaulting to the full quantity would quietly double it.
+            //
+            // A DEFAULT, not a lock. The story allows a minimum-batch-size
+            // exception, and the box stays editable for it.
+            const chosen = salesOrderOptions.find((option) => option.salesOrderId === value);
+
+            if (chosen) setQuantity(chosen.quantityOutstanding);
+          }}
+          className={FIELD}
+        />
+
+        <input type="hidden" name="salesOrderId" value={salesOrderId} />
+
+        <p className="mt-1 text-xs text-slate-500">
+          Production is order-driven: a work order fills a confirmed order. Choosing one sets the
+          batch size below.
+        </p>
+      </div>
+
+      {/* LAST, and NOT TYPED IN — US-PROD-01.
+
+          The batch size is whatever the chosen order still needs, so it is
+          derived rather than entered, and drawn like every other derived field
+          on this form: the dashed grey box is what says "the system fills
+          this", without a label having to repeat it in words.
+
+          THE STORY ALLOWS AN OVERRIDE for a plant whose minimum batch size the
+          outstanding figure does not divide into; this form does not offer one,
+          by decision. If that case arises the remedy is to amend the sales
+          order, which is the record the quantity actually comes from — editing
+          it here would leave the two disagreeing with nothing to say why.
+
+          A HIDDEN INPUT CARRIES THE VALUE. A disabled or read-only control is
+          not submitted, and the API requires the quantity. */}
+      <ReadOnlyField
+        label="Quantity"
+        value={chosenOrder?.quantityOutstanding}
+        placeholder="Choose a sales order above"
+        hint="What the chosen order still needs. Amend the order to change it."
+      />
+      <input type="hidden" name="plannedQuantity" value={quantity} />
 
       <ReadOnlyField
         label="BOM Reference"
@@ -494,11 +646,27 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
 
       <FeasibilityGrid state={feasibility} />
 
-      {/* `!productId` because the picker now opens on nothing: the API would
-          refuse an empty one anyway, and a round trip to be told so is a worse
-          answer than a button that is plainly not ready yet. */}
-      <button type="submit" disabled={pending || !productId || blockedByStock} className={BUTTON}>
-        {pending ? 'Raising…' : blockedByStock ? 'Not enough stock' : 'Raise work order'}
+      {/* DISABLED ON A SHORTAGE, matching what the API does: a work order is
+          not raised until its material exists. `!productId` and `!salesOrderId`
+          block for the same reason — both are required, and a round trip to be
+          told so is a worse answer than a button plainly not ready.
+
+          Only on a KNOWN shortage. While the check is in flight, or if it could
+          not run at all, the button stays live and the server decides — a form
+          that locks itself because a preview call failed is one nobody can use
+          when the preview endpoint is down. */}
+      <button
+        type="submit"
+        disabled={pending || !productId || !salesOrderId || shortOfMaterial}
+        className={BUTTON}
+      >
+        {pending
+          ? 'Raising…'
+          : productId && !salesOrderId
+            ? 'Choose a sales order'
+            : shortOfMaterial
+              ? 'Not enough stock'
+              : 'Raise work order'}
       </button>
     </form>
   );
@@ -1592,6 +1760,9 @@ export function RecordPackingForm({
 }) {
   const [state, action, pending] = useActionState(recordPackingAction, IDLE);
 
+  /** For Cancel on a first entry, which clears the boxes rather than closing. */
+  const formRef = useRef<HTMLFormElement>(null);
+
   // WHAT WAS RECORDED, or nothing chosen.
   //
   // It used to open on the first specification even for an unpacked batch,
@@ -1717,7 +1888,7 @@ export function RecordPackingForm({
           rather than a new one. See the note there. */}
       <Result state={state} pending={pending} />
 
-      <form action={action} className="space-y-3 rounded-md bg-slate-50 p-4">
+      <form ref={formRef} action={action} className="space-y-3 rounded-md bg-slate-50 p-4">
         <input type="hidden" name="batchId" value={batchId} />
 
         {/* Linked BMR, quantity and variant on one row — US-PROD-04 lists them
@@ -1832,6 +2003,29 @@ export function RecordPackingForm({
               Packaging Consumed
             </legend>
 
+            {/* THREE COLUMNS, THE SAME ON EVERY ROW — the layout job work's
+                packing record uses, because it is the same table.
+
+                A NATIVE SELECT'S POPUP IS SIZED BY ITS LONGEST OPTION, not by
+                the field, and the browser will happily draw a list wider than
+                the control it hangs off — which is what made this look broken.
+                So the column is sized to the option text rather than the other
+                way round: measured in the field's own font, the widest lot
+                line ("LOT-2026-0827 — 0.875 NOS · exp 2028-09-27") is 291px,
+                and 22rem leaves room for it plus the padding and the arrow with
+                a little to spare. Narrower and the popup overhangs again.
+
+                This was a wrapping flex row before that, where the quantity box
+                was as wide as the lot picker and the material name took
+                whatever was left, so the numbers did not line up and a long lot
+                number pushed the row out of shape. The grid fixes the two
+                right-hand columns and gives the material the rest. */}
+            <div className="grid grid-cols-[minmax(0,1fr)_22rem_6rem] items-center gap-x-3 pb-1 text-[10px] font-medium uppercase tracking-wide text-slate-500">
+              <span>Material</span>
+              <span>Packaging lot</span>
+              <span className="text-right">Quantity</span>
+            </div>
+
             <div className="space-y-2">
               {specification.components.map((component, index) => (
                 // Keyed by specification as well as component, so switching
@@ -1839,11 +2033,11 @@ export function RecordPackingForm({
                 // than carrying them over on a shared component.
                 <div
                   key={`${specification.id}-${component.id}`}
-                  className="flex flex-wrap items-end gap-3"
+                  className="grid grid-cols-[minmax(0,1fr)_22rem_6rem] items-center gap-x-3"
                 >
                   <input type="hidden" name={`component.${index}.itemId`} value={component.id} />
 
-                  <div className="min-w-0 flex-1">
+                  <div className="min-w-0">
                     <span className="font-mono text-xs text-slate-700">{component.code}</span>{' '}
                     <span className="text-sm text-slate-600">{component.name}</span>
                   </div>
@@ -1858,7 +2052,7 @@ export function RecordPackingForm({
                       pure-conversion job packs with the principal's own
                       cartons; anything else uses ours, and mixing the two
                       would consume a customer's material on our own batch. */}
-                  <div className="w-64">
+                  <div className="min-w-0">
                     <label htmlFor={`lot-${batchId}-${index}`} className="sr-only">
                       Lot of {component.code}
                     </label>
@@ -1866,7 +2060,7 @@ export function RecordPackingForm({
                       id={`lot-${batchId}-${index}`}
                       name={`component.${index}.lotId`}
                       defaultValue={consumedLotFor(component.id)}
-                      className={FIELD}
+                      className={`${ROW_FIELD} truncate`}
                     >
                       {/* Selectable and empty, so "not recorded" stays a real
                           answer: packaging taken from an untracked bulk store
@@ -1882,7 +2076,7 @@ export function RecordPackingForm({
                     </select>
                   </div>
 
-                  <div className="w-40">
+                  <div>
                     <label htmlFor={`consumed-${batchId}-${index}`} className="sr-only">
                       {component.code} consumed
                     </label>
@@ -1897,10 +2091,14 @@ export function RecordPackingForm({
                       name={`component.${index}.quantityConsumed`}
                       defaultValue={consumedFor(component.id)}
                       inputMode="decimal"
-                      placeholder={`0 ${component.uom}`}
+                      placeholder="0"
                       pattern="\d{1,11}(\.\d{1,3})?"
                       title="A positive number, up to 3 decimal places"
-                      className="block w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+                      // The row class, so this is the same box as the lot
+                      // picker beside it — it used to have its own padding and
+                      // so its own height. Right-aligned and tabular so the
+                      // figures line up down the column.
+                      className={`${ROW_FIELD} text-right tabular-nums`}
                     />
                   </div>
                 </div>
@@ -1927,24 +2125,32 @@ export function RecordPackingForm({
           {batchNumber} is released. Packed plus rejects cannot exceed what the batch made.
         </p>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <button type="submit" disabled={pending} className={BUTTON}>
-            {pending ? 'Saving…' : 'Save'}
-          </button>
+        {/* THE REQUISITION FORM'S FOOTER: a rule across the width, Cancel at
+            the left, Save at the right.
 
-          {/* Only when AMENDING. A first entry has nothing to go back to, so a
-            Cancel there would be a button that does nothing visible. */}
-          {recorded && (
-            <button
-              type="button"
-              onClick={() => setEditing(false)}
-              disabled={pending}
-              className="rounded-md border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              Cancel
-            </button>
-          )}
-        </div>
+            This used to be two buttons hard left with Save FIRST — the reverse
+            of every dialog in the product, on the one form that writes a GMP
+            record. Cancel sitting immediately after the primary action is also
+            the arrangement most likely to be hit by mistake.
+
+            CANCEL NOW ALWAYS SHOWS, and does the right thing in both states.
+            Amending, it abandons the correction and returns to the record. On a
+            first entry there is nothing to return to, so it clears what has been
+            typed — which is what somebody who has just realised they are on the
+            wrong batch actually wants, and better than the button not being
+            there at all. */}
+        <FormFooter
+          onCancel={() => {
+            if (recorded) {
+              setEditing(false);
+              return;
+            }
+
+            formRef.current?.reset();
+          }}
+        >
+          <SubmitButton pendingLabel="Saving…">Save</SubmitButton>
+        </FormFooter>
       </form>
     </>
   );

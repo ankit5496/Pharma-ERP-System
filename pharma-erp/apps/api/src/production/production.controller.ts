@@ -23,6 +23,7 @@ import type {
   ProductionStockLot,
   ProductionOrderSummary,
   WorkOrderFeasibility,
+  WorkOrderSalesOrderOption,
 } from '@pharma-erp/types';
 import { ITEM_TYPES, type ItemType } from '@pharma-erp/types';
 
@@ -190,6 +191,20 @@ export class ProductionController {
   @SkipAudit('Read-only listing.')
   async listOrders(): Promise<ProductionOrderSummary[]> {
     return this.production.listProductionOrders();
+  }
+
+  /**
+   * Which sales orders a work order for this product could fill — US-PROD-01.
+   *
+   * Declared BEFORE any `orders/:id` route so the literal segment matches
+   * first. A read: it offers options and reserves nothing.
+   */
+  @Get('orders/sales-order-options')
+  @SkipAudit('Read-only listing.')
+  async salesOrderOptions(
+    @Query('productId', ParseUUIDPipe) productId: string,
+  ): Promise<WorkOrderSalesOrderOption[]> {
+    return this.production.salesOrderOptionsFor(productId);
   }
 
   /**

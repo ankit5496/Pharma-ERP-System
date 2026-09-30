@@ -333,7 +333,10 @@ function BatchRecordPanel({ batch }: { batch: BatchView }) {
                   Planned
                 </th>
                 <th scope="col" className="py-2 pr-4 text-right font-medium">
-                  Issued
+                  {/* CONSUMED, not issued — US-PROD-03. The column used to
+                      report what the store dispensed, which is a different
+                      claim from what went into the batch. */}
+                  Consumed
                 </th>
                 <th scope="col" className="py-2 text-right font-medium">
                   Variance
@@ -351,7 +354,7 @@ function BatchRecordPanel({ batch }: { batch: BatchView }) {
                     <Quantity value={variance.quantityPlanned} uom={variance.item.uom} />
                   </td>
                   <td className="py-2 pr-4 text-right">
-                    <Quantity value={variance.quantityIssued} uom={variance.item.uom} />
+                    <Quantity value={variance.quantityConsumed} uom={variance.item.uom} />
                   </td>
                   <td className="py-2 text-right">
                     <span

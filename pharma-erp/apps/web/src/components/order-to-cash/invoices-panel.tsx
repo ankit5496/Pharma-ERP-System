@@ -61,7 +61,12 @@ const COLUMNS = [
   'Customer',
   'Date',
   col.right('Subtotal'),
-  col.right('GST'),
+  // The tax by head rather than one "GST" figure: CGST and SGST on an
+  // intra-state sale, IGST on an inter-state one. Both add up to the same
+  // money, so a combined column cannot show which was actually charged.
+  col.right('CGST'),
+  col.right('SGST'),
+  col.right('IGST'),
   col.right('Total'),
   col.right('Paid'),
   'Payment status',
@@ -262,6 +267,27 @@ export async function InvoicesPanel({
   );
 }
 
+/**
+ * One head of GST on an invoice.
+ *
+ * A head that does not apply shows a dash, NOT 0.00 — a zero reads as "CGST was
+ * charged and it came to nothing", which for an inter-state sale is a different
+ * and wrong statement. The dash says the head does not arise at all.
+ *
+ * The amounts come from the invoice as issued; nothing here re-derives them.
+ */
+function TaxHead({ value, applies }: { value: string; applies: boolean }) {
+  if (!applies) {
+    return (
+      <span className="text-slate-300" aria-label="not applicable">
+        &mdash;
+      </span>
+    );
+  }
+
+  return <Money value={value} />;
+}
+
 function InvoiceRow({ invoice }: { invoice: SalesInvoiceListItem }) {
   const cancelled = invoice.status === 'CANCELLED';
 
@@ -299,7 +325,15 @@ function InvoiceRow({ invoice }: { invoice: SalesInvoiceListItem }) {
       </Cell>
 
       <Cell align="right">
-        <Money value={invoice.taxAmount} />
+        <TaxHead value={invoice.cgstAmount} applies={!invoice.isInterState} />
+      </Cell>
+
+      <Cell align="right">
+        <TaxHead value={invoice.sgstAmount} applies={!invoice.isInterState} />
+      </Cell>
+
+      <Cell align="right">
+        <TaxHead value={invoice.igstAmount} applies={invoice.isInterState} />
       </Cell>
 
       <Cell align="right">
