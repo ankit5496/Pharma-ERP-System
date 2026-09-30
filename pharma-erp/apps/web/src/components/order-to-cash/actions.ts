@@ -7,6 +7,7 @@ import type {
   CustomerBalance,
   CustomerDetail,
   ItemPackagingSpec,
+  SalesOrderTrace,
   DispatchDetail,
   ItemListItem,
   PartySummary,
@@ -25,7 +26,7 @@ import { apiFetch, type ApiResult } from '@/lib/api';
  * Every one of these forwards to the NestJS API with the caller's own bearer
  * token, so each lands on the same two guards as any other request: RolesGuard
  * in Nest and row-level security in Postgres. Nothing here validates a business
- * rule — the licence gate, the credit limit, FEFO eligibility, the dispatch
+ * rule — the licence gate, the credit limit, the released-batch match, the dispatch
  * ceiling and the DPCO check all live on the API and are re-decided there. This
  * layer exists to move a form into an HTTP call and a failure into a message.
  *
@@ -151,12 +152,12 @@ export async function createSalesOrderAction(input: {
     method: 'POST',
     authenticated: true,
     json: input,
-    // Creating an order is now FOUR steps server-side — the released-stock
-    // check, the order itself, the licence/credit gate, then FEFO allocation.
-    // Against a remote database each step is several round trips, so the
-    // default 30s budget expires while the work is still succeeding. Timing out
-    // here is the worst outcome available: the order is created and allocated,
-    // and the screen says it failed, which invites a duplicate.
+    // Creating an order is several steps server-side — the customer and item
+    // reads, the numbering sequence, the lines and the order itself. Against a
+    // remote database each is several round trips, so the default 30s budget
+    // expires while the work is still succeeding. Timing out here is the worst
+    // outcome available: the order is created and the screen says it failed,
+    // which invites a duplicate.
     timeoutMs: 90_000,
   });
 
@@ -205,7 +206,7 @@ export async function cancelSalesOrderAction(
 // ---------------------------------------------------------------------------
 
 /**
- * Reserves stock against an order, FEFO.
+ * Reserves the batch that was released for an order, against that order.
  *
  * Returns the rows it created rather than a bare success, so the button can
  * name the batches it took: "reserved" with nothing to show for it leaves
@@ -648,6 +649,23 @@ export async function customerBalanceAction(
     await apiFetch<CustomerBalance>(`/api/v1/order-to-cash/customers/${customerId}/balance`, {
       authenticated: true,
     }),
+  );
+}
+
+/**
+ * One order's fulfilment trace — US-SAL-08.
+ *
+ * A read. The API derives it from existing procurement, production and despatch
+ * records and writes nothing, so there is no revalidation to do here.
+ */
+export async function salesOrderTraceAction(
+  salesOrderId: string,
+): Promise<ActionResult<SalesOrderTrace>> {
+  return toResult(
+    await apiFetch<SalesOrderTrace>(
+      `/api/v1/order-to-cash/sales-orders/${salesOrderId}/trace`,
+      { authenticated: true, timeoutMs: 30_000 },
+    ),
   );
 }
 

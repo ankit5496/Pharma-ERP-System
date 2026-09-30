@@ -82,7 +82,12 @@ export class MaterialIssueService {
         scale,
         effectiveOverage(bomLine, order.bom),
       );
-      const allocations = await this.allocate(bomLine.itemId, required, bucket);
+      const allocations = await this.allocate(
+        bomLine.itemId,
+        required,
+        bucket,
+        order.salesOrderId,
+      );
 
       const allocated = allocations.reduce(
         (total, allocation) => total.add(allocation.quantity),
@@ -108,7 +113,12 @@ export class MaterialIssueService {
       productionOrderId: order.id,
       orderNumber: order.orderNumber,
       canIssue:
-        order.status === 'PLANNED' && lines.every((line) => line.quantityShort === ZERO.toString()),
+        // READY_TO_START as well as PLANNED — US-PROD-06 put a state between
+        // "raised" and "issued", and the plan is offered in both. The shortfall
+        // check beside it is what actually decides; the status only excludes an
+        // order that has already been dispensed.
+        (order.status === 'PLANNED' || order.status === 'READY_TO_START') &&
+        lines.every((line) => line.quantityShort === ZERO.toString()),
       lines,
     };
   }
@@ -132,7 +142,28 @@ export class MaterialIssueService {
 
     const order = await this.production.requireOrder(productionOrderId);
 
-    if (order.status !== 'PLANNED') {
+    // US-PROD-06: "Material Issue cannot be recorded against a Work Order that
+    // isn't yet Ready to Start."
+    //
+    // RE-EVALUATED HERE rather than trusted from the row. Readiness is a
+    // statement about stock, and stock moves: an order marked ready this
+    // morning may have had its material consumed by another order since. The
+    // gate is worth nothing if it answers from a status nobody has rechecked.
+    //
+    // PLANNED is the only other state this can return, and it is refused
+    // below. Anything further along the workflow falls through to the
+    // double-issue guard, which is a different refusal with a different reason.
+    if (order.status === 'PLANNED' || order.status === 'READY_TO_START') {
+      const readiness = await this.production.refreshReadiness(order.id);
+
+      if (readiness !== 'READY_TO_START') {
+        throw new ConflictException(
+          `${order.orderNumber} is not ready to start: some of its material is not in stock, ` +
+            'or is held for another order. Receive and clear the outstanding material first — ' +
+            'the required-stock screen in Procure-to-Pay shows what is short.',
+        );
+      }
+    } else {
       throw new ConflictException(
         `Material has already been issued against ${order.orderNumber} — its status is ` +
           `${order.status.toLowerCase().replace('_', ' ')}. Issuing twice would double-count ` +
@@ -449,7 +480,17 @@ export class MaterialIssueService {
    * rather than throwing when it cannot be — the caller decides whether a
    * shortfall is an error (issuing) or information (previewing).
    */
-  private async allocate(itemId: string, required: Prisma.Decimal, bucket: StockBucketRule) {
+  private async allocate(
+    itemId: string,
+    required: Prisma.Decimal,
+    bucket: StockBucketRule,
+    /**
+     * The sales order this work order is filling, when it is filling one —
+     * US-PROD-02. Null on job work and on any order raised without one, and
+     * those may draw only on genuinely free stock.
+     */
+    salesOrderId: string | null,
+  ) {
     const lots = await this.prisma.scoped.stockLot.findMany({
       where: {
         itemId,
@@ -472,6 +513,15 @@ export class MaterialIssueService {
       // in whatever order the planner happens to return, or the same plan
       // would issue differently twice.
       orderBy: [{ expiryDate: { sort: 'asc', nulls: 'last' } }, { lotNumber: 'asc' }],
+      // US-PROD-02: "never a batch reserved to a different order". The live
+      // holds on each lot, so the quantity below can be reduced to what this
+      // work order is actually entitled to take.
+      include: {
+        reservations: {
+          where: { releasedAt: null },
+          select: { quantity: true, salesOrderId: true },
+        },
+      },
     });
 
     const allocations: { lot: (typeof lots)[number]; quantity: Prisma.Decimal }[] = [];
@@ -480,7 +530,34 @@ export class MaterialIssueService {
     for (const lot of lots) {
       if (outstanding.lessThanOrEqualTo(ZERO)) break;
 
-      const take = Prisma.Decimal.min(outstanding, lot.quantityAvailable);
+      // WHAT THIS ORDER MAY TAKE FROM THIS LOT — US-PROD-02's [NEW] clause.
+      //
+      // A hold placed for THIS sales order is not an obstacle to it: incoming
+      // QC reserved that material precisely so this order could be made from
+      // it, and subtracting it would hide the stock from the only order
+      // allowed to use it. A hold for a DIFFERENT order is subtracted, because
+      // taking it would leave that order short of material somebody has
+      // already promised it.
+      //
+      // Netted off the lot rather than filtered out of the query: a drum half
+      // held for another order is still half available, and dropping the whole
+      // lot would under-report free stock as badly as ignoring the hold
+      // over-reports it.
+      const heldForOthers = lot.reservations.reduce(
+        (total, hold) =>
+          salesOrderId !== null && hold.salesOrderId === salesOrderId
+            ? total
+            : total.add(hold.quantity),
+        ZERO,
+      );
+
+      const free = Prisma.Decimal.max(lot.quantityAvailable.sub(heldForOthers), ZERO);
+
+      // Entirely spoken for. Skipped rather than offered at zero, so the plan
+      // does not carry lines nobody can dispense.
+      if (free.lessThanOrEqualTo(ZERO)) continue;
+
+      const take = Prisma.Decimal.min(outstanding, free);
 
       allocations.push({ lot, quantity: this.round(take) });
       outstanding = outstanding.sub(take);

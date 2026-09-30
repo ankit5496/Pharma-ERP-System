@@ -13,6 +13,7 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateBy,
 } from 'class-validator';
 
 import {
@@ -89,6 +90,45 @@ export class NearExpiryQueryDto implements NearExpiryQuery {
   bucket?: string;
 }
 
+const isWindow = (value: unknown): boolean =>
+  Number.isInteger(value) &&
+  (value as number) >= MIN_EXPIRY_ALERT_DAYS &&
+  (value as number) <= MAX_EXPIRY_ALERT_DAYS;
+
+/**
+ * Each window is a whole number of days from 1 to 730 — ONE check with one
+ * message, rather than `isInt` + `min` + `max`.
+ *
+ * Two reasons, both about the message the person reads. The global formatter
+ * (config/validation-message.ts) reads a failed `isInt` as "nothing was sent"
+ * and answers "Alert days is required", which is wrong for a window of 30.5
+ * that plainly was sent. And a value that is not a number at all fails all
+ * three rules at once, where the formatter keeps whichever it meets first — so
+ * "abc" was answered "must be at most 730 days". One constraint under its own
+ * name keeps its own message, and the message names the actual problem.
+ */
+function IsAlertWindow(): PropertyDecorator {
+  return ValidateBy(
+    {
+      name: 'isAlertWindow',
+      validator: {
+        validate: isWindow,
+        defaultMessage: (args) => {
+          const values: unknown[] = Array.isArray(args?.value) ? args.value : [args?.value];
+          const bad = values.find((value) => !isWindow(value));
+
+          return !Number.isInteger(bad)
+            ? 'Each alert window must be a whole number of days'
+            : (bad as number) < MIN_EXPIRY_ALERT_DAYS
+              ? `Each alert window must be at least ${MIN_EXPIRY_ALERT_DAYS} day`
+              : `Each alert window must be at most ${MAX_EXPIRY_ALERT_DAYS} days`;
+        },
+      },
+    },
+    { each: true },
+  );
+}
+
 /**
  * The near-expiry windows, in days. Bounds mirror
  * `tenants_expiry_alert_days_sane`, so a refusal is a sentence, not a
@@ -96,17 +136,11 @@ export class NearExpiryQueryDto implements NearExpiryQuery {
  */
 export class UpdateExpiryAlertsDto {
   @IsArray()
-  @ArrayMinSize(1)
-  @ArrayMaxSize(MAX_EXPIRY_ALERT_WINDOWS)
-  @ArrayUnique({ message: 'alertDays must not repeat a window' })
-  @IsInt({ each: true, message: 'each alert window must be a whole number of days' })
-  @Min(MIN_EXPIRY_ALERT_DAYS, {
-    each: true,
-    message: `each alert window must be at least ${MIN_EXPIRY_ALERT_DAYS} day`,
+  @ArrayMinSize(1, { message: 'Enter at least one alert window' })
+  @ArrayMaxSize(MAX_EXPIRY_ALERT_WINDOWS, {
+    message: `Enter at most ${MAX_EXPIRY_ALERT_WINDOWS} alert windows`,
   })
-  @Max(MAX_EXPIRY_ALERT_DAYS, {
-    each: true,
-    message: `each alert window must be at most ${MAX_EXPIRY_ALERT_DAYS} days`,
-  })
+  @ArrayUnique({ message: 'Each alert window can appear only once' })
+  @IsAlertWindow()
   alertDays!: number[];
 }

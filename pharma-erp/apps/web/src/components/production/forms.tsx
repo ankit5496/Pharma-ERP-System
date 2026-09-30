@@ -8,6 +8,7 @@ import type {
   ProductionStockLot,
   StockOwnership,
   WorkOrderFeasibility,
+  WorkOrderSalesOrderOption,
 } from '@pharma-erp/types';
 import { formatDateDMY } from '@pharma-erp/types';
 
@@ -17,6 +18,7 @@ import { SavedDialog } from '@/components/saved-dialog';
 
 import {
   checkWorkOrderFeasibilityAction,
+  workOrderSalesOrderOptionsAction,
   createProductionOrderAction,
   issueMaterialAction,
   issuePlanAction,
@@ -341,7 +343,8 @@ function FeasibilityGrid({
       {!data.canRaise && (
         <p className="border-t border-inherit px-4 py-2.5 text-xs text-red-800">
           Only stock released by incoming QC counts — quarantined and rejected lots are not
-          available to production. Raise a purchase requisition, or reduce the batch size.
+          available to production, and neither is stock held for another order. Receive the
+          shortfall first; the required-stock screen in Procure-to-Pay shows what is on order.
         </p>
       )}
     </div>
@@ -369,6 +372,18 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
   // happened to sort first.
   const [productId, setProductId] = useState('');
   const [quantity, setQuantity] = useState('');
+
+  /**
+   * The sales order this batch is being made for — US-PROD-01.
+   *
+   * Under the order-driven model a work order exists to fill a confirmed
+   * order, and the API refuses one without it. The options depend on the
+   * product, so they are fetched when a product is chosen rather than up
+   * front — the list for "no product" would be the whole register.
+   */
+  const [salesOrderId, setSalesOrderId] = useState('');
+  const [salesOrderOptions, setSalesOrderOptions] = useState<WorkOrderSalesOrderOption[]>([]);
+  const [loadingOrders, setLoadingOrders] = useState(false);
   const [feasibility, setFeasibility] = useState<{
     checking: boolean;
     error: string | null;
@@ -391,10 +406,44 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
     };
   }, []);
 
-  // Debounced, because this fires on every keystroke in the quantity box and
-  // each call is a database round trip. 400ms is long enough that typing
-  // "100000" asks once rather than six times, and short enough that the answer
-  // arrives before anyone reaches for Save.
+  /**
+   * The orders this product could be made for — US-PROD-01.
+   *
+   * NOT DEBOUNCED, unlike the feasibility check below: this fires on a picker
+   * change rather than on every keystroke, so it happens once per choice.
+   *
+   * The previous choice is CLEARED whenever the product changes. An order that
+   * was valid for the old product is almost certainly not on the new one, and
+   * a stale id left in a hidden input would be refused by the API with a
+   * message about a product mismatch that nobody could act on.
+   */
+  useEffect(() => {
+    setSalesOrderId('');
+    setSalesOrderOptions([]);
+
+    if (!productId) return;
+
+    let cancelled = false;
+
+    setLoadingOrders(true);
+
+    void workOrderSalesOrderOptionsAction(productId)
+      .then((options) => {
+        if (!cancelled) setSalesOrderOptions(options);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingOrders(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [productId]);
+
+  // Debounced. The quantity is no longer typed — it follows the chosen order —
+  // so this now fires once per picker change rather than per keystroke, and the
+  // delay costs little. Kept because the product and the order can both be
+  // changed in quick succession, and each call is a database round trip.
   useEffect(() => {
     if (!productId || !quantity.trim()) {
       setFeasibility({ checking: false, error: null, data: null });
@@ -435,11 +484,22 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
     );
   }
 
-  // Disabled only on a KNOWN failure. While the check is in flight, or if it
-  // could not run at all, the button stays live and the server decides — a form
-  // that locks itself because a preview call failed is a form nobody can use
-  // when the preview endpoint is down.
-  const blockedByStock = feasibility.data !== null && !feasibility.data.canRaise;
+  /**
+   * Short of material — which no longer STOPS an own-brand work order.
+   *
+   * The revised US-PROD-01 makes a shortage a plan rather than a refusal: the
+   * order is raised as PLANNED, the requirement is what tells procurement to
+   * buy, and US-PROD-06's gate on the material issue is what stops anybody
+   * dispensing stock that is not there. So this now changes what the button
+   * SAYS, not whether it works.
+   *
+   * The grid below still shows exactly what is short, so nobody raises one
+   * without seeing it.
+   */
+  const shortOfMaterial = feasibility.data !== null && !feasibility.data.canRaise;
+
+  /** The chosen order, for the note under Quantity when the two diverge. */
+  const chosenOrder = salesOrderOptions.find((option) => option.salesOrderId === salesOrderId);
 
   return (
     <form action={action} className="space-y-4 px-6 py-5">
@@ -459,53 +519,121 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
         </div>
       </div>
 
-      <div className="grid items-end gap-4 sm:grid-cols-3">
-        <div className="sm:col-span-2">
-          <label htmlFor="productId" className={LABEL}>
-            Product
-            <RequiredMark />
-          </label>
-          {/* Searchable, and offering the newest few before anything is typed:
-              the item register grows without limit, and the product somebody
-              is raising a work order for is often one just added.
+      {/* PRODUCT, THEN ORDER, THEN QUANTITY — the order the decision is
+          actually made in under US-PROD-01.
 
-              It opens on NO product. `emptyLabel` gives it a row to sit on and
-              a word for the state — without one the box would be blank with no
-              way back to it once a product had been picked. */}
-          <SearchableSelect
-            id="productId"
-            options={productOptions}
-            emptyLabel="--None--"
-            value={productId}
-            onChange={setProductId}
-            // Matches the Quantity input beside it; see the note on the work
-            // order field in RecordBatchForm.
-            className={FIELD}
-          />
-          <input type="hidden" name="productId" value={productId} />
-        </div>
+          Quantity used to sit beside Product, above the Sales Order picker.
+          That put a box you type into ABOVE the field that overwrites it:
+          choosing an order silently replaced whatever had just been entered,
+          which is the kind of thing people work around rather than report.
 
-        <div>
-          <label htmlFor="plannedQuantity" className={LABEL}>
-            Quantity
-            <RequiredMark />
-          </label>
-          <input
-            id="plannedQuantity"
-            name="plannedQuantity"
-            required
-            inputMode="decimal"
-            placeholder="100000"
-            value={quantity}
-            onChange={(event) => setQuantity(event.target.value)}
-            // Sent as a string all the way to the Decimal column; see the note
-            // at the top of packages/types/src/production.ts.
-            pattern="\d{1,11}(\.\d{1,3})?"
-            title="A positive number, up to 3 decimal places"
-            className={FIELD}
-          />
-        </div>
+          Each field now depends only on the ones above it. The product filters
+          the orders; the order sets the quantity. */}
+      <div>
+        <label htmlFor="productId" className={LABEL}>
+          Product
+          <RequiredMark />
+        </label>
+        {/* Searchable, and offering the newest few before anything is typed:
+            the item register grows without limit, and the product somebody
+            is raising a work order for is often one just added.
+
+            It opens on NO product. `emptyLabel` gives it a row to sit on and
+            a word for the state — without one the box would be blank with no
+            way back to it once a product had been picked. */}
+        <SearchableSelect
+          id="productId"
+          options={productOptions}
+          emptyLabel="--None--"
+          value={productId}
+          onChange={setProductId}
+          className={FIELD}
+        />
+        <input type="hidden" name="productId" value={productId} />
+        <p className="mt-1 text-xs text-slate-500">
+          What is being made. It decides which orders can be filled below.
+        </p>
       </div>
+
+      {/* US-PROD-01: the order this batch is being made for.
+
+          AFTER the product, because the options depend on it and a picker that
+          is empty until something above it is chosen reads as broken when it
+          comes first. A row of its own rather than a third column: an order
+          line carries a customer, a quantity and a date, and none of that fits
+          beside two other fields. */}
+      <div>
+        <label htmlFor="salesOrderId" className={LABEL}>
+          Sales Order
+          <RequiredMark />
+        </label>
+
+        <SearchableSelect
+          id="salesOrderId"
+          options={salesOrderOptions.map((option) => ({
+            value: option.salesOrderId,
+            label: `${option.orderNumber} — ${option.customerName}`,
+            // What is still owed, which is the figure the batch size takes.
+            hint: `${option.quantityOutstanding} outstanding`,
+          }))}
+          emptyLabel={
+            !productId
+              ? 'Choose a product first'
+              : loadingOrders
+                ? 'Looking for orders…'
+                : salesOrderOptions.length === 0
+                  ? 'No open order needs this product'
+                  : '--None--'
+          }
+          value={salesOrderId}
+          onChange={(value) => {
+            setSalesOrderId(value);
+
+            // THE BATCH SIZE FOLLOWS THE ORDER — US-PROD-01's "Batch Size now
+            // defaults from the Sales Order line quantity rather than being
+            // freely typed". The OUTSTANDING figure, not the ordered one: an
+            // order half covered by an earlier work order needs the remainder,
+            // and defaulting to the full quantity would quietly double it.
+            //
+            // A DEFAULT, not a lock. The story allows a minimum-batch-size
+            // exception, and the box stays editable for it.
+            const chosen = salesOrderOptions.find((option) => option.salesOrderId === value);
+
+            if (chosen) setQuantity(chosen.quantityOutstanding);
+          }}
+          className={FIELD}
+        />
+
+        <input type="hidden" name="salesOrderId" value={salesOrderId} />
+
+        <p className="mt-1 text-xs text-slate-500">
+          Production is order-driven: a work order fills a confirmed order. Choosing one sets the
+          batch size below.
+        </p>
+      </div>
+
+      {/* LAST, and NOT TYPED IN — US-PROD-01.
+
+          The batch size is whatever the chosen order still needs, so it is
+          derived rather than entered, and drawn like every other derived field
+          on this form: the dashed grey box is what says "the system fills
+          this", without a label having to repeat it in words.
+
+          THE STORY ALLOWS AN OVERRIDE for a plant whose minimum batch size the
+          outstanding figure does not divide into; this form does not offer one,
+          by decision. If that case arises the remedy is to amend the sales
+          order, which is the record the quantity actually comes from — editing
+          it here would leave the two disagreeing with nothing to say why.
+
+          A HIDDEN INPUT CARRIES THE VALUE. A disabled or read-only control is
+          not submitted, and the API requires the quantity. */}
+      <ReadOnlyField
+        label="Quantity"
+        value={chosenOrder?.quantityOutstanding}
+        placeholder="Choose a sales order above"
+        hint="What the chosen order still needs. Amend the order to change it."
+      />
+      <input type="hidden" name="plannedQuantity" value={quantity} />
 
       <ReadOnlyField
         label="BOM Reference"
@@ -518,11 +646,27 @@ export function CreateProductionOrderForm({ products }: { products: ItemSummary[
 
       <FeasibilityGrid state={feasibility} />
 
-      {/* `!productId` because the picker now opens on nothing: the API would
-          refuse an empty one anyway, and a round trip to be told so is a worse
-          answer than a button that is plainly not ready yet. */}
-      <button type="submit" disabled={pending || !productId || blockedByStock} className={BUTTON}>
-        {pending ? 'Raising…' : blockedByStock ? 'Not enough stock' : 'Raise work order'}
+      {/* DISABLED ON A SHORTAGE, matching what the API does: a work order is
+          not raised until its material exists. `!productId` and `!salesOrderId`
+          block for the same reason — both are required, and a round trip to be
+          told so is a worse answer than a button plainly not ready.
+
+          Only on a KNOWN shortage. While the check is in flight, or if it could
+          not run at all, the button stays live and the server decides — a form
+          that locks itself because a preview call failed is one nobody can use
+          when the preview endpoint is down. */}
+      <button
+        type="submit"
+        disabled={pending || !productId || !salesOrderId || shortOfMaterial}
+        className={BUTTON}
+      >
+        {pending
+          ? 'Raising…'
+          : productId && !salesOrderId
+            ? 'Choose a sales order'
+            : shortOfMaterial
+              ? 'Not enough stock'
+              : 'Raise work order'}
       </button>
     </form>
   );

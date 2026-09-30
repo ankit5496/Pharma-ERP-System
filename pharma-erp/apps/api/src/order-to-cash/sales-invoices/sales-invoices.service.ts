@@ -89,9 +89,6 @@ export class SalesInvoicesService {
       sellerGstin: row.sellerGstin,
       placeOfSupplyStateCode: row.placeOfSupplyStateCode,
       sellerStateCode: row.sellerStateCode,
-      cgstAmount: row.cgstAmount.toFixed(2),
-      sgstAmount: row.sgstAmount.toFixed(2),
-      igstAmount: row.igstAmount.toFixed(2),
       discountAmount: row.discountAmount.toFixed(2),
       notes: row.notes,
       items: row.items.map(toItemView),
@@ -414,6 +411,9 @@ function toListItem(row: {
   status: string;
   paymentStatus: string;
   subtotal: Prisma.Decimal;
+  cgstAmount: Prisma.Decimal;
+  sgstAmount: Prisma.Decimal;
+  igstAmount: Prisma.Decimal;
   taxAmount: Prisma.Decimal;
   grandTotal: Prisma.Decimal;
   amountPaid: Prisma.Decimal;
@@ -441,6 +441,11 @@ function toListItem(row: {
     status: row.status as InvoiceStatus,
     paymentStatus: row.paymentStatus as O2cPaymentStatus,
     subtotal: row.subtotal.toFixed(2),
+    // Read off the invoice, never recomputed: these are what the customer was
+    // billed, and a fresh split could disagree with the document.
+    cgstAmount: row.cgstAmount.toFixed(2),
+    sgstAmount: row.sgstAmount.toFixed(2),
+    igstAmount: row.igstAmount.toFixed(2),
     taxAmount: row.taxAmount.toFixed(2),
     grandTotal: row.grandTotal.toFixed(2),
     amountPaid: row.amountPaid.toFixed(2),

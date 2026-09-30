@@ -9,7 +9,7 @@ import { EmptyState, ErrorState, Panel } from '@/components/procurement/ui';
 import { apiFetch } from '@/lib/api';
 import { requireSession } from '@/lib/session';
 
-export const metadata: Metadata = { title: 'Near-Expiry Report · Dashboard & Reports' };
+export const metadata: Metadata = { title: 'Near-Expiry Report · Reports' };
 
 /** The URL keys the API accepts. */
 const FORWARDED = ['itemId', 'search', 'bucket'] as const;

@@ -108,6 +108,10 @@ export function ExpiryHint({ date }: { date: string }) {
 
 const ORDER_STATUS_TONE: Record<ProductionOrderStatus, string> = {
   PLANNED: 'bg-slate-100 text-slate-700 ring-slate-200',
+  // GREEN, and the only status before the work starts that gets a colour:
+  // US-PROD-06 exists so somebody can see at a glance which orders may
+  // actually begin, and grey beside grey would not answer that.
+  READY_TO_START: 'bg-emerald-50 text-emerald-800 ring-emerald-200',
   MATERIAL_ISSUED: 'bg-blue-50 text-blue-800 ring-blue-200',
   IN_PROGRESS: 'bg-blue-50 text-blue-800 ring-blue-200',
   PACKED: 'bg-indigo-50 text-indigo-800 ring-indigo-200',

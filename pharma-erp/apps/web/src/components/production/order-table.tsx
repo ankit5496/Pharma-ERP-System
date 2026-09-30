@@ -31,6 +31,11 @@ export function OrderTable({ orders }: { orders: ProductionOrderSummary[] }) {
         order.jobWork?.principalName,
         order.jobWork?.orderNumber,
         order.jobWork?.principalBrandName,
+        // The customer order it fills, by number and by customer — "what are we
+        // making for Apex" is the question the column exists to answer, and a
+        // column you can see but not search for is worse than no column.
+        order.salesOrder?.orderNumber,
+        order.salesOrder?.customerName,
       ]
         .filter(Boolean)
         .join(' '),
@@ -86,11 +91,14 @@ export function OrderTable({ orders }: { orders: ProductionOrderSummary[] }) {
         </p>
       ) : (
         <div className="table-scroll overflow-x-auto">
-          <table className="w-full min-w-[52rem] text-left text-sm">
+          {/* Widened for the Sales Order column; the wrapper scrolls rather
+              than letting seven columns squeeze into an unreadable grid. */}
+          <table className="w-full min-w-[62rem] text-left text-sm">
             <thead>
               <tr className="text-xs tracking-wide text-slate-500">
                 <Th>Order</Th>
                 <Th>Product</Th>
+                <Th>Sales Order</Th>
                 <Th align="right">Planned</Th>
                 <Th>Status</Th>
                 <Th>Batch</Th>
@@ -126,6 +134,30 @@ export function OrderTable({ orders }: { orders: ProductionOrderSummary[] }) {
                   <td className="px-6 py-3">
                     <span className="font-mono text-xs text-slate-700">{order.product.code}</span>
                     <div className="text-slate-800">{order.product.name}</div>
+                  </td>
+                  {/* WHY THIS BATCH EXISTS — US-PROD-01. Under the order-driven
+                      model every own-brand work order answers a customer order,
+                      and the register is where somebody asks "what are we making
+                      this for".
+
+                      A dash for job work, which answers a principal's
+                      instruction instead: that is shown in the Order cell, and
+                      repeating it here would suggest a customer order is missing
+                      rather than inapplicable. Also dashed for any work order
+                      raised before the link existed. */}
+                  <td className="px-6 py-3">
+                    {order.salesOrder ? (
+                      <>
+                        <span className="font-mono text-xs text-slate-800">
+                          {order.salesOrder.orderNumber}
+                        </span>
+                        <div className="text-xs text-slate-500">
+                          {order.salesOrder.customerName}
+                        </div>
+                      </>
+                    ) : (
+                      <span className="text-xs text-slate-400">—</span>
+                    )}
                   </td>
                   <td className="px-6 py-3 text-right">
                     <Quantity value={order.plannedQuantity} uom={order.product.uom} />
