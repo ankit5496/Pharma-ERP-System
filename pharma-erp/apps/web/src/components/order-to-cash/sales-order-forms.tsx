@@ -20,6 +20,7 @@ import {
 } from './actions';
 import { ConfirmDialog } from './confirm-dialog';
 import { EditSalesOrderForm } from './edit-sales-order-form';
+import { SalesOrderTraceDialog } from './sales-order-trace';
 import { CustomerPanels, ProductPanel, Section } from './sales-order-panels';
 import { SearchableSelect } from './searchable-select';
 import { DialogFooter, useDialogClose } from './modal';
@@ -596,6 +597,36 @@ export function NewSalesOrderForm({
                             No HSN
                           </Badge>
                         )}
+                        {/* THE FORMULATION'S STATE, in the words the BOM /
+                            Formulation register uses — Active or Superseded —
+                            so the two screens cannot be read as saying
+                            different things. Prefixed "BOM" because here it
+                            sits beside the schedule and the price control, and
+                            a bare "Active" would not say what is active.
+
+                            Superseded means every version on file has been
+                            replaced and none is live, so nothing more can be
+                            MADE for this line — which bears on the delivery date
+                            being promised while the order is typed. Shown in
+                            amber for that reason, where the register shows it
+                            in grey: there it is a fact about a formulation,
+                            here it is a caution about an order.
+
+                            A product with no formulation at all shows nothing:
+                            it has no row in that register either, and flagging
+                            it would put a mark on every bought-in line. */}
+                        {item.bomStatus !== 'NONE' && (
+                          <Badge
+                            tone={item.bomStatus === 'ACTIVE' ? 'green' : 'amber'}
+                            title={
+                              item.bomStatus === 'ACTIVE'
+                                ? 'This product has an active formulation in Master Data.'
+                                : 'No active formulation. Released stock can still be sold, but none can be produced until Master Data activates a version.'
+                            }
+                          >
+                            {item.bomStatus === 'ACTIVE' ? 'BOM Active' : 'BOM Superseded'}
+                          </Badge>
+                        )}
                         {item.priceControlType !== 'NONE' && (
                           <Badge tone="blue">{item.priceControlType}</Badge>
                         )}
@@ -896,6 +927,7 @@ export function NewSalesOrderForm({
  */
 export function SalesOrderRowActions({ order }: { order: SalesOrderListItem }) {
   const [editing, setEditing] = useState(false);
+  const [tracing, setTracing] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
@@ -912,6 +944,13 @@ export function SalesOrderRowActions({ order }: { order: SalesOrderListItem }) {
   };
 
   const actions: RowAction[] = [
+    {
+      // US-SAL-08. Never disabled: "where is my order" is asked of cancelled
+      // and completed orders as often as live ones, and the trace answers it
+      // for those too — it only reports what happened.
+      label: 'Trace',
+      onSelect: () => setTracing(true),
+    },
     {
       label: 'Edit',
       onSelect: () => setEditing(true),
@@ -953,6 +992,15 @@ export function SalesOrderRowActions({ order }: { order: SalesOrderListItem }) {
 
       {editing && (
         <EditSalesOrderForm order={order} onClose={() => setEditing(false)} />
+      )}
+
+      {tracing && (
+        <SalesOrderTraceDialog
+          salesOrderId={order.id}
+          orderNumber={order.orderNumber}
+          customerName={order.customerName}
+          onClose={() => setTracing(false)}
+        />
       )}
 
       {error && (

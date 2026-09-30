@@ -398,6 +398,25 @@ export function ProductPanel({ itemId }: { itemId: string }) {
 
   return (
     <div className="mt-3 space-y-3">
+      {/* SUSPENDED FORMULATION. Above the specification, not inside it: the
+          order can still be taken — stock already released is unaffected — but
+          nothing more can be MADE for it until a version is reactivated, and
+          whoever is promising a delivery date needs that before they agree one.
+          Silent when a formulation is active, and silent when there is none at
+          all, which is what a bought-in product looks like. */}
+      {spec.bomStatus === 'SUSPENDED' && (
+        <p
+          role="status"
+          className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900"
+        >
+          <span className="font-semibold">Formulation superseded.</span> No active BOM for{' '}
+          {spec.itemCode}
+          {spec.bomVersion === null ? '' : ` (latest version ${spec.bomVersion})`}. Stock already
+          released can still be sold, but none can be produced against this order until Master Data
+          activates a version.
+        </p>
+      )}
+
       {/* The three groups the Sales Order document itself uses. Every column it
           carries is named here, whether or not a master records it yet: a field
           shown as "Not in master data" tells whoever maintains the masters what

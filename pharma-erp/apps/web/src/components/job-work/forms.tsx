@@ -20,7 +20,7 @@ import {
   type JobWorkProductionOrderView,
   type JobWorkOrderSummary,
 } from '@pharma-erp/types';
-import { startTransition, useMemo, useState } from 'react';
+import { startTransition, useEffect, useMemo, useState } from 'react';
 
 import {
   Derived,
@@ -2187,8 +2187,80 @@ export function CreateJobWorkDispatchButton({
 }) {
   const [state, formAction] = useAction(createJobWorkDispatchAction);
 
-  /** The released batch being dispatched. */
-  const [dispatchBatchId, setDispatchBatchId] = useState('');
+  /**
+   * The released batch being dispatched.
+   *
+   * ALREADY CHOSEN WHEN THERE IS ONLY ONE, which is the ordinary case: an order
+   * usually has a single released batch waiting, and making somebody open a
+   * picker to select the only thing in it is a step that can only be got wrong
+   * by being skipped. With several, nothing is preselected — picking the one
+   * that happens to sort first would be a choice made on the reader's behalf
+   * and as likely to be wrong as right.
+   */
+  const onlyBatch = batches.length === 1 ? (batches[0]?.batchId ?? '') : '';
+  const [dispatchBatchId, setDispatchBatchId] = useState(onlyBatch);
+
+  /**
+   * Follows the list when it changes under the form.
+   *
+   * Dispatching empties a batch, and the register refreshes behind the open
+   * dialog — so the selection has to track what is actually available rather
+   * than hold an id that has since gone. Only touched when the answer changes,
+   * so it never fights a choice the reader has made.
+   */
+  useEffect(() => {
+    setDispatchBatchId((current) => {
+      if (current && batches.some((batch) => batch.batchId === current)) return current;
+
+      return onlyBatch;
+    });
+  }, [batches, onlyBatch]);
+
+  /** The batch chosen, for the quantity check below. */
+  const selectedBatch = batches.find((batch) => batch.batchId === dispatchBatchId);
+
+  /**
+   * WHAT IS WRONG WITH THE QUANTITY, or null.
+   *
+   * The same three rules the API applies — present, above zero, and no more
+   * than the batch has left — checked here so the refusal arrives beside the
+   * box rather than after a round trip. THE API STILL DECIDES: it re-reads the
+   * lot inside its own transaction, which is the only place a quantity can be
+   * checked against stock that cannot move underneath it.
+   */
+  const [quantity, setQuantity] = useState('');
+
+  const available = selectedBatch ? Number(selectedBatch.quantityAvailable) : null;
+  const entered = quantity.trim() === '' ? null : Number(quantity);
+
+  const quantityError =
+    entered === null
+      ? null
+      : Number.isNaN(entered)
+        ? 'Enter a number.'
+        : entered <= 0
+          ? 'The quantity dispatched has to be more than zero.'
+          : available !== null && entered > available
+            ? `Only ${selectedBatch?.quantityAvailable} of ${selectedBatch?.batchNumber} is available.`
+            : null;
+
+  /** Dispatch dates are recorded, not planned: today is the latest valid one. */
+  const today = new Date().toISOString().slice(0, 10);
+  const [dispatchDate, setDispatchDate] = useState(today);
+
+  const dateError =
+    dispatchDate.trim() === ''
+      ? 'A dispatch date is required.'
+      : dispatchDate > today
+        ? 'A dispatch cannot be recorded for a future date.'
+        : null;
+
+  /** Nothing may be submitted while either required field is missing or wrong. */
+  const blocked =
+    !dispatchBatchId ||
+    quantity.trim() === '' ||
+    quantityError !== null ||
+    dateError !== null;
 
   /**
    * NOTHING RELEASED, NOTHING TO SEND.
@@ -2260,21 +2332,53 @@ export function CreateJobWorkDispatchButton({
                 </Field>
               </div>
 
-              <Field label="Quantity dispatched" htmlFor="jw-dispatchedQuantity">
+              <Field
+                label="Quantity dispatched"
+                htmlFor="jw-dispatchedQuantity"
+                required
+                error={quantityError ?? undefined}
+                hint={
+                  selectedBatch
+                    ? `Up to ${selectedBatch.quantityAvailable} available on ${selectedBatch.batchNumber}.`
+                    : undefined
+                }
+              >
                 <input
                   id="jw-dispatchedQuantity"
                   name="dispatchedQuantity"
                   type="text"
                   inputMode="decimal"
                   required
+                  value={quantity}
+                  onChange={(event) => setQuantity(event.target.value)}
+                  aria-invalid={quantityError ? true : undefined}
+                  aria-describedby={quantityError ? 'jw-dispatchedQuantity-error' : undefined}
                   placeholder="0.000"
                   className="field h-10"
                 />
               </Field>
 
-              <Field label="Dispatch date" htmlFor="jw-dispatchDate">
-                <input id="jw-dispatchDate"
-                  name="dispatchDate" type="date" className="field h-10" />
+              {/* REQUIRED, AND NOT IN THE FUTURE. A dispatch date records when
+                  the goods actually left; a date still to come describes
+                  something that has not happened. `max` stops the picker
+                  offering one, and the check above stops a typed one. */}
+              <Field
+                label="Dispatch date"
+                htmlFor="jw-dispatchDate"
+                required
+                error={dateError ?? undefined}
+              >
+                <input
+                  id="jw-dispatchDate"
+                  name="dispatchDate"
+                  type="date"
+                  required
+                  max={today}
+                  value={dispatchDate}
+                  onChange={(event) => setDispatchDate(event.target.value)}
+                  aria-invalid={dateError ? true : undefined}
+                  className="field h-10"
+                />
               </Field>
 
               <div className="sm:col-span-2">
@@ -2317,7 +2421,12 @@ export function CreateJobWorkDispatchButton({
 
           <FormFooter onCancel={close} className="sm:col-span-2">
             {batches.length > 0 && (
-              <SubmitButton pendingLabel="Dispatching…">Dispatch & raise invoice</SubmitButton>
+              // REFUSED BEFORE IT IS SENT when a required field is missing or a
+              // quantity exceeds the batch. The API re-checks all of it — this
+              // only saves the round trip and puts the reason beside the box.
+              <SubmitButton pendingLabel="Dispatching…" disabled={blocked}>
+                Dispatch &amp; raise invoice
+              </SubmitButton>
             )}
           </FormFooter>
         </form>

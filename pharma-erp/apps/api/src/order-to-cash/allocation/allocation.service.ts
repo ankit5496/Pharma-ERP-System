@@ -16,22 +16,31 @@ import { TenantContextService } from '../../tenant/tenant-context.service';
 import type { UpdateAllocationDto } from './dto/allocation.dto';
 
 /**
- * Allocation — reserving released batches against an order, first-expiry-first-out.
+ * Allocation — reserving the batch that was MADE FOR this order.
  *
- * FEFO IS DECIDED HERE, NOT BY THE CLIENT. `plan` returns a preview so the
- * decision is reviewable before stock moves, but `commit` recomputes it from
- * scratch. A plan the client could edit and post back would make the rule
- * advisory, and FEFO exists precisely so the oldest stock leaves first and
- * nothing quietly ages out on the shelf.
+ * THERE IS NO BATCH SELECTION HERE, AND NO FEFO. Which batch fills an order is
+ * decided long before this point: a work order names the sales order it fills
+ * (`production_orders.sales_order_id`), and when the quality gate releases the
+ * batch it tags the finished-goods lot with that same order
+ * (`finished_goods_lots.sales_order_id`). Allocation only CHECKS that tag. It
+ * does not rank batches, does not read expiry to choose between them, and never
+ * falls back to stock made for somebody else — a batch carrying another
+ * customer's order is not a substitute, it is a different promise.
  *
- * ONLY RELEASED, IN-DATE STOCK IS ELIGIBLE. A quarantined batch has not passed
- * the quality gate and an expired one must never ship; both are excluded at the
- * query, not filtered afterwards, so neither can reach a pick by accident.
+ * WHAT IS VERIFIED, per order line:
  *
- * AVAILABLE = on hand − already reserved. Two orders allocating the same batch
- * in the same minute must not both be promised it, so the outstanding
- * reservations are subtracted inside the same transaction that writes the new
- * ones.
+ *   the lot is tagged with THIS sales order
+ *   its batch is RELEASED — on-hold and rejected batches have no lot to find
+ *   it has not expired
+ *   the released quantity covers the line
+ *
+ * ALL OR NOTHING. The released quantity is expected to meet or exceed what was
+ * ordered, so a line that falls short is a fault upstream rather than a partial
+ * despatch to plan around: nothing is reserved and the shortage is named.
+ *
+ * AVAILABLE = on hand − already reserved. Allocating twice against the same lot
+ * must not promise the same units twice, so outstanding reservations are
+ * subtracted before anything is picked.
  */
 @Injectable()
 export class AllocationService {
@@ -72,9 +81,10 @@ export class AllocationService {
   }
 
   /**
-   * What FEFO would do, without doing it.
+   * The match check, without committing it.
    *
-   * Refuses to plan for an order that has not passed both gates — planning
+   * Reports per line whether a batch released FOR THIS ORDER exists and covers
+   * it. Refuses to plan for an order that has not passed both gates — planning
    * against a blocked order would show a picking list for stock that cannot
    * lawfully leave.
    */
@@ -114,35 +124,47 @@ export class AllocationService {
         continue;
       }
 
-      const lots = await this.eligibleLots(line.itemId);
+      // Only what was released FOR THIS ORDER. Not "what is on the shelf" —
+      // the sales order is part of the query, so a batch made for another
+      // customer is not in the result at all and cannot be reached by an
+      // oversight further down this method.
+      const lots = await this.releasedLotsForOrder(salesOrderId, line.itemId);
 
-      // Only needed to explain a shortfall, so it is read once per line rather
-      // than folded into the FEFO query every allocation runs.
-      const reserved =
-        lots.length === 0 ? await this.reservedElsewhere(line.itemId) : new Prisma.Decimal(0);
+      const released = lots.reduce((sum, lot) => sum.add(lot.available), new Prisma.Decimal(0));
       const picks: AllocationPlanPick[] = [];
-      let remaining = outstanding;
 
       const schedule = toScheduleCategory(line.item.scheduleClassification);
 
-      for (const lot of lots) {
-        if (remaining.lessThanOrEqualTo(0)) break;
+      // Nothing is picked unless the line is covered in full. Reserving part of
+      // it would lock stock away for a despatch that cannot go, and the release
+      // is expected to meet the order — a short one is a fault to fix upstream,
+      // not a plan to work around.
+      if (released.greaterThanOrEqualTo(outstanding)) {
+        let remaining = outstanding;
 
-        const take = Prisma.Decimal.min(lot.available, remaining);
-        if (take.lessThanOrEqualTo(0)) continue;
+        // Taken in the order the lots were released. NOT by expiry: when a work
+        // order yields more than one batch they are all this order's, so no
+        // choice is being made here — only a deterministic walk through stock
+        // that is already spoken for.
+        for (const lot of lots) {
+          if (remaining.lessThanOrEqualTo(0)) break;
 
-        picks.push({
-          batchId: lot.batchId,
-          batchNumber: lot.batchNumber,
-          expiryDate: toIsoDate(lot.expiryDate),
-          quantityAvailable: lot.available.toFixed(3),
-          quantityToAllocate: take.toFixed(3),
-          // The scheduled-drug re-check was removed from the flow; nothing is
-          // held back at allocation any more.
-          requiresComplianceRecheck: false,
-        });
+          const take = Prisma.Decimal.min(lot.available, remaining);
+          if (take.lessThanOrEqualTo(0)) continue;
 
-        remaining = remaining.sub(take);
+          picks.push({
+            batchId: lot.batchId,
+            batchNumber: lot.batchNumber,
+            expiryDate: toIsoDate(lot.expiryDate),
+            quantityAvailable: lot.available.toFixed(3),
+            quantityToAllocate: take.toFixed(3),
+            // The scheduled-drug re-check was removed from the flow; nothing is
+            // held back at allocation any more.
+            requiresComplianceRecheck: false,
+          });
+
+          remaining = remaining.sub(take);
+        }
       }
 
       const planned = picks.reduce(
@@ -164,12 +186,14 @@ export class AllocationService {
         isShort: shortfall.greaterThan(0),
         shortfall: shortfall.greaterThan(0) ? shortfall.toFixed(3) : '0.000',
         picks,
+        // Two different problems with two different answers: nothing has been
+        // made for this order yet, or what was made does not cover it. Naming
+        // which one saves a hunt through production for a batch that was never
+        // raised.
         note: shortfall.greaterThan(0)
-          ? picks.length === 0
-            ? reserved.greaterThan(0)
-              ? `Every released, in-date unit of this product — ${reserved.toFixed(3)} — is already reserved against other orders.`
-              : 'No released, in-date stock is available for this product.'
-            : 'Not enough released, in-date stock to cover the line in full.'
+          ? lots.length === 0
+            ? `No batch has been released for ${order.orderNumber}. ${line.item.code} has to be made on a work order raised for this order and passed by the quality gate before it can be allocated.`
+            : `Insufficient released quantity for ${line.item.name}. Ordered: ${quantity(outstanding)}. Released: ${quantity(released)}. Short: ${quantity(shortfall)}.`
           : null,
       });
     }
@@ -189,9 +213,9 @@ export class AllocationService {
   /**
    * Commits the plan — RECOMPUTED, not trusted from the caller.
    *
-   * The whole thing runs in one transaction so two allocators cannot both be
-   * promised the same batch: the availability read and the reservation write
-   * are not separable.
+   * The caller sends an order id and nothing else. There is no batch in the
+   * payload to nominate, which is what keeps "the batch released for this
+   * order" from being negotiable at the edge.
    */
   async commit(salesOrderId: string): Promise<AllocationRow[]> {
     const tenantId = this.tenantContext.requireTenantId();
@@ -208,21 +232,16 @@ export class AllocationService {
     // the shortfall is named, so the decision — chase stock, split the order,
     // or reduce it — stays with the person rather than being made by default.
     if (plan.anyShort) {
-      // Each line says which problem it has: no stock at all, all of it
-      // reserved elsewhere, or simply not enough. A bare "no stock available"
-      // sent people looking for a bug when the shelf was full.
+      // The per-line note already says which problem it is — no batch released
+      // for this order, or one that does not cover the line — so it is quoted
+      // rather than restated. A bare "no stock available" sent people looking
+      // for a bug when the shelf was full of somebody else's batch.
       const shortfalls = plan.lines
         .filter((line) => line.isShort)
-        .map(
-          (line) =>
-            `${line.itemCode} short by ${line.shortfall} of ${line.quantityOutstanding}` +
-            (line.note ? ` (${line.note})` : ''),
-        )
-        .join('; ');
+        .map((line) => line.note ?? `${line.itemCode} is short by ${line.shortfall}.`)
+        .join(' ');
 
-      throw new BadRequestException(
-        `Nothing has been reserved: this order cannot be allocated in full. ${shortfalls}`,
-      );
+      throw new BadRequestException(`Nothing has been reserved. ${shortfalls}`);
     }
 
     await this.prisma.transaction(async (tx) => {
@@ -283,9 +302,10 @@ export class AllocationService {
   /**
    * Adjusts a live allocation's quantity.
    *
-   * THE BATCH IS NOT CHANGEABLE. Which batch is reserved is FEFO's decision;
-   * editing it by hand would make the rule advisory. Reserving a different
-   * batch is a release and a re-allocation, which leaves the release on record.
+   * THE BATCH IS NOT CHANGEABLE. Which batch is reserved was settled when the
+   * quality gate released it for this order; editing it by hand would put stock
+   * made for one customer against another's order. Reserving a different batch
+   * is a release and a re-allocation, which leaves the release on record.
    *
    * The quantity is bounded on three sides, all checked here against live
    * figures rather than trusted from the caller:
@@ -517,39 +537,41 @@ export class AllocationService {
   }
 
   /**
-   * How much of an item can actually be sold right now.
+   * The lots released FOR ONE ORDER, of one product.
    *
-   * The SAME rule allocation itself uses — released, in date, and net of what
-   * other orders already hold — because it is the same question asked earlier.
-   * Order entry calls this to refuse an order it could never fill, and if the
-   * two ever disagreed the order would be accepted and then fail to allocate,
-   * which is the state this exists to prevent.
+   * THE SALES ORDER IS IN THE QUERY, not applied afterwards. `sales_order_id`
+   * is written onto the lot by the quality gate at release, from the work order
+   * that named the order it was making for; matching on it here is the whole of
+   * the allocation decision. A lot tagged with a different order — or with none
+   * at all, as job-work stock and anything released before that column existed
+   * are — is not returned, so it cannot be allocated by accident.
    *
-   * Merely manufactured stock does NOT count. A batch that has not passed the
-   * quality gate is not sellable, whatever the shelf says.
+   * RELEASED ONLY, AND IN DATE. `release_status` is checked even though a lot
+   * exists only for a released batch: a batch can be put on hold after the
+   * fact, and the tag alone must not outlive the quality verdict. Expiry is a
+   * SAFETY FILTER, not a ranking — expired stock cannot ship whoever it was
+   * made for. Nothing here orders by expiry.
+   *
+   * Net of live reservations, so allocating twice against the same lot cannot
+   * promise the same units twice.
    */
-  async availableForItem(itemId: string): Promise<Prisma.Decimal> {
-    const lots = await this.eligibleLots(itemId);
-
-    return lots.reduce((sum, lot) => sum.add(lot.available), new Prisma.Decimal(0));
-  }
-
-  /**
-   * Released, in-date lots for an item, oldest expiry first, net of what is
-   * already reserved. The ORDER BY is the FEFO rule.
-   */
-  private async eligibleLots(itemId: string) {
+  private async releasedLotsForOrder(salesOrderId: string, itemId: string) {
     const today = startOfUtcDay(new Date());
 
     const lots = await this.prisma.scoped.finishedGoodsLot.findMany({
       where: {
+        salesOrderId,
         itemId,
         expiryDate: { gte: today },
         quantityAvailable: { gt: 0 },
         batch: { releaseStatus: 'RELEASED', deletedAt: null },
       },
       include: { batch: true },
-      orderBy: [{ expiryDate: 'asc' }],
+      // Oldest release first, and the id to break a tie. A stable order so two
+      // runs of the same plan pick the same lots — not a selection rule, since
+      // every lot here belongs to this order and all of them are used if the
+      // line needs them.
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
     });
 
     if (lots.length === 0) return [];
@@ -583,46 +605,6 @@ export class AllocationService {
         ),
       }))
       .filter((lot) => lot.available.greaterThan(0));
-  }
-
-  /**
-   * How much released, in-date stock of an item is RESERVED for other orders.
-   *
-   * Only ever used to explain a refusal. "No released, in-date stock is
-   * available" is true but misleading when the shelf is full and every unit of
-   * it is already promised to someone else — those are two different problems
-   * with two different answers (make or buy more, versus release an order that
-   * is not going to ship).
-   */
-  private async reservedElsewhere(itemId: string): Promise<Prisma.Decimal> {
-    const today = startOfUtcDay(new Date());
-
-    const lots = await this.prisma.scoped.finishedGoodsLot.findMany({
-      where: {
-        itemId,
-        expiryDate: { gte: today },
-        quantityAvailable: { gt: 0 },
-        batch: { releaseStatus: 'RELEASED', deletedAt: null },
-      },
-      select: { batchId: true },
-    });
-
-    if (lots.length === 0) return new Prisma.Decimal(0);
-
-    const held = await this.prisma.scoped.batchAllocation.aggregate({
-      where: {
-        batchId: { in: lots.map((lot) => lot.batchId) },
-        status: { in: ['ALLOCATED', 'PARTIALLY_DISPATCHED'] },
-      },
-      _sum: { quantityAllocated: true, quantityDispatched: true },
-    });
-
-    return Prisma.Decimal.max(
-      (held._sum.quantityAllocated ?? new Prisma.Decimal(0)).sub(
-        held._sum.quantityDispatched ?? new Prisma.Decimal(0),
-      ),
-      0,
-    );
   }
 }
 
@@ -722,6 +704,14 @@ function toScheduleCategory(classification: string): ScheduleCategory {
     default:
       return 'NONE';
   }
+}
+
+/**
+ * A quantity for a person: "5000" rather than "5000.000", "2.5" kept as "2.5".
+ * For the refusal messages only — stored values are untouched.
+ */
+function quantity(value: Prisma.Decimal): string {
+  return value.toDecimalPlaces(3).toString();
 }
 
 function startOfUtcDay(value: Date): Date {

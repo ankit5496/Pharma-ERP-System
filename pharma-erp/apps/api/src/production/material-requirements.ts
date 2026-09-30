@@ -50,6 +50,21 @@ export type RecipeReader = Prisma.TransactionClient;
 export interface MaterialRequirement {
   item: ItemSummary;
   kind: JobWorkMaterialKind;
+
+  /**
+   * What the masters call for, before any overage.
+   *
+   * CARRIED SEPARATELY so the figure can be shown beside the final one. A
+   * purchase requisition for 21 kg where the formulation says 20 is a number
+   * somebody will query, and "20 plus 5% overage" is the answer — which the
+   * screen can only give if the two are kept apart.
+   */
+  baseQuantity: Prisma.Decimal;
+
+  /** The overage applied to this line, as a percent. Zero when none was. */
+  overagePercent: Prisma.Decimal;
+
+  /** `baseQuantity` plus its overage. What to buy, or to issue. */
   quantity: Prisma.Decimal;
 }
 
@@ -59,7 +74,32 @@ export interface ProductRecipe {
   bom: {
     version: number;
     outputQuantity: Prisma.Decimal;
-    lines: { quantityPer: Prisma.Decimal; item: Prisma.ItemGetPayload<object> }[];
+    /**
+     * US-MD-03's product-level Default Overage %.
+     *
+     * READ BUT NOT APPLIED. The requirement is that each material line carries
+     * its own allowance — a binder that spoils at 5% and an active dosed
+     * exactly are different materials, and one figure across a formulation
+     * cannot say so. Kept on the recipe because Master Data still holds and
+     * shows it, and dropping it here would hide a field the BOM screen edits.
+     */
+    defaultOveragePercent: Prisma.Decimal;
+    lines: {
+      quantityPer: Prisma.Decimal;
+/**
+       * This material's own wastage allowance — US-MD-03.
+       *
+       * THE ONLY FIGURE THAT COUNTS. It used to fall back to the BOM's default
+       * where a line set none; it no longer does. A formulation's materials
+       * spoil at different rates, so the allowance belongs to the material, and
+       * a product-level figure silently applied to every line is how an active
+       * ingredient comes to be over-ordered by the binder's wastage rate.
+       *
+       * Null now means NO OVERAGE, not "inherit".
+       */
+      overagePercent: Prisma.Decimal | null;
+      item: Prisma.ItemGetPayload<object>;
+    }[];
   } | null;
   packaging: {
     /** The pack presentation, e.g. "10x10 blister". For the record, not the maths. */
@@ -69,6 +109,20 @@ export interface ProductRecipe {
       itemId: string;
       quantityPer: Prisma.Decimal;
       quantityBasis: string;
+      /**
+       * The packing component's own overage — the same idea as a BOM line's.
+       *
+       * OPTIONAL BECAUSE THE COLUMN IS NOT THERE YET. `PackagingRequirementLine`
+       * has no overage field today, so this is undefined on every row and every
+       * packing component is grossed up by nothing, which is what the brief
+       * asks for in the meantime.
+       *
+       * IT IS READ ANYWAY, and that is the point. `loadRecipes` selects whole
+       * rows, so on the day the column is added and the client regenerated,
+       * the value arrives here and the arithmetic below applies it with no
+       * further change — no redesign of Required Stock, no second code path.
+       */
+      overagePercent?: Prisma.Decimal | null;
       item: Prisma.ItemGetPayload<object>;
     }[];
   } | null;
@@ -110,7 +164,12 @@ export async function loadRecipes(
         {
           productName: product.name,
           bom: bom
-            ? { version: bom.version, outputQuantity: bom.outputQuantity, lines: bom.lines }
+            ? {
+                version: bom.version,
+                outputQuantity: bom.outputQuantity,
+                defaultOveragePercent: bom.defaultOveragePercent,
+                lines: bom.lines,
+              }
             : null,
           packaging: packaging
             ? {
@@ -125,6 +184,61 @@ export async function loadRecipes(
   );
 }
 
+const ZERO = new Prisma.Decimal(0);
+const HUNDRED = new Prisma.Decimal(100);
+
+/** What scaling should do beyond the arithmetic. */
+export interface ScaleOptions {
+  /**
+   * Add each line's overage to what the masters call for.
+   *
+   * OFF BY DEFAULT, and that is a decision rather than caution. Overage is an
+   * allowance for what the process spoils, so it belongs to BUYING: a purchase
+   * requisition that orders exactly what the formulation calls for buys a batch
+   * that comes up short. It does NOT belong to the checks that measure a batch
+   * — job work's readiness gate asks whether the principal sent enough to make
+   * the run, and its variance report asks how much was actually drawn against
+   * what the formulation called for. Adding a wastage allowance to either would
+   * refuse consignments that are sufficient and report every batch as favourable
+   * against an inflated target.
+   *
+   * So the callers that measure leave this alone and get exactly what they got
+   * before; Required Stock turns it on.
+   */
+  applyOverage?: boolean;
+}
+
+/**
+ * One line, with its overage worked out and shown.
+ *
+ * THE BASE IS ROUNDED FIRST, and then the overage is taken off that rounded
+ * figure. Rounding only at the end would give a row whose three numbers do not
+ * add up — 20.001 + 1.000 printed as 20 + 1 = 21.001 — and the whole point of
+ * carrying the base is that somebody can check the arithmetic on screen.
+ */
+function withOverage(
+  item: ItemSummary,
+  kind: JobWorkMaterialKind,
+  scaled: Prisma.Decimal,
+  overagePercent: Prisma.Decimal,
+): MaterialRequirement {
+  const baseQuantity = scaled.toDecimalPlaces(3);
+
+  if (overagePercent.isZero()) {
+    return { item, kind, baseQuantity, overagePercent: ZERO, quantity: baseQuantity };
+  }
+
+  const overage = baseQuantity.mul(overagePercent).div(HUNDRED);
+
+  return {
+    item,
+    kind,
+    baseQuantity,
+    overagePercent,
+    quantity: baseQuantity.plus(overage).toDecimalPlaces(3),
+  };
+}
+
 /**
  * The masters scaled to one batch size. Pure — no database.
  *
@@ -136,6 +250,7 @@ export async function loadRecipes(
 export function scaleRecipe(
   recipe: ProductRecipe | undefined,
   plannedQuantity: Prisma.Decimal,
+  options: ScaleOptions = {},
 ): string | MaterialRequirement[] {
   if (!recipe) return 'That product could not be read.';
 
@@ -154,15 +269,30 @@ export function scaleRecipe(
 
   const scale = plannedQuantity.div(bom.outputQuantity);
 
+  // THE OVERAGE FOR A LINE: ITS OWN, OR NONE.
+  //
+  // ONE RULE FOR EVERY MATERIAL, raw and packing alike, which is what makes
+  // this extensible rather than a raw-material special case. A line that names
+  // an allowance is grossed up by it; a line that names none is grossed up by
+  // nothing. There is no product-level fallback, deliberately — see the note on
+  // `defaultOveragePercent`.
+  //
+  // Off entirely unless the caller asked for overage at all — see ScaleOptions.
+  const overageFor = (lineOverage: Prisma.Decimal | null | undefined): Prisma.Decimal =>
+    options.applyOverage ? (lineOverage ?? ZERO) : ZERO;
+
   const raw = bom.lines
     // A finished product listed as its own input is a data-entry trap; the
     // receipt form filters it for the same reason.
     .filter((line) => line.item.type !== 'FINISHED_GOOD')
-    .map((line) => ({
-      item: toItemSummary(line.item),
-      kind: (line.item.type === 'PACKING_MATERIAL' ? 'PACKING' : 'RAW') as JobWorkMaterialKind,
-      quantity: line.quantityPer.mul(scale).toDecimalPlaces(3),
-    }));
+    .map((line) =>
+      withOverage(
+        toItemSummary(line.item),
+        (line.item.type === 'PACKING_MATERIAL' ? 'PACKING' : 'RAW') as JobWorkMaterialKind,
+        line.quantityPer.mul(scale),
+        overageFor(line.overagePercent),
+      ),
+    );
 
   const alreadyListed = new Set(raw.map((line) => line.item.id));
 
@@ -179,11 +309,18 @@ export function scaleRecipe(
             ? plannedQuantity.div(packaging.unitsPerPack)
             : new Prisma.Decimal(0);
 
-      return {
-        item: toItemSummary(line.item),
-        kind: 'PACKING' as JobWorkMaterialKind,
-        quantity: line.quantityPer.mul(packs).toDecimalPlaces(3),
-      };
+      // THE COMPONENT'S OWN, read exactly as a raw material's is.
+      //
+      // Undefined today, because PackagingRequirementLine has no such column,
+      // so this resolves to no overage and nothing is added — which is the
+      // stated behaviour until the field exists. The call is identical to the
+      // raw-material one above so that adding the column is the whole change.
+      return withOverage(
+        toItemSummary(line.item),
+        'PACKING' as JobWorkMaterialKind,
+        line.quantityPer.mul(packs),
+        overageFor(line.overagePercent),
+      );
     });
 
   return [...raw, ...packing];
@@ -194,8 +331,9 @@ export async function materialRequirementFor(
   client: RecipeReader,
   product: { id: string; name: string },
   plannedQuantity: Prisma.Decimal,
+  options: ScaleOptions = {},
 ): Promise<string | MaterialRequirement[]> {
   const recipes = await loadRecipes(client, [product]);
 
-  return scaleRecipe(recipes.get(product.id), plannedQuantity);
+  return scaleRecipe(recipes.get(product.id), plannedQuantity, options);
 }

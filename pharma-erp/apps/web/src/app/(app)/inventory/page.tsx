@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 
 import { EmptyState, Panel } from '@/components/procurement/ui';
 
-export const metadata: Metadata = { title: 'Dashboard · Dashboard & Reports' };
+export const metadata: Metadata = { title: 'Dashboard' };
 
 /**
  * The Dashboard tab — reserved for the charts still to be designed.

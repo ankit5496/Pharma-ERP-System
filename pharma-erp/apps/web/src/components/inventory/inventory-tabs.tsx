@@ -26,15 +26,39 @@ export const SECTION_TABS = [
     label: 'Dashboard',
     href: '/inventory',
     purpose: 'Charts and summaries — to be added.',
+    description: 'Charts and summaries of stock and expiry, to be added.',
     isActive: (pathname: string) => pathname === '/inventory',
   },
   {
     label: 'Reports',
     href: REPORT_TABS[0].href,
     purpose: 'Stock enquiry and the near-expiry report.',
+    description:
+      'Stock on hand, batch by batch, and the batches running out of shelf life before they become a write-off.',
     isActive: (pathname: string) => REPORT_TABS.some((tab) => pathname === tab.href),
   },
 ] as const;
+
+/**
+ * The page heading, named for the tab that is open — "Dashboard" or
+ * "Reports" — rather than the section as a whole. Falls back to the section
+ * name on a path that is neither, such as the no-access message.
+ */
+export function InventoryHeading() {
+  const pathname = usePathname();
+  const tab = SECTION_TABS.find((candidate) => candidate.isActive(pathname));
+
+  return (
+    <header className="mb-6">
+      <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
+        {tab?.label ?? 'Dashboard & Reports'}
+      </h1>
+      <p className="mt-1.5 max-w-3xl text-sm text-slate-600">
+        {tab?.description ?? 'Stock on hand, batch by batch, and near-expiry stock.'}
+      </p>
+    </header>
+  );
+}
 
 /**
  * The Reports sub-tabs, as the same pill row the workflows use

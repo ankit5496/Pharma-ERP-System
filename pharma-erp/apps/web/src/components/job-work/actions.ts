@@ -814,16 +814,21 @@ export async function recordJobWorkPackingAction(
 
   const body: Record<string, unknown> = {};
 
-  for (const field of ['actualQuantity', 'packedQuantity', 'rejectedQuantity', 'packVariant', 'packedOn', 'notes']) {
+  for (const field of ['actualQuantity', 'packedQuantity', 'rejectedQuantity', 'packVariant', 'packedOn']) {
     const value = text(form, field);
 
     if (value) body[field] = value;
   }
 
+  // NOTES ARE SENT EVEN WHEN EMPTIED, so a note can be removed. Every other
+  // field here is a figure or a date where blank means "unchanged"; a note
+  // cleared on purpose has to reach the API, which turns '' into null.
+  body.notes = text(form, 'notes') ?? '';
+
   // WHAT THE PACK CONSUMED, component by component. The rows are named
   // `component.<row>.itemId`, so they are found by walking the field names
   // rather than by guessing how many the specification put on screen.
-  const consumptions: { itemId: string; quantityConsumed: string }[] = [];
+  const consumptions: { itemId: string; quantityConsumed: string; lotId?: string }[] = [];
 
   for (const [key, value] of form.entries()) {
     const match = /^component\.(\d+)\.itemId$/.exec(key);
@@ -837,7 +842,22 @@ export async function recordJobWorkPackingAction(
     // used none of one is a real answer.
     if (!quantity) continue;
 
-    consumptions.push({ itemId: value, quantityConsumed: quantity });
+    // THE LOT IT CAME OUT OF, which this used to drop on the floor.
+    //
+    // The form has offered a lot per component since the recall trail was
+    // added, the API has always accepted one and the column has always held
+    // one — but this loop built each row from the item and the quantity alone.
+    // So every save posted a consumption with no lot, the API stored null, and
+    // reopening the record showed "No lot recorded" against a line somebody had
+    // just filled in. Worse, amending anything else silently erased a lot that
+    // had been set another way.
+    //
+    // OMITTED WHEN BLANK rather than sent as '': the field is an optional UUID,
+    // and an empty string fails validation where an absent key correctly means
+    // "no lot recorded for this line".
+    const lotId = String(form.get(`component.${match[1]}.lotId`) ?? '').trim();
+
+    consumptions.push({ itemId: value, quantityConsumed: quantity, ...(lotId ? { lotId } : {}) });
   }
 
   // CONSUMPTION WITHOUT A VARIANT IS NOT RECORDABLE. The component rows exist
