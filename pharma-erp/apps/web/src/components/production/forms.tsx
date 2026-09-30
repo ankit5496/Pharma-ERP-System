@@ -130,6 +130,29 @@ const FIELD =
 const LABEL = 'block text-xs font-medium tracking-wide text-slate-600';
 
 /**
+ * A control inside a Packaging Consumed row.
+ *
+ * NOT `FIELD`, and the two differences are the whole fix.
+ *
+ * NO TOP MARGIN. `FIELD` carries `mt-1.5` for a control sitting under its own
+ * label. These sit in a grid row whose headings are column headers above the
+ * table, so that margin only pushed every control down away from the material
+ * name beside it.
+ *
+ * AN EXPLICIT HEIGHT. Left to the browser, a <select> and an <input> with
+ * identical padding come out different heights — 39px against 38px — because a
+ * select's intrinsic content box is not a text box's. One pixel is enough to
+ * see when the two sit side by side down a column, and no amount of matching
+ * padding fixes it. Fixing the box does.
+ *
+ * `w-full` INSIDE A FIXED GRID TRACK is what makes every row the same width:
+ * the column decides, not the longest option text, so choosing a lot with a
+ * long number cannot widen the control or shift the quantity beside it.
+ */
+const ROW_FIELD =
+  'block h-10 w-full min-w-0 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900';
+
+/**
  * An asterisk carries the meaning; the text makes it audible.
  *
  * The same marker the master-data form kit uses, repeated here rather than
@@ -1980,6 +2003,29 @@ export function RecordPackingForm({
               Packaging Consumed
             </legend>
 
+            {/* THREE COLUMNS, THE SAME ON EVERY ROW — the layout job work's
+                packing record uses, because it is the same table.
+
+                A NATIVE SELECT'S POPUP IS SIZED BY ITS LONGEST OPTION, not by
+                the field, and the browser will happily draw a list wider than
+                the control it hangs off — which is what made this look broken.
+                So the column is sized to the option text rather than the other
+                way round: measured in the field's own font, the widest lot
+                line ("LOT-2026-0827 — 0.875 NOS · exp 2028-09-27") is 291px,
+                and 22rem leaves room for it plus the padding and the arrow with
+                a little to spare. Narrower and the popup overhangs again.
+
+                This was a wrapping flex row before that, where the quantity box
+                was as wide as the lot picker and the material name took
+                whatever was left, so the numbers did not line up and a long lot
+                number pushed the row out of shape. The grid fixes the two
+                right-hand columns and gives the material the rest. */}
+            <div className="grid grid-cols-[minmax(0,1fr)_22rem_6rem] items-center gap-x-3 pb-1 text-[10px] font-medium uppercase tracking-wide text-slate-500">
+              <span>Material</span>
+              <span>Packaging lot</span>
+              <span className="text-right">Quantity</span>
+            </div>
+
             <div className="space-y-2">
               {specification.components.map((component, index) => (
                 // Keyed by specification as well as component, so switching
@@ -1987,11 +2033,11 @@ export function RecordPackingForm({
                 // than carrying them over on a shared component.
                 <div
                   key={`${specification.id}-${component.id}`}
-                  className="flex flex-wrap items-end gap-3"
+                  className="grid grid-cols-[minmax(0,1fr)_22rem_6rem] items-center gap-x-3"
                 >
                   <input type="hidden" name={`component.${index}.itemId`} value={component.id} />
 
-                  <div className="min-w-0 flex-1">
+                  <div className="min-w-0">
                     <span className="font-mono text-xs text-slate-700">{component.code}</span>{' '}
                     <span className="text-sm text-slate-600">{component.name}</span>
                   </div>
@@ -2006,7 +2052,7 @@ export function RecordPackingForm({
                       pure-conversion job packs with the principal's own
                       cartons; anything else uses ours, and mixing the two
                       would consume a customer's material on our own batch. */}
-                  <div className="w-64">
+                  <div className="min-w-0">
                     <label htmlFor={`lot-${batchId}-${index}`} className="sr-only">
                       Lot of {component.code}
                     </label>
@@ -2014,7 +2060,7 @@ export function RecordPackingForm({
                       id={`lot-${batchId}-${index}`}
                       name={`component.${index}.lotId`}
                       defaultValue={consumedLotFor(component.id)}
-                      className={FIELD}
+                      className={`${ROW_FIELD} truncate`}
                     >
                       {/* Selectable and empty, so "not recorded" stays a real
                           answer: packaging taken from an untracked bulk store
@@ -2030,7 +2076,7 @@ export function RecordPackingForm({
                     </select>
                   </div>
 
-                  <div className="w-40">
+                  <div>
                     <label htmlFor={`consumed-${batchId}-${index}`} className="sr-only">
                       {component.code} consumed
                     </label>
@@ -2045,10 +2091,14 @@ export function RecordPackingForm({
                       name={`component.${index}.quantityConsumed`}
                       defaultValue={consumedFor(component.id)}
                       inputMode="decimal"
-                      placeholder={`0 ${component.uom}`}
+                      placeholder="0"
                       pattern="\d{1,11}(\.\d{1,3})?"
                       title="A positive number, up to 3 decimal places"
-                      className="block w-full rounded-md border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900"
+                      // The row class, so this is the same box as the lot
+                      // picker beside it — it used to have its own padding and
+                      // so its own height. Right-aligned and tabular so the
+                      // figures line up down the column.
+                      className={`${ROW_FIELD} text-right tabular-nums`}
                     />
                   </div>
                 </div>
