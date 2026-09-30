@@ -68,6 +68,30 @@ const FIELD =
 const LABEL = 'block text-xs font-medium uppercase tracking-wide text-slate-600';
 
 /**
+ * A control inside a Packaging Consumed row.
+ *
+ * NOT `FIELD`, and the two differences are the whole fix.
+ *
+ * NO TOP MARGIN. `FIELD` carries `mt-1.5` for a control sitting under its own
+ * label. These sit in a grid row whose headings are column headers above the
+ * table, so that margin only pushed every control down away from the material
+ * name beside it.
+ *
+ * AN EXPLICIT HEIGHT. Left to the browser, a <select> and an <input> with
+ * identical padding come out different heights — 39px against 38px here —
+ * because a select's intrinsic content box is not a text box's. One pixel is
+ * enough to see when the two sit side by side down a column, and no amount of
+ * matching padding fixes it. Fixing the box fixes it.
+ *
+ * `w-full` INSIDE A FIXED GRID TRACK is what makes every row the same width:
+ * the column decides, not the longest option text, so choosing a lot with a
+ * long number cannot widen the control or shift the quantity beside it.
+ */
+const ROW_FIELD =
+  'block h-10 w-full min-w-0 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-900 shadow-sm focus:border-slate-900 focus:outline-none focus:ring-1 focus:ring-slate-900';
+
+
+/**
  * DECIMAL(14,3), as the API's own `QUANTITY` expression spells it.
  *
  * Named rather than repeated inline so the browser's check and the server's
@@ -1559,16 +1583,27 @@ export function RecordJobWorkPackingForm({
             Packaging consumed
           </legend>
 
-          {/* THREE COLUMNS, THE SAME ON EVERY ROW. This was a wrapping flex
-              row where the quantity box was as wide as the lot picker and the
-              material name got whatever was left — so the numbers did not line
-              up, and a long lot number pushed the row out of shape.
+          {/* THREE COLUMNS, THE SAME ON EVERY ROW.
+
+              A NATIVE SELECT'S POPUP IS SIZED BY ITS LONGEST OPTION, not by
+              the field, and the browser will happily draw a list wider than
+              the control it hangs off — which is what made this look broken.
+              So the column is sized to the option text rather than the other
+              way round: measured in the field's own font, the widest lot
+              line ("LOT-2026-0827 — 0.875 NOS · exp 2028-09-27") is 291px,
+              and 22rem leaves room for it plus the padding and the arrow with
+              a little to spare. Narrower and the popup overhangs again.
+
+              THIS WAS A WRAPPING FLEX ROW before that, where the quantity box
+              was as wide as the lot picker and the material name got whatever
+              was left — so the numbers did not line up, and a long lot number
+              pushed the row out of shape.
 
               A grid instead: the material takes the space, the picker is fixed
               so every one is the same width and they align down the column, and
               the quantity is narrow because it holds a number. The header names
               them once rather than a label per row. */}
-          <div className="grid grid-cols-[minmax(0,1fr)_14rem_6rem] items-center gap-x-3 pb-1 text-[10px] font-medium uppercase tracking-wide text-slate-500">
+          <div className="grid grid-cols-[minmax(0,1fr)_22rem_6rem] items-center gap-x-3 pb-1 text-[10px] font-medium uppercase tracking-wide text-slate-500">
             <span>Material</span>
             <span>Packaging lot</span>
             <span className="text-right">Quantity</span>
@@ -1581,7 +1616,7 @@ export function RecordJobWorkPackingForm({
               // than carrying them over on a shared component.
               <div
                 key={`${specification.id}-${component.id}`}
-                className="grid grid-cols-[minmax(0,1fr)_14rem_6rem] items-center gap-x-3"
+                className="grid grid-cols-[minmax(0,1fr)_22rem_6rem] items-center gap-x-3"
               >
                 <input type="hidden" name={`component.${index}.itemId`} value={component.id} />
 
@@ -1611,10 +1646,11 @@ export function RecordJobWorkPackingForm({
                     name={`component.${index}.lotId`}
                     value={lotChoice(component.id)}
                     onChange={(event) => chooseLot(component.id, event.target.value)}
-                    // `truncate` on a select: a long lot number is cut with an
-                    // ellipsis rather than widening the column and pushing the
-                    // quantity off the row.
-                    className={`${FIELD} truncate`}
+                    // The row class, not FIELD: same height as the quantity
+                    // box beside it and no stray label margin. `truncate` keeps
+                    // a long lot number inside the column rather than letting it
+                    // widen the control.
+                    className={`${ROW_FIELD} truncate`}
                   >
                     <option value="">
                       {lotsFor(component.id).length === 0 ? 'No lot on hand' : 'No lot recorded'}
@@ -1650,7 +1686,7 @@ export function RecordJobWorkPackingForm({
                     title="A positive number, up to 3 decimal places"
                     // Right-aligned and tabular so the figures line up down the
                     // column rather than each starting wherever its digits do.
-                    className={`${FIELD} text-right tabular-nums`}
+                    className={`${ROW_FIELD} text-right tabular-nums`}
                   />
                 </div>
               </div>
